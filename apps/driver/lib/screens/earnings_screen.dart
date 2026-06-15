@@ -124,7 +124,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                           Text(
                             'TOTAL EARNED',
                             style: GoogleFonts.dmSans(
-                              color: Colors.white.withOpacity(0.6),
+                              color: Colors.white.withValues(alpha: 0.6),
                               fontSize: 10,
                               fontWeight: FontWeight.bold,
                               letterSpacing: 1.0,
@@ -145,7 +145,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                             height: 6,
                             width: double.infinity,
                             decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.2),
+                              color: Colors.white.withValues(alpha: 0.2),
                               borderRadius: BorderRadius.circular(3),
                             ),
                             child: FractionallySizedBox(
@@ -163,7 +163,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                           Text(
                             '₹6,600 more to reach your ₹25,000 goal',
                             style: GoogleFonts.dmSans(
-                              color: Colors.white.withOpacity(0.7),
+                              color: Colors.white.withValues(alpha: 0.7),
                               fontSize: 11,
                             ),
                           ),
@@ -188,7 +188,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                                     Text(
                                       'Trips',
                                       style: GoogleFonts.dmSans(
-                                        color: Colors.white.withOpacity(0.5),
+                                        color: Colors.white.withValues(alpha: 0.5),
                                         fontSize: 10,
                                       ),
                                     ),
@@ -198,7 +198,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                               Container(
                                 width: 1,
                                 height: 28,
-                                color: Colors.white.withOpacity(0.15),
+                                color: Colors.white.withValues(alpha: 0.15),
                               ),
                               Expanded(
                                 child: Column(
@@ -217,7 +217,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                                     Text(
                                       'Avg/trip',
                                       style: GoogleFonts.dmSans(
-                                        color: Colors.white.withOpacity(0.5),
+                                        color: Colors.white.withValues(alpha: 0.5),
                                         fontSize: 10,
                                       ),
                                     ),
@@ -227,7 +227,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                               Container(
                                 width: 1,
                                 height: 28,
-                                color: Colors.white.withOpacity(0.15),
+                                color: Colors.white.withValues(alpha: 0.15),
                               ),
                               Expanded(
                                 child: Column(
@@ -246,7 +246,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                                     Text(
                                       'Hours',
                                       style: GoogleFonts.dmSans(
-                                        color: Colors.white.withOpacity(0.5),
+                                        color: Colors.white.withValues(alpha: 0.5),
                                         fontSize: 10,
                                       ),
                                     ),

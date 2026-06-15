@@ -1,11 +1,12 @@
+// ==========================================
+// 1. IMPORTS
+// ==========================================
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
 
 import '../core/app_routes.dart';
-import '../data/mock_data.dart';
-import '../theme/app_theme.dart';
-import '../widgets/app_logo.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -15,48 +16,109 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen> {
+  // ==========================================
+  // 2. STATE VARIABLES
+  // ==========================================
+  VideoPlayerController? _controller;
+  Timer? _navigationTimer;
+  bool _isInitialized = false;
+  bool _navigated = false;
+
+  // ==========================================
+  // 3. LIFECYCLE METHODS
+  // ==========================================
   @override
   void initState() {
     super.initState();
-    Timer(const Duration(seconds: 2), () {
-      if (!mounted) {
-        return;
-      }
-      Navigator.of(context).pushReplacementNamed(AppRoutes.login);
+
+    // Safety fallback timer to ensure user can always enter the app (video is 8 seconds)
+    _navigationTimer = Timer(const Duration(seconds: 10), () {
+      _navigateToLogin();
     });
+
+    _initializeVideo();
   }
 
   @override
+  void dispose() {
+    _navigationTimer?.cancel();
+    _controller?.removeListener(_videoListener);
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  // ==========================================
+  // 4. VIDEO INITIALIZATION
+  // ==========================================
+  Future<void> _initializeVideo() async {
+    try {
+      _controller = VideoPlayerController.asset(
+        'assets/Truck_draws_logo_brand_colors_202606141957.mp4',
+      );
+      await _controller!.initialize();
+      if (!mounted) return;
+
+      setState(() {
+        _isInitialized = true;
+      });
+
+      // Mute audio to satisfy browser autoplay requirements
+      await _controller!.setVolume(0.0);
+      _controller!.addListener(_videoListener);
+      await _controller!.play();
+    } catch (e) {
+      debugPrint('Failed to initialize video player: $e');
+      _navigateToLogin();
+    }
+  }
+
+  // ==========================================
+  // 5. EVENT LISTENERS & NAVIGATION
+  // ==========================================
+  void _videoListener() {
+    if (!mounted) return;
+    final value = _controller?.value;
+    if (value != null && 
+        value.isInitialized && 
+        (value.position >= value.duration || 
+         (!value.isPlaying && value.position >= value.duration - const Duration(milliseconds: 200)))) {
+      _navigateToLogin();
+    }
+  }
+
+  void _navigateToLogin() {
+    if (_navigated) return;
+    _navigated = true;
+    _navigationTimer?.cancel();
+    _controller?.removeListener(_videoListener);
+
+    if (mounted) {
+      Navigator.of(context).pushReplacementNamed(AppRoutes.login);
+    }
+  }
+
+  // ==========================================
+// 6. UI BUILD METHOD
+// ==========================================
+  @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 92,
-              height: 92,
-              decoration: BoxDecoration(
-                color: colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(28),
+      backgroundColor: const Color(0xFF004D40), // Premium dark teal to match brand
+      body: SizedBox.expand(
+        child: _isInitialized && _controller != null
+            ? FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: _controller!.value.size.width,
+                  height: _controller!.value.size.height,
+                  child: VideoPlayer(_controller!),
+                ),
+              )
+            : const Center(
+                child: CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
               ),
-              child: const Icon(Icons.local_shipping_rounded,
-                  color: TruxifyColors.accent, size: 44),
-            ),
-            const SizedBox(height: 20),
-            const TruxifyLogo(size: 34, textColor: TruxifyColors.accent),
-            const SizedBox(height: 14),
-            Text(
-              onboardingTagline,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: TruxifyColors.adaptiveSecondaryText(context),
-                    fontWeight: FontWeight.w500,
-                  ),
-            ),
-          ],
-        ),
       ),
     );
   }

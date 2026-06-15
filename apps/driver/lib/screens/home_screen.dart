@@ -33,7 +33,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
   final MapController _mapController = MapController();
-  double _mapZoom = 5.7;
+  final double _mapZoom = 5.7;
 
   Future<List<ll.LatLng>>? _routeFuture;
   DestinationPickResult? _destination;
@@ -290,7 +290,7 @@ class _HomeScreenState extends State<HomeScreen> {
         border: Border.all(color: TruxifyColors.border),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.08),
+            color: Colors.black.withValues(alpha: 0.08),
             blurRadius: 18,
             offset: const Offset(0, 4),
           ),
@@ -454,7 +454,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   strokeWidth: 5.0,
                   color: TruxifyColors.accent,
                   borderStrokeWidth: 2.0,
-                  borderColor: Colors.white.withOpacity(0.8),
+                  borderColor: Colors.white.withValues(alpha: 0.8),
                 ),
               ],
             ),
@@ -546,7 +546,7 @@ class _HomeScreenState extends State<HomeScreen> {
         border: Border.all(color: TruxifyColors.border),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.06),
+            color: Colors.black.withValues(alpha: 0.06),
             blurRadius: 18,
             offset: const Offset(0, 6),
           ),
@@ -657,7 +657,7 @@ class _HomeScreenState extends State<HomeScreen> {
         border: Border.all(color: TruxifyColors.border),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.06),
+            color: Colors.black.withValues(alpha: 0.06),
             blurRadius: 16,
             offset: const Offset(0, 4),
           ),
@@ -788,7 +788,7 @@ class _HomeScreenState extends State<HomeScreen> {
         border: Border.all(color: TruxifyColors.border),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.08),
+            color: Colors.black.withValues(alpha: 0.08),
             blurRadius: 20,
             offset: const Offset(0, 4),
           ),

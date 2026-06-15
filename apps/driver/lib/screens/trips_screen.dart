@@ -469,7 +469,7 @@ class _TripsScreenState extends State<TripsScreen> {
           ),
           boxShadow: [
             BoxShadow(
-              color: TruxifyColors.accent.withOpacity(0.06),
+              color: TruxifyColors.accent.withValues(alpha: 0.06),
               blurRadius: 8,
               offset: const Offset(0, 2),
             ),

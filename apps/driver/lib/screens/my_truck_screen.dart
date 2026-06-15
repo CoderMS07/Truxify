@@ -14,8 +14,8 @@ class MyTruckScreen extends StatefulWidget {
 
 class _MyTruckScreenState extends State<MyTruckScreen> {
   bool _isEngineGood = true;
-  double _fuelLevel = 0.74; // 74%
-  double _oilLife = 0.88; // 88%
+  final double _fuelLevel = 0.74; // 74%
+  final double _oilLife = 0.88; // 88%
   final List<Map<String, String>> _reportedIssues = [];
 
   // Tyre pressure data
@@ -59,7 +59,7 @@ class _MyTruckScreenState extends State<MyTruckScreen> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                      color: TruxifyColors.success.withOpacity(0.1),
+                      color: TruxifyColors.success.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
@@ -223,7 +223,7 @@ class _MyTruckScreenState extends State<MyTruckScreen> {
                   ),
                   const SizedBox(height: 8),
                   DropdownButtonFormField<String>(
-                    value: selectedCategory,
+                    initialValue: selectedCategory,
                     decoration: InputDecoration(
                       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                       border: OutlineInputBorder(
@@ -349,7 +349,7 @@ class _MyTruckScreenState extends State<MyTruckScreen> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                      color: TruxifyColors.success.withOpacity(0.1),
+                      color: TruxifyColors.success.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
@@ -466,7 +466,7 @@ class _MyTruckScreenState extends State<MyTruckScreen> {
                 borderRadius: BorderRadius.circular(16),
                 boxShadow: [
                   BoxShadow(
-                    color: TruxifyColors.accent.withOpacity(0.12),
+                    color: TruxifyColors.accent.withValues(alpha: 0.12),
                     blurRadius: 8,
                     offset: const Offset(0, 2),
                   )
@@ -482,7 +482,7 @@ class _MyTruckScreenState extends State<MyTruckScreen> {
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.15),
+                          color: Colors.white.withValues(alpha: 0.15),
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Row(
@@ -531,7 +531,7 @@ class _MyTruckScreenState extends State<MyTruckScreen> {
                     'BharatBenz Multi-axle Heavy Carrier',
                     style: GoogleFonts.dmSans(
                       fontSize: 12,
-                      color: Colors.white.withOpacity(0.7),
+                      color: Colors.white.withValues(alpha: 0.7),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -548,7 +548,7 @@ class _MyTruckScreenState extends State<MyTruckScreen> {
                             style: GoogleFonts.dmSans(
                               fontSize: 9,
                               letterSpacing: 0.5,
-                              color: Colors.white.withOpacity(0.5),
+                              color: Colors.white.withValues(alpha: 0.5),
                             ),
                           ),
                           const SizedBox(height: 2),
@@ -686,7 +686,7 @@ class _MyTruckScreenState extends State<MyTruckScreen> {
                       Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: TruxifyColors.warning.withOpacity(0.1),
+                          color: TruxifyColors.warning.withValues(alpha: 0.1),
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(Icons.error_outline_rounded, color: TruxifyColors.warning, size: 18),
@@ -798,7 +798,7 @@ class _MyTruckScreenState extends State<MyTruckScreen> {
         border: Border.all(color: TruxifyColors.border),
         boxShadow: [
           BoxShadow(
-            color: TruxifyColors.accent.withOpacity(0.04),
+            color: TruxifyColors.accent.withValues(alpha: 0.04),
             blurRadius: 6,
             offset: const Offset(0, 2),
           ),

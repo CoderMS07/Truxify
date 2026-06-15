@@ -49,7 +49,7 @@ class _DestinationPickerScreenState extends State<DestinationPickerScreen> {
 
   final MapController _mapController = MapController();
   final TextEditingController _searchController = TextEditingController();
-  double _mapZoom = 5.2;
+  final double _mapZoom = 5.2;
 
   Timer? _debounce;
   List<_SearchSuggestion> _suggestions = const <_SearchSuggestion>[];

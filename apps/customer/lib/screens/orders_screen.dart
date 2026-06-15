@@ -2,7 +2,6 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:truxify/widgets/order_card.dart';
 
-import '../constants/app_colors.dart';
 import '../controllers/app_controller.dart';
 import '../core/offline/cache/cache_manager.dart';
 import '../data/mock_data.dart';
