@@ -468,6 +468,31 @@ describe("TruxifyEscrow", function () {
     });
   });
 
+  describe("cancelWithPenalty", function () {
+    it("splits an active booking between driver compensation and customer refund", async function () {
+      const { escrow, owner, customer, driver, bookingId, amount } = await loadFixture(deployWithBookingFixture);
+      const driverFee = ethers.parseEther("0.5");
+
+      await expect(escrow.connect(owner).cancelWithPenalty(bookingId, driverFee))
+        .to.emit(escrow, "CancellationPenaltyApplied")
+        .withArgs(bookingId, driver.address, driverFee, customer.address, amount - driverFee);
+
+      const booking = await escrow.getBooking(bookingId);
+      expect(booking.status).to.equal(2); // Cancelled
+      expect(booking.paid).to.be.true;
+      expect(booking.amount).to.equal(0);
+      expect(await escrow.pendingWithdrawals(driver.address)).to.equal(driverFee);
+      expect(await escrow.pendingWithdrawals(customer.address)).to.equal(amount - driverFee);
+    });
+
+    it("rejects a penalty larger than the escrowed amount", async function () {
+      const { escrow, owner, bookingId, amount } = await loadFixture(deployWithBookingFixture);
+
+      await expect(escrow.connect(owner).cancelWithPenalty(bookingId, amount + 1n))
+        .to.be.revertedWith("TruxifyEscrow: Penalty exceeds escrow");
+    });
+  });
+
   // ═══════════════════════════════════════════════════════════════════════════
   // raiseDispute
   // ═══════════════════════════════════════════════════════════════════════════

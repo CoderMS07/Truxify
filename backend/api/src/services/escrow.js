@@ -36,6 +36,7 @@ const ESCROW_ABI = [
   'function createBooking(uint256 bookingId, address payable driver) external payable',
   'function releasePayment(uint256 bookingId) external',
   'function cancelBooking(uint256 bookingId) external',
+  'function cancelWithPenalty(uint256 bookingId, uint256 driverFee) external',
   'function bookings(uint256 bookingId) external view returns (address customer, address driver, uint256 amount, uint8 status, bool paid, uint256 createdAt)'
 ]
 
@@ -437,6 +438,36 @@ export async function confirmEscrowRefund (txHash) {
 
 export function bookingIdFromUuid (orderId) {
   return getEscrowBookingId(orderId)
+}
+
+export async function submitEscrowCancelWithPenalty (orderDisplayId, driverFeeWei) {
+  return measureExecution('EscrowService.submitEscrowCancelWithPenalty', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId)
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping cancelWithPenalty.')
+      return { txHash: null, bookingId }
+    }
+
+    try {
+      const tx = await escrowContract.cancelWithPenalty(bookingId, driverFeeWei)
+      logger.info(`[escrow] cancelWithPenalty tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
+      return {
+        txHash: tx.hash,
+        bookingId,
+        waitForConfirmation: async () => {
+          const receipt = await tx.wait(1)
+          if (!receipt || receipt.status === 0) {
+            throw new Error('Escrow cancelWithPenalty transaction reverted or was not found.')
+          }
+          return receipt
+        },
+      }
+    } catch (err) {
+      logger.error(`[escrow] cancelWithPenalty failed for booking ${orderDisplayId}: ${err.message}`)
+      return { txHash: null, bookingId, error: err.message }
+    }
+  })
 }
 
 export async function releaseEscrowFunds (orderDisplayId) {
