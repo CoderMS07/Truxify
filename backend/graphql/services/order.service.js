@@ -5,6 +5,19 @@ import { gql } from 'graphql-tag';
 import { supabase } from '../../api/src/config/db.js';
 import logger from '../../api/src/middleware/logger.js';
 
+function mapOrder(row) {
+    if (!row) return row;
+
+    return {
+        ...row,
+        customerId: row.customerId ?? row.customer_id,
+        driverId: row.driverId ?? row.driver_id,
+        cargoType: row.cargoType ?? row.cargo_type,
+        createdAt: row.createdAt ?? row.created_at,
+        updatedAt: row.updatedAt ?? row.updated_at,
+    };
+}
+
 const typeDefs = gql`
     extend type Query {
         order(id: ID!): Order
@@ -103,7 +116,7 @@ const resolvers = {
                 .single();
             
             if (error) throw error;
-            return data;
+            return mapOrder(data);
         },
         orders: async (_, { status, limit = 10, offset = 0 }, { user }) => {
             let query = supabase
@@ -117,7 +130,7 @@ const resolvers = {
             
             const { data, error } = await query;
             if (error) throw error;
-            return data;
+            return data.map(mapOrder);
         },
         ordersByCustomer: async (_, { customerId }, { user }) => {
             const { data, error } = await supabase
@@ -127,7 +140,7 @@ const resolvers = {
                 .order('created_at', { ascending: false });
             
             if (error) throw error;
-            return data;
+            return data.map(mapOrder);
         }
     },
     Mutation: {
@@ -149,7 +162,7 @@ const resolvers = {
                 .single();
             
             if (error) throw error;
-            return data;
+            return mapOrder(data);
         },
         updateOrder: async (_, { id, input }, { user }) => {
             const { data, error } = await supabase
@@ -166,7 +179,7 @@ const resolvers = {
                 .single();
             
             if (error) throw error;
-            return data;
+            return mapOrder(data);
         },
         cancelOrder: async (_, { id, reason }, { user }) => {
             const { data, error } = await supabase
@@ -181,7 +194,7 @@ const resolvers = {
                 .single();
             
             if (error) throw error;
-            return data;
+            return mapOrder(data);
         }
     },
     Order: {
