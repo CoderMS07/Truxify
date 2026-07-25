@@ -65,6 +65,9 @@ class TokenizationService {
     async purchaseFraction(assetId, amount, userAddress) {
         try {
             const asset = await this.getAsset(assetId);
+            if (!asset) {
+                throw new Error('Asset not found');
+            }
             const totalCost = parseFloat(asset.tokenPrice) * amount;
 
             const tx = await this.token.purchaseFraction(
