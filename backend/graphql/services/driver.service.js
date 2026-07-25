@@ -5,6 +5,19 @@ import { gql } from 'graphql-tag';
 import { supabase } from '../../api/src/config/db.js';
 import logger from '../../api/src/middleware/logger.js';
 
+const DISPATCH_ROLES = new Set(['ADMIN', 'admin', 'DISPATCHER', 'dispatcher']);
+
+function requireUser(user) {
+    if (!user?.id) {
+        throw new Error('Authentication required');
+    }
+    return user;
+}
+
+function canDispatch(user) {
+    return DISPATCH_ROLES.has(user?.role);
+}
+
 const typeDefs = gql`
     extend type Query {
         driver(id: ID!): Driver
@@ -112,8 +125,9 @@ const resolvers = {
         }
     },
     Mutation: {
-        updateDriver: async (_, { id, input }) => {
-            const { data, error } = await supabase
+        updateDriver: async (_, { id, input }, { user }) => {
+            const currentUser = requireUser(user);
+            let query = supabase
                 .from('drivers')
                 .update({
                     status: input.status,
@@ -122,14 +136,23 @@ const resolvers = {
                     truck_number: input.truckNumber || undefined,
                     updated_at: new Date().toISOString()
                 })
-                .eq('id', id)
-                .select()
-                .single();
+                .eq('id', id);
+
+            if (!canDispatch(currentUser)) {
+                query = query.eq('user_id', currentUser.id);
+            }
+
+            const { data, error } = await query.select().single();
             
             if (error) throw error;
             return data;
         },
-        assignDriver: async (_, { orderId, driverId }) => {
+        assignDriver: async (_, { orderId, driverId }, { user }) => {
+            const currentUser = requireUser(user);
+            if (!canDispatch(currentUser)) {
+                throw new Error('Dispatcher role required');
+            }
+
             const { data, error } = await supabase
                 .from('orders')
                 .update({
@@ -144,16 +167,21 @@ const resolvers = {
             if (error) throw error;
             return data;
         },
-        updateDriverLocation: async (_, { id, location }) => {
-            const { data, error } = await supabase
+        updateDriverLocation: async (_, { id, location }, { user }) => {
+            const currentUser = requireUser(user);
+            let query = supabase
                 .from('drivers')
                 .update({
                     current_location: location,
                     updated_at: new Date().toISOString()
                 })
-                .eq('id', id)
-                .select()
-                .single();
+                .eq('id', id);
+
+            if (!canDispatch(currentUser)) {
+                query = query.eq('user_id', currentUser.id);
+            }
+
+            const { data, error } = await query.select().single();
             
             if (error) throw error;
             return data;
