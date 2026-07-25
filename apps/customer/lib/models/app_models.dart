@@ -216,6 +216,9 @@ class HistoryOrderData {
     this.isStackable,
     this.isFragile,
     this.specialRequirements,
+    this.requiresRefrigeration,
+    this.targetTemperatureMin,
+    this.targetTemperatureMax,
   });
 
   final String orderId;
