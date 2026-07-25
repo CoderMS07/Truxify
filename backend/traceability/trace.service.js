@@ -44,7 +44,7 @@ class TraceabilityService {
             );
             const receipt = await tx.wait();
 
-            const productId = await this.contract.getTotalProducts();
+            const productId = await this.contract.getProductCount();
 
             await this.storeProduct({
                 ...productData,
@@ -77,7 +77,7 @@ class TraceabilityService {
             );
             const receipt = await tx.wait();
 
-            const shipmentId = await this.contract.getTotalShipments();
+            const shipmentId = await this.contract.getShipmentCount();
 
             await this.storeShipment({
                 productId,
