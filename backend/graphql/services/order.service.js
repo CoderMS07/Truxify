@@ -5,6 +5,19 @@ import { gql } from 'graphql-tag';
 import { supabase } from '../../api/src/config/db.js';
 import logger from '../../api/src/middleware/logger.js';
 
+const ADMIN_ROLES = new Set(['ADMIN', 'admin']);
+
+function requireUser(user) {
+    if (!user?.id) {
+        throw new Error('Authentication required');
+    }
+    return user;
+}
+
+function isAdmin(user) {
+    return ADMIN_ROLES.has(user?.role);
+}
+
 const typeDefs = gql`
     extend type Query {
         order(id: ID!): Order
@@ -95,21 +108,34 @@ const typeDefs = gql`
 const resolvers = {
     Query: {
         order: async (_, { id }, { user }) => {
+            const currentUser = requireUser(user);
+
             // Fetch order from database
-            const { data, error } = await supabase
+            let query = supabase
                 .from('orders')
                 .select('*')
-                .eq('id', id)
-                .single();
+                .eq('id', id);
+
+            if (!isAdmin(currentUser)) {
+                query = query.eq('customer_id', currentUser.id);
+            }
+
+            const { data, error } = await query.single();
             
             if (error) throw error;
             return data;
         },
         orders: async (_, { status, limit = 10, offset = 0 }, { user }) => {
+            const currentUser = requireUser(user);
+
             let query = supabase
                 .from('orders')
                 .select('*')
                 .range(offset, offset + limit - 1);
+
+            if (!isAdmin(currentUser)) {
+                query = query.eq('customer_id', currentUser.id);
+            }
             
             if (status) {
                 query = query.eq('status', status);
@@ -120,10 +146,13 @@ const resolvers = {
             return data;
         },
         ordersByCustomer: async (_, { customerId }, { user }) => {
+            const currentUser = requireUser(user);
+            const scopedCustomerId = isAdmin(currentUser) ? customerId : currentUser.id;
+
             const { data, error } = await supabase
                 .from('orders')
                 .select('*')
-                .eq('customer_id', customerId)
+                .eq('customer_id', scopedCustomerId)
                 .order('created_at', { ascending: false });
             
             if (error) throw error;
