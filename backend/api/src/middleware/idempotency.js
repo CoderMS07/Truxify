@@ -79,14 +79,38 @@ export function requireIdempotency(ttlSeconds = 3600) {
       if (redisClient) {
         const lockKey = `${key}:lock`;
         const lockAcquired = await redisClient.set(lockKey, '1', 'NX', 'PX', 10000);
+        
         if (!lockAcquired) {
-          await new Promise(r => setTimeout(r, 200));
-          const retryRaw = await redisClient.get(key);
-          const retryCached = retryRaw ? readAndParse(retryRaw) : null;
-          if (retryCached) {
-            return res.status(retryCached.statusCode).json(retryCached.body);
+          let retries = 50; // Poll for up to 10 seconds
+          let cacheFound = false;
+          
+          while (retries > 0) {
+            await new Promise(r => setTimeout(r, 200));
+            const retryRaw = await redisClient.get(key);
+            const retryCached = retryRaw ? readAndParse(retryRaw) : null;
+            
+            if (retryCached) {
+              cacheFound = true;
+              return res.status(retryCached.statusCode).json(retryCached.body);
+            }
+            
+            const lockStillHeld = await redisClient.get(lockKey);
+            if (!lockStillHeld) {
+              break; // Lock released but cache empty
+            }
+            
+            retries--;
           }
-          return res.status(409).json({ error: 'Duplicate request being processed' });
+          
+          if (!cacheFound && retries === 0) {
+            return res.status(409).json({ error: 'Duplicate request being processed' });
+          }
+          
+          // Re-acquire lock and process if previous request crashed
+          const newLockAcquired = await redisClient.set(lockKey, '1', 'NX', 'PX', 10000);
+          if (!newLockAcquired) {
+             return res.status(409).json({ error: 'Duplicate request being processed' });
+          }
         }
       }
 
