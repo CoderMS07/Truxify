@@ -839,6 +839,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
     _loadDashboardMetrics();
   }
+}
 
   Future<void> _checkPendingPods() async {
     try {
