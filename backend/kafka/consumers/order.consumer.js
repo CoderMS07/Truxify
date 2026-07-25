@@ -1,5 +1,5 @@
 import kafka, { TOPICS, CONSUMER_GROUPS } from '../config/kafka.config.js';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../api/src/middleware/logger.js';
 
 class OrderConsumer {
   constructor() {
