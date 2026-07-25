@@ -594,11 +594,11 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                   pickup: pickup,
                   drop: drop,
                   dateLabel: _currentOrder.date,
-                  goodsType: 'Textile',
-                  weightTonnes: '3',
-                  dimensions: '12 × 6 × 6',
-                  stacked: true,
-                  fragile: false,
+                  goodsType: _currentOrder.goodsType ?? 'General',
+                  weightTonnes: _currentOrder.weightTonnes ?? '0',
+                  dimensions: _currentOrder.dimensions ?? '',
+                  stacked: _currentOrder.isStackable ?? true,
+                  fragile: _currentOrder.isFragile ?? false,
                   requirements: _currentOrder.specialRequirements != null && _currentOrder.specialRequirements!.isNotEmpty
           ? [_currentOrder.specialRequirements!]
           : const [],
