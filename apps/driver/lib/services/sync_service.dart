@@ -50,14 +50,16 @@ class SyncService {
           await LocalDbService.instance.markPoDSynced(podId);
         } catch (e) {
           debugPrint('Failed to sync PoD $podId: $e');
-        try {
-          final stopId = pod['stop_id'] as String;
-          final tripId = pod['trip_display_id'] as String;
-          await _tripService.markStopCompleted(stopId, tripId);
-          await LocalDbService.instance.markPoDSynced(pod['id'] as int);
-        } catch (e) {
-          debugPrint('Failed to sync pod ${pod['id']}: $e');
         }
+      
+      // Retry stop completion even if upload fails
+      try {
+        final stopId = pod['stop_id'] as String;
+        final tripId = pod['trip_display_id'] as String;
+        await _tripService.markStopCompleted(stopId, tripId);
+        await LocalDbService.instance.markPoDSynced(pod['id'] as int);
+      } catch (e) {
+        debugPrint('Failed to sync pod ${pod['id']}: $e');
       }
       debugPrint('Sync completed for ${pendingPoDs.length} items.');
     } catch (e) {
