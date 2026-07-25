@@ -85,8 +85,8 @@ class _MLDashboardState extends State<MLDashboard> {
     final results = metrics?['results'] as Map<String, dynamic>? ?? {};
     final rows = <Widget>[];
     results.forEach((metric, values) {
-      final prod = values['production']?.toStringAsFixed(2) ?? 'N/A';
-      final shadow = values['shadow']?.toStringAsFixed(2) ?? 'N/A';
+      final prod = values['production']?.toStringAsFixed(2);
+      final shadow = values['shadow']?.toStringAsFixed(2);
       rows.add(_buildMetricRow(metric, prod, shadow, metric == 'rmse'));
     });
 
