@@ -819,8 +819,6 @@ async function flushTelemetryBuffer() {
   telemetryFlushBuffer = [];
   telemetryWriteBuffer.clear();
 
-  flushMutex = false;
-
   if (recordsToFlush.length === 0) {
     flushMutex = false;
     return;
