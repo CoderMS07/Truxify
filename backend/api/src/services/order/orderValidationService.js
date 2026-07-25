@@ -178,7 +178,7 @@ export class OrderValidationService {
     const { data: driver, error } = await this.supabase
       .from('driver_details')
       .select('accumulated_driving_minutes, accumulated_on_duty_minutes, hos_status')
-      .eq('driver_id', driverId)
+      .eq('user_id', driverId)
       .maybeSingle();
 
     if (error) {
