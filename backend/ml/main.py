@@ -588,7 +588,6 @@ async def get_traffic_data(route_id: str, _auth=Depends(verify_api_key)):
 
 
 @app.get("/eta/forecast/{route_id}")
-async def get_traffic_forecast(route_id: str, hours: int = Query(1, ge=1, le=24), _auth=Depends(verify_api_key)):
 async def get_traffic_forecast(route_id: str, hours: int = Query(default=1, ge=1, le=24), _auth=Depends(verify_api_key)):
     """Get traffic forecast for next N hours"""
     try:
