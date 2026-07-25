@@ -44,11 +44,10 @@ export async function optimizeWaypoints(start, end, waypoints) {
     const optimizedWaypoints = new Array(waypoints.length);
     
     // Original array order: [Start, WP1, WP2, ..., End]
-    for (let i = 1; i <= waypoints.length; i++) {
+    for (let i = 0; i < waypointsResult.length; i++) {
       const osrmWp = waypointsResult[i];
-      // Subtract 1 from waypoint_index because index 0 is the start point.
-      const newIndex = osrmWp.waypoint_index - 1;
-      optimizedWaypoints[newIndex] = waypoints[i - 1];
+      const originalIndex = osrmWp.waypoint_index - 1;
+      optimizedWaypoints[i] = waypoints[originalIndex];
     }
 
     return optimizedWaypoints;
