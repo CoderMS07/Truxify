@@ -37,7 +37,17 @@ class GraphQLGateway {
             buildService({ name, url }) {
                 return new RemoteGraphQLDataSource({
                     url,
-                    willSendRequest({ request }) {
+                    willSendRequest({ request, context }) {
+                        const authorization = context?.headers?.authorization;
+                        if (authorization) {
+                            request.http.headers.set('authorization', authorization);
+                        }
+
+                        if (context?.user?.id) {
+                            request.http.headers.set('x-user-id', context.user.id);
+                            request.http.headers.set('x-user-role', context.user.role || 'CUSTOMER');
+                        }
+
                         logger.debug(`GraphQL ${name} request sent`);
                     },
                 });
