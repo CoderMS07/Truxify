@@ -5,7 +5,7 @@ import { supabase } from '../../api/src/config/db.js';
 class StateChannelService {
     constructor() {
         this.provider = new ethers.JsonRpcProvider(process.env.POLYGON_RPC_URL);
-        this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider);
+        this.wallet = new ethers.Wallet(process.env.RELAYER_WALLET_PRIVATE_KEY, this.provider);
         this.channelAddress = process.env.STATE_CHANNEL_ADDRESS;
 
         this.channelABI = [
