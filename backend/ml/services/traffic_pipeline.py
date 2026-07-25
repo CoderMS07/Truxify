@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, Column, String, Float, DateTime, Integer, Boolean
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
 import tensorflow as tf
 from tensorflow import keras
