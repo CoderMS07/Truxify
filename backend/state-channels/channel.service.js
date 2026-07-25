@@ -37,7 +37,7 @@ class StateChannelService {
 
     async openChannel(participantA, participantB) {
         try {
-            const tx = await this.channel.openChannel(participantB, {
+            const tx = await this.channel.openChannel(participantA, participantB, {
                 gasLimit: 200000
             });
             const receipt = await tx.wait();
