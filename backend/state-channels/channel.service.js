@@ -283,8 +283,8 @@ class StateChannelService {
 
     async getChannelStats() {
         const channels = [];
-        for (const [id, _] of this.channelCache) {
-            channels.push(await this.getChannel(id));
+        for (const [id, cached] of this.channelCache) {
+            if (cached) channels.push(cached);
         }
 
         return {
