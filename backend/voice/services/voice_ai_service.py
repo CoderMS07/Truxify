@@ -325,7 +325,7 @@ class VoiceAIService:
                 'transcription': transcription,
                 'intent': intent,
                 'response_text': response_text,
-                'response_audio': response_audio.hex() if response_audio else None,
+                'response_audio': base64.b64encode(response_audio).decode('utf-8') if response_audio else None,
                 'timestamp': datetime.now().isoformat()
             }
             
