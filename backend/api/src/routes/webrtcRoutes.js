@@ -131,6 +131,13 @@ router.post('/webrtc/sync/:peerId', authenticate, userLimiter, requirePolicy('we
       });
     }
 
+    if (!signaling.canUserAccessPeer(peerId, req.user)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied for requested peer'
+      });
+    }
+
     await signaling.syncOfflineData(peerId);
     res.json({
       success: true,

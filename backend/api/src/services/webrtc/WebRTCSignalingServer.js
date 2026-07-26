@@ -371,6 +371,13 @@ class WebRTCSignalingServer {
     };
   }
 
+  canUserAccessPeer(peerId, user) {
+    if (user?.role === 'admin') return true;
+
+    const peer = this.peers.get(peerId);
+    return Boolean(peer && peer.userId === user?.id);
+  }
+
   async getOfflineGPSData(peerId, since) {
     const { data } = await supabase
       .from('gps_offline_data')
