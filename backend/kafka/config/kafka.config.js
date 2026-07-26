@@ -43,6 +43,10 @@ export const CONSUMER_GROUPS = {
 };
 
 class KafkaConfig {
+  get kafka() {
+    return kafka;
+  }
+
   constructor() {
     this.producer = null;
     this.consumers = new Map();
