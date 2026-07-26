@@ -262,11 +262,12 @@ class FraudDetectionService {
 
     // 4. Check event frequency
     if (profile.events.length > 50) {
-      const timeSpan = Date.now() - profile.events[0].timestamp;
-      const eventsPerMinute = (profile.events.length / (timeSpan / 60000));
+      const recentWindow = 60000; // 1 minute
+      const cutoff = Date.now() - recentWindow;
+      const recentCount = profile.events.filter(e => e.timestamp > cutoff).length;
       
       // Too many events = bot
-      if (eventsPerMinute > 60) {
+      if (recentCount > 60) {
         riskScore += 0.3;
       }
     }
