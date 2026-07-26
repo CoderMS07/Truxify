@@ -369,6 +369,10 @@ class OrderService {
     }
   }
 
+  void dispose() {
+    _apiClient.close();
+  }
+
   Future<Map<String, dynamic>> fetchOrderRoute(String orderDisplayId) async {
     try {
       final body = await _apiClient.get(
