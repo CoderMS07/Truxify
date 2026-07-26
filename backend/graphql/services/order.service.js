@@ -2,8 +2,47 @@ import { ApolloServer } from '@apollo/server';
 import { startStandaloneServer } from '@apollo/server/standalone';
 import { buildSubgraphSchema } from '@apollo/federation';
 import { gql } from 'graphql-tag';
-import { supabase } from '../../api/src/config/db.js';
-import logger from '../../api/src/middleware/logger.js';
+import { supabase } from '../api/src/config/db.js';
+import logger from '../api/src/middleware/logger.js';
+
+const ADMIN_ROLES = new Set(['ADMIN', 'admin']);
+
+function requireUser(user) {
+    if (!user?.id) {
+        throw new Error('Authentication required');
+    }
+    return user;
+}
+
+function isAdmin(user) {
+    return ADMIN_ROLES.has(user?.role);
+}
+
+const ADMIN_ROLES = new Set(['ADMIN', 'admin']);
+
+function requireUser(user) {
+    if (!user?.id) {
+        throw new Error('Authentication required');
+    }
+    return user;
+}
+
+function isAdmin(user) {
+    return ADMIN_ROLES.has(user?.role);
+}
+
+function mapOrder(row) {
+    if (!row) return row;
+
+    return {
+        ...row,
+        customerId: row.customerId ?? row.customer_id,
+        driverId: row.driverId ?? row.driver_id,
+        cargoType: row.cargoType ?? row.cargo_type,
+        createdAt: row.createdAt ?? row.created_at,
+        updatedAt: row.updatedAt ?? row.updated_at,
+    };
+}
 
 const typeDefs = gql`
     extend type Query {
@@ -95,21 +134,34 @@ const typeDefs = gql`
 const resolvers = {
     Query: {
         order: async (_, { id }, { user }) => {
+            const currentUser = requireUser(user);
+
             // Fetch order from database
-            const { data, error } = await supabase
+            let query = supabase
                 .from('orders')
                 .select('*')
-                .eq('id', id)
-                .single();
+                .eq('id', id);
+
+            if (!isAdmin(currentUser)) {
+                query = query.eq('customer_id', currentUser.id);
+            }
+
+            const { data, error } = await query.single();
             
             if (error) throw error;
-            return data;
+            return mapOrder(data);
         },
         orders: async (_, { status, limit = 10, offset = 0 }, { user }) => {
+            const currentUser = requireUser(user);
+
             let query = supabase
                 .from('orders')
                 .select('*')
                 .range(offset, offset + limit - 1);
+
+            if (!isAdmin(currentUser)) {
+                query = query.eq('customer_id', currentUser.id);
+            }
             
             if (status) {
                 query = query.eq('status', status);
@@ -117,25 +169,31 @@ const resolvers = {
             
             const { data, error } = await query;
             if (error) throw error;
-            return data;
+            return data.map(mapOrder);
         },
         ordersByCustomer: async (_, { customerId }, { user }) => {
+            const currentUser = requireUser(user);
+            const scopedCustomerId = isAdmin(currentUser) ? customerId : currentUser.id;
+
             const { data, error } = await supabase
                 .from('orders')
                 .select('*')
-                .eq('customer_id', customerId)
+                .eq('customer_id', scopedCustomerId)
                 .order('created_at', { ascending: false });
             
             if (error) throw error;
-            return data;
+            return data.map(mapOrder);
         }
     },
     Mutation: {
         createOrder: async (_, { input }, { user }) => {
+            const currentUser = requireUser(user);
+            const customerId = isAdmin(currentUser) ? input.customerId : currentUser.id;
+
             const { data, error } = await supabase
                 .from('orders')
                 .insert([{
-                    customer_id: input.customerId,
+                    customer_id: customerId,
                     pickup: input.pickup,
                     dropoff: input.dropoff,
                     weight: input.weight,
@@ -149,39 +207,54 @@ const resolvers = {
                 .single();
             
             if (error) throw error;
-            return data;
+            return mapOrder(data);
         },
         updateOrder: async (_, { id, input }, { user }) => {
-            const { data, error } = await supabase
+            const currentUser = requireUser(user);
+            const updates = {
+                status: input.status,
+                pickup: input.pickup || undefined,
+                dropoff: input.dropoff || undefined,
+                updated_at: new Date().toISOString()
+            };
+
+            if (isAdmin(currentUser)) {
+                updates.driver_id = input.driverId || undefined;
+            }
+
+            let query = supabase
                 .from('orders')
-                .update({
-                    status: input.status,
-                    pickup: input.pickup || undefined,
-                    dropoff: input.dropoff || undefined,
-                    driver_id: input.driverId || undefined,
-                    updated_at: new Date().toISOString()
-                })
-                .eq('id', id)
-                .select()
-                .single();
+                .update(updates)
+                .eq('id', id);
+
+            if (!isAdmin(currentUser)) {
+                query = query.eq('customer_id', currentUser.id);
+            }
+
+            const { data, error } = await query.select().single();
             
             if (error) throw error;
-            return data;
+            return mapOrder(data);
         },
         cancelOrder: async (_, { id, reason }, { user }) => {
-            const { data, error } = await supabase
+            const currentUser = requireUser(user);
+            let query = supabase
                 .from('orders')
                 .update({
                     status: 'CANCELLED',
                     cancellation_reason: reason,
                     updated_at: new Date().toISOString()
                 })
-                .eq('id', id)
-                .select()
-                .single();
+                .eq('id', id);
+
+            if (!isAdmin(currentUser)) {
+                query = query.eq('customer_id', currentUser.id);
+            }
+
+            const { data, error } = await query.select().single();
             
             if (error) throw error;
-            return data;
+            return mapOrder(data);
         }
     },
     Order: {

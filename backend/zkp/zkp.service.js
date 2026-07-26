@@ -1,13 +1,13 @@
 import { ethers } from 'ethers';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
-import logger from '../../api/src/middleware/logger.js';
-import { supabase } from '../../api/src/config/db.js';
+import logger from '../api/src/middleware/logger.js';
+import { supabase } from '../api/src/config/db.js';
 
 class ZKPService {
     constructor() {
         this.provider = new ethers.JsonRpcProvider(process.env.POLYGON_RPC_URL);
-        this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider);
+        this.wallet = new ethers.Wallet(process.env.RELAYER_WALLET_PRIVATE_KEY, this.provider);
         this.zkpAddress = process.env.ZKP_CONTRACT_ADDRESS;
 
         this.zkpABI = [
@@ -110,8 +110,8 @@ class ZKPService {
 
             return {
                 success: true,
-                proof: `0x${proof.toString('hex')}`,
-                publicInputs: `0x${publicInputs.toString('hex')}`,
+                proof: `0x${ethers.hexlify(proof)}`,
+                publicInputs: `0x${ethers.hexlify(publicInputs)}`,
                 timestamp: new Date().toISOString()
             };
         } catch (error) {

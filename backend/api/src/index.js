@@ -9,6 +9,7 @@ import { globalLimiter, authLimiter, healthLimiter } from './middleware/rateLimi
 import tripRoutes from './routes/tripRoutes.js'
 import deviceRoutes from './routes/deviceRoutes.js'
 import documentRoutes from './routes/documentRoutes.js'
+import securityHeaderDuplicates from './middleware/securityHeaderDuplicates.js';
 import maintenancePhotoRoutes from './routes/maintenancePhotoRoutes.js'
 
 import { closeDbConnections, waitForMongoDb, validateConfig } from './config/db.js'
@@ -17,12 +18,6 @@ import { closeWebSocketServer, initWebSocketServer } from './sockets/tracker.js'
 import { initLocationServer, closeLocationServer } from './sockets/locationServer.js'
 import { startEscrowReleaseReconciliation, stopEscrowReleaseReconciliation } from './services/escrowReleaseReconciliation.js'
 import { validateEscrowSetup } from './services/escrow.js'
-import { startDlqWorker } from './workers/dlqWorker.js'
-
-import {
-  requestIdMiddleware,
-  securityHeaders,
-} from "./middleware/index.js";
 
 // Load REST routes
 import orderRoutes from './routes/orderRoutes.js'
@@ -58,6 +53,15 @@ import shardManager from './services/sharding/ShardManager.js'
 // 🆕 WEBRTC P2P MESH NETWORK ROUTES
 // ============================================================================
 import webrtcRoutes from './routes/webrtcRoutes.js'
+
+// ============================================================================
+// 🆕 ROOT SUBSYSTEM ROUTES (eBPF, WASI, WASM, Snyk, Liquibase)
+// ============================================================================
+import ebpfRoutes from '../../ebpf/routes.js'
+import wasiRoutes from '../../wasi/routes.js'
+import wasmRoutes from '../../wasm/routes.js'
+import snykRoutes from '../../snyk/routes.js'
+import liquibaseRoutes from '../../database/liquibase/routes.js'
 import { initWebRTCSignaling, closeWebRTCSignaling } from './sockets/webrtc.js'
 
 // ============================================================================
@@ -66,6 +70,7 @@ import { initWebRTCSignaling, closeWebRTCSignaling } from './sockets/webrtc.js'
 import fraudRoutes from './routes/fraudRoutes.js'
 import { fraudDetectionMiddleware, networkAnalysisMiddleware } from './middleware/fraudMiddleware.js'
 import fraudDetection from './services/fraud/FraudDetectionService.js'
+import headerSizeMonitor from './middleware/headerSizeMonitor.js';
 
 // ============================================================================
 // 🆕 ZK-PROOFS FOR DRIVER KYC
@@ -110,6 +115,7 @@ import {
   startDlqWorker,
   stopDlqWorker,
 } from './workers/dlqWorker.js'
+import { startStaleOrderWorker } from './workers/staleOrderWorker.js'
 import './subscribers/reputationSubscriber.js'
 
 // Configuration load from root folder is handled in db.js
@@ -237,7 +243,7 @@ validateEscrowSetup().then((valid) => {
 
 const app = express()
 const server = http.createServer(app)
-
+app.use(headerSizeMonitor);
 // Trust proxy required for rate-limiting behind load balancers/Docker.
 // TRUST_PROXY env var allows each deployment to set the correct proxy count:
 //   - Production (behind Nginx/ALB/Cloudflare) → 1 (default)
@@ -250,6 +256,7 @@ app.set('trust proxy', trustProxy)
 // 🔒 ADVANCED SECURITY HEADERS (HELMET CONFIGURATION)
 // Resolves missing security headers from Issues #361 and #944
 // ============================================================================
+app.use(securityHeaderDuplicates);
 app.use(helmet({
   // Content Security Policy (CSP) - Prevents XSS and data injection
   contentSecurityPolicy: {
@@ -313,7 +320,6 @@ const jsonBodyLimit =
 
 const urlEncodedBodyLimit =
   process.env.URLENCODED_BODY_LIMIT || '1mb';
-const jsonBodyLimit = process.env.JSON_BODY_LIMIT || '1mb';
 
 app.use(
   express.json({
@@ -326,10 +332,6 @@ app.use(
   express.urlencoded({
     extended: true,
     limit: urlEncodedBodyLimit,
-app.use(
-  express.urlencoded({
-    extended: true,
-    limit: jsonBodyLimit,
   })
 );
 
@@ -453,6 +455,15 @@ app.get('/api/shard/health', async (req, res) => {
 // 🆕 WEBRTC P2P MESH NETWORK ROUTES
 // ============================================================================
 app.use('/api', webrtcRoutes)
+
+// ============================================================================
+// 🆕 ROOT SUBSYSTEM ROUTES (eBPF, WASI, WASM, Snyk, Liquibase)
+// ============================================================================
+app.use('/api', ebpfRoutes)
+app.use('/api', wasiRoutes)
+app.use('/api', wasmRoutes)
+app.use('/api', snykRoutes)
+app.use('/api', liquibaseRoutes)
 
 // 🆕 WebRTC Health Check Endpoint
 app.get('/api/webrtc/status', (req, res) => {
@@ -594,6 +605,7 @@ server.listen(PORT, () => {
   startEscrowRefundReconciliation(orderRepository)
   startReputationReconciliation(orderRepository)
   startDlqWorker()
+  startStaleOrderWorker()
   startDocumentExpiryWorker()
 })
 
