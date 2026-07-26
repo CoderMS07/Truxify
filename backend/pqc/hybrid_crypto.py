@@ -44,7 +44,7 @@ class HybridCrypto:
         # Combine keys
         hybrid_keys = {
             'classical': {
-                'public': hybrid_key['classical']['public'],
+                'public': self.classical_key.public_key(),
                 'private': self.classical_key
             },
             'quantum': self.quantum_key,

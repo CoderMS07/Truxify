@@ -120,3 +120,77 @@ test('run function performs additions and removals correctly', async () => {
   assert.deepEqual(addedLabels[102], undefined);
   assert.deepEqual(removedLabels[102].sort(), ['gssoc:approved', 'level:beginner'].sort());
 });
+
+test('deduplicateTypeLabels keeps the dominant type label by file-change score', () => {
+  const { deduplicateTypeLabels } = require('./retro-labeler');
+  const rules = {
+    typeLabelPriority: [
+      'type:security', 'type:performance', 'type:bug', 'type:feature',
+      'type:refactor', 'type:testing', 'type:design', 'type:devops',
+      'type:docs', 'type:accessibility'
+    ],
+    pathRules: [
+      { pattern: '(^test/|/test/|\\.test\\.|_test\\.)', labels: ['type:testing'] },
+      { pattern: '(^docs/|README|CONTRIBUTING|\\.md$)', labels: ['type:docs'] }
+    ],
+    titleRules: [
+      { pattern: '^(test|tests)', labels: ['type:testing'] }
+    ]
+  };
+
+  const result = deduplicateTypeLabels({
+    currentLabels: [{ name: 'type:testing' }, { name: 'type:docs' }, { name: 'type:bug' }],
+    changedFiles: [
+      'backend/api/test/unit/a.test.js',
+      'backend/api/test/unit/b.test.js',
+      'docs/README.md'
+    ],
+    prTitle: 'test: add unit tests',
+    rules
+  });
+
+  assert.equal(result.toKeep, 'type:testing');
+  assert.deepEqual(result.toRemove.sort(), ['type:bug', 'type:docs'].sort());
+});
+
+test('deduplicateTypeLabels uses priority tiebreaker when scores are equal', () => {
+  const { deduplicateTypeLabels } = require('./retro-labeler');
+  const rules = {
+    typeLabelPriority: [
+      'type:security', 'type:performance', 'type:bug', 'type:feature',
+      'type:refactor', 'type:testing', 'type:design', 'type:devops',
+      'type:docs', 'type:accessibility'
+    ],
+    pathRules: [],
+    titleRules: []
+  };
+
+  const result = deduplicateTypeLabels({
+    currentLabels: [{ name: 'type:bug' }, { name: 'type:security' }],
+    changedFiles: [],
+    prTitle: 'misc change',
+    rules
+  });
+
+  assert.equal(result.toKeep, 'type:security');
+  assert.deepEqual(result.toRemove, ['type:bug']);
+});
+
+test('deduplicateTypeLabels returns no changes when 0 or 1 contested type labels', () => {
+  const { deduplicateTypeLabels } = require('./retro-labeler');
+  const rules = { typeLabelPriority: [
+    'type:security', 'type:performance', 'type:bug', 'type:feature',
+    'type:refactor', 'type:testing', 'type:design', 'type:devops',
+    'type:docs', 'type:accessibility'
+  ]};
+
+  const result = deduplicateTypeLabels({
+    currentLabels: [{ name: 'type:bug' }, { name: 'type:api' }],
+    changedFiles: [],
+    prTitle: 'fix: something',
+    rules
+  });
+
+  assert.equal(result.toKeep, 'type:bug');
+  assert.deepEqual(result.toRemove, []);
+});

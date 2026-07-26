@@ -58,8 +58,6 @@ class FcmService {
       debugPrint('[FCM] Already initialized, skipping.');
       return;
     }
-    _initialized = true;
-
     try {
       final messaging = FirebaseMessaging.instance;
 
@@ -95,7 +93,9 @@ class FcmService {
 
       // ── Tap on background notification ──
       FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationTap);
+      _initialized = true;
     } catch (e) {
+      _initialized = false;
       debugPrint('[FCM] Initialization or registration failed: $e');
     }
   }

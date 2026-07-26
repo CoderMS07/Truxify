@@ -137,21 +137,21 @@ class _PublicTrackingScreenState extends State<PublicTrackingScreen> {
     final lat = _order?['pickup_lat'];
     final lng = _order?['pickup_lng'];
     if (lat == null || lng == null) return null;
-    return LatLng((lat as num).toDouble(), (lng as num).toDouble());
+    return LatLng(double.tryParse(lat.toString()) ?? 0.0, double.tryParse(lng.toString()) ?? 0.0);
   }
 
   LatLng? _getDropLatLng() {
     final lat = _order?['drop_lat'];
     final lng = _order?['drop_lng'];
     if (lat == null || lng == null) return null;
-    return LatLng((lat as num).toDouble(), (lng as num).toDouble());
+    return LatLng(double.tryParse(lat.toString()) ?? 0.0, double.tryParse(lng.toString()) ?? 0.0);
   }
 
   LatLng? _getDriverLatLng() {
     final lat = _driverLocation?['latitude'];
     final lng = _driverLocation?['longitude'];
     if (lat == null || lng == null) return null;
-    return LatLng((lat as num).toDouble(), (lng as num).toDouble());
+    return LatLng(double.tryParse(lat.toString()) ?? 0.0, double.tryParse(lng.toString()) ?? 0.0);
   }
 
   @override

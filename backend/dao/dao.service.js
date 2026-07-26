@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
 import { v4 as uuidv4 } from 'uuid';
-import logger from '../../api/src/middleware/logger.js';
-import { supabase } from '../../api/src/config/db.js';
+import logger from '../api/src/middleware/logger.js';
+import { supabase } from '../api/src/config/db.js';
 
 class DAOService {
     constructor() {
@@ -84,7 +84,16 @@ class DAOService {
             );
             const receipt = await tx.wait();
 
-            const proposalId = await this.dao.getTotalProposals();
+            // Parse proposal ID from ProposalCreated event
+            const eventLog = receipt.logs.find(log => {
+                try {
+                    const parsed = this.dao.interface.parseLog(log);
+                    return parsed.name === 'ProposalCreated';
+                } catch { return false; }
+            });
+            const proposalId = eventLog
+                ? this.dao.interface.parseLog(eventLog).args[0]
+                : (await this.dao.getTotalProposals()) - 1n;
 
             await this.storeProposal({
                 ...proposalData,
