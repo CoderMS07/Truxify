@@ -167,6 +167,21 @@ class TokenizationService {
         }
     }
 
+    async getTradeOrder(assetId, orderIndex) {
+        try {
+            const order = await this.token.getTradeOrder(assetId, orderIndex);
+            return {
+                maker: order.maker,
+                price: ethers.formatEther(order.price),
+                amount: ethers.formatEther(order.amount),
+                filled: order.filled
+            };
+        } catch (error) {
+            logger.error('Failed to get trade order:', error);
+            throw error;
+        }
+    }
+
     async executeTradeOrder(assetId, orderIndex, buyerAddress) {
         try {
             const order = await this.getTradeOrder(assetId, orderIndex);
