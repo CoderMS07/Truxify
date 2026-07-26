@@ -135,8 +135,8 @@ import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter, createStore } from '../middleware/rateLimiter.js';
 import { checkBypassEligibility } from '../services/weighStationService.js';
 
-import { validateBody, validateParams } from '../middleware/validate.js';
-import { driverOnlineSchema, withdrawSchema, uuidParamSchema, paramIdSchema, predictDriverProfitSchema, uuidSchema } from '../validation/requestSchemas.js';
+import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
+import { driverOnlineSchema, withdrawSchema, uuidParamSchema, paramIdSchema, predictDriverProfitSchema, uuidSchema, driverIdParamSchema, driverStatementSchema } from '../validation/requestSchemas.js';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import logger from '../middleware/logger.js';
@@ -1050,7 +1050,7 @@ router.post(
  *       404:
  *         description: Driver not found
  */
-router.get('/:driverId/reputation', authenticate, userLimiter, requirePolicy('driver:view-reputation'), validateParams(uuidParamSchema), async (req, res) => {
+router.get('/:driverId/reputation', authenticate, userLimiter, requirePolicy('driver:view-reputation'), validateParams(driverIdParamSchema), async (req, res) => {
   const { driverId } = req.params;
 
   if (driverId !== req.user.id) {
@@ -1122,6 +1122,206 @@ router.get('/:driverId/reputation', authenticate, userLimiter, requirePolicy('dr
     logger.error(`[reputation] Unexpected error retrieving reputation for driver ${driverId}: ${err.message}`);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
+});
+
+// Helper to sanitize CSV cells to prevent CSV Formula Injection
+function sanitizeCsvCell(value) {
+  if (value === null || value === undefined) return '""';
+  let str = String(value);
+  // Strip CR/LF to prevent injection
+  str = str.replace(/[\r\n]+/g, ' ');
+  // Neutralize leading formula/risky characters by prefixing with a single quote
+  if (/^[=+\-@\t\r]/.test(str)) {
+    str = `'` + str;
+  }
+  return `"${str.replace(/"/g, '""')}"`;
+}
+
+// Shared handler for statement and earnings report
+async function handleDriverEarningsAndStatement(req, res, filename, errorLabel) {
+  const userId = req.user.id;
+  const { start_date, end_date, sort_by, format } = req.query;
+
+  try {
+    let query = supabase
+      .from('orders')
+      .select('id, order_display_id, status, pickup_address, drop_address, pickup_date, base_freight, toll_estimate, platform_fee')
+      .eq('driver_id', userId)
+      .in('status', ['delivered', 'payment_released'])
+      .limit(1000);
+
+    if (start_date) {
+      query = query.gte('pickup_date', start_date);
+    }
+    if (end_date) {
+      query = query.lte('pickup_date', end_date);
+    }
+
+    const { data: trips, error } = await query.order('pickup_date', { ascending: false });
+
+    if (error) {
+      logger.error({ err: error }, errorLabel);
+      return res.status(500).json({ error: 'Failed to fetch statement records.' });
+    }
+
+    // Compute totals
+    let totalBaseFreight = 0;
+    let totalPlatformFees = 0;
+    let totalTollEstimate = 0;
+    let totalNetEarnings = 0;
+
+    const tripsList = (trips || []).map(trip => {
+      const baseFreight = Number(trip.base_freight) || 0;
+      const platformFee = Number(trip.platform_fee) || 0;
+      const tollEstimate = Number(trip.toll_estimate) || 0;
+      const netEarnings = baseFreight - platformFee;
+
+      totalBaseFreight += baseFreight;
+      totalPlatformFees += platformFee;
+      totalTollEstimate += tollEstimate;
+      totalNetEarnings += netEarnings;
+
+      return {
+        id: trip.id,
+        order_display_id: trip.order_display_id,
+        pickup_address: trip.pickup_address,
+        drop_address: trip.drop_address,
+        pickup_date: trip.pickup_date,
+        base_freight: baseFreight,
+        platform_fee: platformFee,
+        toll_estimate: tollEstimate,
+        net_earnings: netEarnings,
+        status: trip.status
+      };
+    });
+
+    // Apply sorting before formatting output
+    if (sort_by === 'net_earnings') {
+      tripsList.sort((a, b) => (b.net_earnings - a.net_earnings) || new Date(b.pickup_date) - new Date(a.pickup_date));
+    } else if (sort_by === 'base_freight') {
+      tripsList.sort((a, b) => (b.base_freight - a.base_freight) || new Date(b.pickup_date) - new Date(a.pickup_date));
+    }
+
+    if (format === 'csv') {
+      const headers = ['ID', 'Order Display ID', 'Pickup Address', 'Drop Address', 'Pickup Date', 'Base Freight', 'Platform Fee', 'Toll Estimate', 'Net Earnings', 'Status'];
+      let csvString = headers.map(sanitizeCsvCell).join(',') + '\n';
+      for (const t of tripsList) {
+        const row = [t.id, t.order_display_id, t.pickup_address, t.drop_address, t.pickup_date, t.base_freight, t.platform_fee, t.toll_estimate, t.net_earnings, t.status];
+        csvString += row.map(sanitizeCsvCell).join(',') + '\n';
+      }
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      return res.send(csvString.trimEnd());
+    }
+
+    res.json({
+      summary: {
+        total_trips: tripsList.length,
+        total_base_freight: totalBaseFreight,
+        total_platform_fees: totalPlatformFees,
+        total_toll_estimate: totalTollEstimate,
+        total_net_earnings: totalNetEarnings
+      },
+      trips: tripsList
+    });
+  } catch (err) {
+    logger.error({ err }, errorLabel);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+}
+
+// ============================================================================
+// 10. GET DRIVER STATEMENT (DRIVER)
+// ============================================================================
+/**
+ * @openapi
+ * /api/driver/statement:
+ *   get:
+ *     tags: [Driver]
+ *     summary: Get driver statement
+ *     description: Returns aggregated earnings and list of trips for the authenticated driver.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: start_date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Start date filter (YYYY-MM-DD)
+ *       - in: query
+ *         name: end_date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: End date filter (YYYY-MM-DD)
+ *       - in: query
+ *         name: sort_by
+ *         schema:
+ *           type: string
+ *           enum: [pickup_date, net_earnings, base_freight]
+ *         description: Sort field
+ *       - in: query
+ *         name: format
+ *         schema:
+ *           type: string
+ *           enum: [json, csv]
+ *         description: Output format (json or csv)
+ *     responses:
+ *       200:
+ *         description: Driver statement response
+ *       500:
+ *         description: Internal Server Error
+ */
+router.get('/statement', authenticate, requirePolicy('profile:view-statement'), userLimiter, validateQuery(driverStatementSchema), async (req, res) => {
+  await handleDriverEarningsAndStatement(req, res, 'statement.csv', '[DriverRoutes] Driver statement fetch error');
+});
+
+// ============================================================================
+// 11. GET DRIVER EARNINGS REPORT (DRIVER)
+// ============================================================================
+/**
+ * @openapi
+ * /api/driver/earnings/report:
+ *   get:
+ *     tags: [Driver]
+ *     summary: Get driver earnings report
+ *     description: Returns aggregated earnings and list of trips for the authenticated driver.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: start_date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Start date filter (YYYY-MM-DD)
+ *       - in: query
+ *         name: end_date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: End date filter (YYYY-MM-DD)
+ *       - in: query
+ *         name: sort_by
+ *         schema:
+ *           type: string
+ *           enum: [pickup_date, net_earnings, base_freight]
+ *         description: Sort field
+ *       - in: query
+ *         name: format
+ *         schema:
+ *           type: string
+ *           enum: [json, csv]
+ *         description: Output format (json or csv)
+ *     responses:
+ *       200:
+ *         description: Driver earnings report response
+ *       500:
+ *         description: Internal Server Error
+ */
+router.get('/earnings/report', authenticate, requirePolicy('driver:view-earnings'), userLimiter, validateQuery(driverStatementSchema), async (req, res) => {
+  await handleDriverEarningsAndStatement(req, res, 'earnings_report.csv', '[DriverRoutes] Driver earnings report fetch error');
 });
 
 
