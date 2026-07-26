@@ -3,7 +3,7 @@ import random
 from datetime import datetime
 from typing import Dict, Any, Optional
 from sqlalchemy import create_engine, Column, String, Float, DateTime, Integer
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
 import pandas as pd
 import json

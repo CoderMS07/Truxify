@@ -1,4 +1,5 @@
 import os
+import base64
 import json
 import asyncio
 import logging
@@ -263,7 +264,7 @@ class VoiceAIService:
             # Cache in Redis
             cache_key = f"voice:tts:{hash(text)}:{language_code}"
             self.redis.setex(cache_key, 3600, json.dumps({
-                'audio': audio,
+                'audio': base64.b64encode(audio).decode('utf-8') if isinstance(audio, bytes) else audio,
                 'timestamp': datetime.now().isoformat()
             }))
             
@@ -318,13 +319,14 @@ class VoiceAIService:
                 'timestamp': datetime.now().isoformat()
             })
             
+            await self.increment_language_usage(detection)
             return {
                 'success': True,
                 'detected_language': detection,
                 'transcription': transcription,
                 'intent': intent,
                 'response_text': response_text,
-                'response_audio': response_audio.hex() if response_audio else None,
+                'response_audio': base64.b64encode(response_audio).decode('utf-8') if response_audio else None,
                 'timestamp': datetime.now().isoformat()
             }
             

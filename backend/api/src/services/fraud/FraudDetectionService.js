@@ -131,7 +131,7 @@ class FraudDetectionService {
       .from('behavioral_profiles')
       .select('*')
       .eq('user_id', userId)
-      .single();
+      .maybeSingle();
 
     if (data) {
       // Normalize: DB returns user_id, code expects userId
@@ -618,7 +618,7 @@ class FraudDetectionService {
           created_at: new Date().toISOString()
         }])
         .select()
-        .single();
+        .maybeSingle();
 
       logger.info(`User ${userId} added to review queue`, { reason, riskScore });
       return data;
@@ -652,7 +652,7 @@ class FraudDetectionService {
       })
       .eq('id', reviewId)
       .select()
-      .single();
+      .maybeSingle();
 
     return data;
   }

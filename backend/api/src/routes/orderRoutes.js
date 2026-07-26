@@ -149,6 +149,7 @@ import { mongoDb, supabase, redisClient, createUserClient } from '../config/db.j
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { validateDocumentBuffer } from '../lib/documentValidation.js';
+import { scanDocument } from '../lib/malwareScanner.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { z } from 'zod';
 import {
@@ -186,9 +187,32 @@ import {
 } from '../core/container.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
 import { computeOrderPricing } from '../lib/pricing.js';
+import { getEscrowBookingId } from '../services/escrow.js';
 
 const router = express.Router();
 router.use(userLimiter);
+const LOAD_OFFER_CACHE_TTL_SECONDS = 120;
+
+async function readLoadOfferCache(cacheKey) {
+  if (!redisClient) return null;
+
+  try {
+    const cached = await redisClient.get(cacheKey);
+    if (!cached) return null;
+
+    const parsed = JSON.parse(cached);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (err) {
+    logger.warn(`[orderRoutes] Ignoring malformed load-offer cache entry for ${cacheKey}: ${err.message}`);
+    await redisClient.del(cacheKey).catch(() => {});
+    return null;
+  }
+}
+
+async function writeLoadOfferCache(cacheKey, offers) {
+  if (!redisClient) return;
+  await redisClient.set(cacheKey, JSON.stringify(offers), 'EX', LOAD_OFFER_CACHE_TTL_SECONDS).catch(() => {});
+}
 
 const verifyDeliveryLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -335,7 +359,13 @@ router.get('/my/active', authenticate, userLimiter, requirePolicy('order:view-ac
 router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+  const cacheKey = `load-offers:${page}:${limit}`;
   try {
+    const cachedOffers = await readLoadOfferCache(cacheKey);
+    if (cachedOffers) {
+      return res.json(cachedOffers);
+    }
+
     const { data: offers, error } = await orderRepository.findLoadOffers(
       { is_en_route: false },
       { pagination: { page, limit } }
@@ -343,10 +373,7 @@ router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
 
     if (error) return res.status(500).json({ error: 'Failed to fetch load offers.', details: error.message });
 
-    const cacheKey = `load-offers:${page}:${limit}`;
-    if (redisClient) {
-      await redisClient.set(cacheKey, JSON.stringify(offers), 'EX', 120).catch(() => {});
-    }
+    await writeLoadOfferCache(cacheKey, offers);
 
     res.json(offers);
   } catch (err) {
@@ -374,7 +401,13 @@ router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
 router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+  const cacheKey = `load-offers:en-route:${page}:${limit}`;
   try {
+    const cachedOffers = await readLoadOfferCache(cacheKey);
+    if (cachedOffers) {
+      return res.json(cachedOffers);
+    }
+
     const { data: offers, error } = await orderRepository.findLoadOffers(
       { is_en_route: true },
       { pagination: { page, limit } }
@@ -382,10 +415,7 @@ router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) 
 
     if (error) return res.status(500).json({ error: 'Failed to fetch en-route loads.', details: error.message });
 
-    const cacheKey = `load-offers:en-route:${page}:${limit}`;
-    if (redisClient) {
-      await redisClient.set(cacheKey, JSON.stringify(offers), 'EX', 120).catch(() => {});
-    }
+    await writeLoadOfferCache(cacheKey, offers);
 
     res.json(offers);
   } catch (err) {
@@ -1154,8 +1184,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
   const { txHash } = req.body;
 
   const lockKey = `escrow_lock:${orderId}`;
-  let lockValue = null;
-  lockValue = await acquireLock(lockKey, 120000);
+  const lockValue = await acquireLock(lockKey, 120000);
   if (!lockValue) {
     return res.status(409).json({ error: 'Another deposit confirmation is in progress for this order. Please try again.' });
   }
@@ -1169,7 +1198,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
 
     const { data: customerProfile } = await orderRepository.findCustomerWallet(req.user.id);
     const customerWallet = customerProfile?.polygon_wallet_address ?? null;
-    const bookingId = order.escrow_booking_id || getEscrowBookingId(order.order_display_id);
+    const bookingId = order.escrow_booking_id || (order.order_display_id ? `escrow:${order.order_display_id}` : orderId);
     const result = await recordDepositTx(bookingId, txHash, customerWallet);
 
     if (result.error) {
@@ -1458,6 +1487,17 @@ function computeFileHash(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
+async function validateAndScanPodFile(file, label) {
+  validateDocumentBuffer(file.buffer, file.mimetype);
+  const scanResult = await scanDocument(file.buffer);
+
+  if (!scanResult.clean) {
+    const err = new Error(`${label} file failed malware scanning.`);
+    err.status = 422;
+    throw err;
+  }
+}
+
 // POST /api/orders/:id/pod
 router.post('/:id/pod', authenticate, requireRole(['driver']), podUpload.fields([{ name: 'signature', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
   try {
@@ -1476,9 +1516,9 @@ router.post('/:id/pod', authenticate, requireRole(['driver']), podUpload.fields(
     if (files.signature && files.signature[0]) {
       const file = files.signature[0];
       try {
-        validateDocumentBuffer(file.buffer, file.mimetype);
+        await validateAndScanPodFile(file, 'Signature');
       } catch (validationErr) {
-        return res.status(400).json({ error: `Invalid signature file: ${validationErr.message}` });
+        return res.status(validationErr.status || 400).json({ error: `Invalid signature file: ${validationErr.message}` });
       }
       const ext = file.mimetype === 'image/png' ? 'png' : 'jpg';
       const storagePath = `${req.user.id}/pod_sig_${orderId}_${Date.now()}.${ext}`;
@@ -1496,9 +1536,9 @@ router.post('/:id/pod', authenticate, requireRole(['driver']), podUpload.fields(
     if (files.photo && files.photo[0]) {
       const file = files.photo[0];
       try {
-        validateDocumentBuffer(file.buffer, file.mimetype);
+        await validateAndScanPodFile(file, 'Photo');
       } catch (validationErr) {
-        return res.status(400).json({ error: `Invalid photo file: ${validationErr.message}` });
+        return res.status(validationErr.status || 400).json({ error: `Invalid photo file: ${validationErr.message}` });
       }
       const ext = file.mimetype === 'image/png' ? 'png' : 'jpg';
       const storagePath = `${req.user.id}/pod_photo_${orderId}_${Date.now()}.${ext}`;

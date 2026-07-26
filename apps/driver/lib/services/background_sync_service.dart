@@ -56,11 +56,24 @@ class BackgroundSyncService {
     if (token == null) return;
 
     const envUrl = String.fromEnvironment('TRUXIFY_API_BASE_URL');
-    assert(envUrl.isNotEmpty, 'TRUXIFY_API_BASE_URL must be set for release builds');
+    final apiBaseUri = Uri.tryParse(envUrl);
+    if (apiBaseUri == null ||
+        !apiBaseUri.hasScheme ||
+        apiBaseUri.host.isEmpty) {
+      stderr.writeln(
+        'TRUXIFY_API_BASE_URL must be set to an absolute URL for background POD sync.',
+      );
+      return;
+    }
     
     for (final pod in pendingPods) {
       try {
-        final uri = Uri.parse('$envUrl/api/orders/${pod.orderId}/pod');
+        final uri = apiBaseUri.replace(
+          path: '${apiBaseUri.path}/api/orders/${pod.orderId}/pod'
+              .replaceAll(RegExp(r'/+'), '/'),
+          query: null,
+          fragment: null,
+        );
         final request = http.MultipartRequest('POST', uri);
         request.headers['Authorization'] = 'Bearer $token';
 

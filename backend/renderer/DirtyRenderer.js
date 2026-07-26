@@ -1,5 +1,5 @@
 import FrameBuffer from './FrameBuffer.js';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../api/src/middleware/logger.js';
 
 class DirtyRenderer {
     constructor(width = 80, height = 24) {
@@ -162,31 +162,28 @@ class DirtyRenderer {
         
         while (merged) {
             merged = false;
-            const newRects = [];
+            const mergedIndices = new Set();
+            const mergedRects = [];
             
             for (let i = 0; i < rects.length; i++) {
+                if (mergedIndices.has(i)) continue;
                 let mergedRect = rects[i];
-                let hasMerged = false;
                 
                 for (let j = i + 1; j < rects.length; j++) {
+                    if (mergedIndices.has(j)) continue;
                     if (this.rectsOverlap(mergedRect, rects[j])) {
                         mergedRect = this.mergeRects(mergedRect, rects[j]);
-                        hasMerged = true;
+                        mergedIndices.add(j);
                         merged = true;
-                        break;
                     }
                 }
                 
-                if (!hasMerged) {
-                    newRects.push(mergedRect);
-                } else {
-                    // Re-check from start
-                    break;
-                }
+                mergedIndices.add(i);
+                mergedRects.push(mergedRect);
             }
             
             if (merged) {
-                rects = newRects;
+                rects = mergedRects;
             }
         }
         

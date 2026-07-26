@@ -18,6 +18,8 @@ class EarningsScreen extends StatefulWidget {
 }
 
 class _EarningsScreenState extends State<EarningsScreen> {
+  static const double _heatmapMaxDailyEarnings = 8400.0;
+
   final DriverEarningsService _earningsService = DriverEarningsService();
   final EarningsExportService _exportService = EarningsExportService();
 
@@ -823,7 +825,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
               FontWeight textWeight = FontWeight.normal;
 
               if (earnings > 0) {
-                final double scale = (earnings / 8400.0).clamp(0.0, 1.0);
+                final double scale = (earnings / _heatmapMaxDailyEarnings).clamp(0.0, 1.0);
                 final double opacity = 0.15 + (scale * 0.75);
                 cellBgColor = TruxifyColors.accent.withValues(alpha: opacity);
 
@@ -876,7 +878,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                         fontWeight: isSelected ? FontWeight.bold : textWeight,
                         color: isSelected
                             ? (earnings > 0 &&
-                                    (0.15 + (earnings / 8400.0) * 0.75) > 0.6
+                                    (0.15 + (earnings / _heatmapMaxDailyEarnings) * 0.75) > 0.6
                                 ? Colors.white
                                 : TruxifyColors.accent)
                             : textColor,
