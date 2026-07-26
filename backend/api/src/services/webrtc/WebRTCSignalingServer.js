@@ -99,16 +99,21 @@ class WebRTCSignalingServer {
 
     switch (message.type) {
       case 'location-update':
-        peer.location = message.location;
+        if (!this.isValidLocation(message.location)) {
+          logger.warn(`Invalid WebRTC location update dropped for peer ${peerId}`);
+          return;
+        }
+
+        peer.location = this.normalizeLocation(message.location);
         if (this.redis) {
           await this.redis.setex(
             `peer:${peerId}:location`,
             60,
-            JSON.stringify(message.location)
+            JSON.stringify(peer.location)
           );
         }
         // Relay location to nearby peers
-        this.relayLocation(peerId, message.location);
+        this.relayLocation(peerId, peer.location);
         break;
 
       case 'webrtc-offer':
