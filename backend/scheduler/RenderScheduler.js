@@ -113,8 +113,8 @@ class RenderScheduler extends EventEmitter {
                 queue.splice(index, 1);
                 task.status = 'cancelled';
                 this.stats.cancelledTasks++;
-                this.taskMap.delete(taskId);
                 this.emit('taskCancelled', { taskId });
+                this.taskMap.delete(taskId);
                 logger.debug(`Task ${taskId} cancelled`);
                 return true;
             }
