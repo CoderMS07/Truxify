@@ -5,7 +5,74 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+
 import 'api_client.dart';
+
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  print('[FCM] Background message: ${message.messageId}');
+  // Handle background data here
+}
+
+class FcmService {
+  static const String _baseUrl = 'http://localhost:3000'; // your Node.js API
+
+  static Future<void> initialize() async {
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+
+    // Request permission (iOS)
+    await FirebaseMessaging.instance.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+
+    // Handle foreground messages
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      print('[FCM] Foreground message: ${message.notification?.title}');
+      // TODO: Show local notification using flutter_local_notifications
+    });
+
+    // Handle notification tap when app is in background
+    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+      _handleNotificationTap(message);
+    });
+
+    // Handle notification tap when app was terminated
+    final initialMessage = await FirebaseMessaging.instance.getInitialMessage();
+    if (initialMessage != null) {
+      _handleNotificationTap(initialMessage);
+    }
+  }
+
+  static Future<void> registerTokenForUser(String userId) async {
+    final token = await FirebaseMessaging.instance.getToken();
+    if (token == null) return;
+
+    await http.post(
+      Uri.parse('$_baseUrl/api/users/fcm-token'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'userId': userId, 'fcmToken': token}),
+    );
+
+    // Refresh token listener
+    FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
+      await http.post(
+        Uri.parse('$_baseUrl/api/users/fcm-token'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'userId': userId, 'fcmToken': newToken}),
+      );
+    });
+  }
+
+  static void _handleNotificationTap(RemoteMessage message) {
+    final type = message.data['type'];
+    final loadId = message.data['loadId'];
+    // TODO: Use your app's navigator to route based on type
+    // e.g. navigatorKey.currentState?.pushNamed('/load/$loadId')
+    print('[FCM] Tapped: type=$type, loadId=$loadId');
+  }
+}
 
 class FcmService {
   static final ApiClient apiClient = ApiClient();
