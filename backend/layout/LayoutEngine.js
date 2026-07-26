@@ -1,5 +1,5 @@
 import LayoutNode from './LayoutNode.js';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../api/src/middleware/logger.js';
 
 class LayoutEngine {
     constructor() {

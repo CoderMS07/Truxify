@@ -53,6 +53,9 @@ export default function suspiciousRequests(req, res, next) {
     findings.push("Suspicious User Agent");
 
   if (findings.length) {
+    req.suspicious = true;
+    req.threatFindings = findings;
+
     logger.warn({
       requestId: req.requestId,
       ip: req.ip,
@@ -61,6 +64,13 @@ export default function suspiciousRequests(req, res, next) {
       findings,
       userAgent: ua,
     }, "Suspicious request detected");
+
+    const blocking = findings.filter(f =>
+      ['SQL Injection', 'Path Traversal'].includes(f)
+    );
+    if (blocking.length) {
+      return res.status(403).json({ error: 'Request blocked: suspicious content detected' });
+    }
   }
 
   next();

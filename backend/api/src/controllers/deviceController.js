@@ -42,14 +42,13 @@ export async function registerDeviceToken(req, res, next) {
     }
 
     const tokenErr = validateFcmToken(fcmToken);
-    return res.status(400).json(
-      errorResponse(
-        'VALIDATION_ERROR',
-        tokenErr
-      )
-    );
     if (tokenErr) {
-      return next(new ValidationError(tokenErr));
+      return res.status(400).json(
+        errorResponse(
+          'VALIDATION_ERROR',
+          tokenErr
+        )
+      );
     }
 
     const platErr = validatePlatform(platform);
@@ -199,6 +198,21 @@ export async function unregisterAllDeviceTokens(userId) {
   if (error) {
     logger.error('[DeviceController] Failed to unregister device tokens:', error.message);
     throw error;
+  }
+
+  const { error: profileError } = await supabase
+    .from('profiles')
+    .update({
+      fcm_token: null,
+      fcm_token_updated_at: new Date().toISOString(),
+    })
+    .eq('id', userId);
+
+  if (profileError) {
+    logger.error(
+      '[DeviceController] Device tokens removed but failed to clear profiles.fcm_token:',
+      profileError.message
+    );
   }
 }
 

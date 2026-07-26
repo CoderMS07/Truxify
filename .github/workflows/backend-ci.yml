@@ -1,2 +1,60 @@
+name: Backend Parallel Vitest CI
 
-# Resolves #2054: Parallelize vitest suites
+on:
+  pull_request:
+    paths:
+      - 'backend/api/**'
+      - '.github/workflows/backend-ci.yml'
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: truxify-backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Backend Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: backend/api
+        run: npm ci --workspaces=false --legacy-peer-deps
+
+      - name: Run unit tests
+        working-directory: backend/api
+        run: npm run test:unit
+
+  integration-tests:
+    name: Backend Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: backend/api
+        run: npm ci --workspaces=false --legacy-peer-deps
+
+      - name: Run integration tests
+        working-directory: backend/api
+        run: npm run test:integration

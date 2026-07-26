@@ -84,6 +84,10 @@ export const uuidParamSchema = z.object({
   id: uuidSchema
 });
 
+export const driverIdParamSchema = z.object({
+  driverId: uuidSchema
+});
+
 export const submitBidSchema = z.object({
   bid_amount: z
     .number()
