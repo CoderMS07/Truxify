@@ -181,32 +181,37 @@ class GeocodeService {
       'User-Agent': 'Truxify-Driver-App',
     };
 
-    final http.Response resp;
-    if (client != null) {
-      resp = await client.get(uri, headers: headers).timeout(AppConfig.geocodeTimeout);
-    } else {
-      resp = await http.get(uri, headers: headers).timeout(AppConfig.geocodeTimeout);
+    try {
+      final http.Response resp;
+      if (client != null) {
+        resp = await client.get(uri, headers: headers).timeout(AppConfig.geocodeTimeout);
+      } else {
+        resp = await http.get(uri, headers: headers).timeout(AppConfig.geocodeTimeout);
+      }
+      if (resp.statusCode != 200) return [];
+
+      final decoded = jsonDecode(resp.body) as List<dynamic>?;
+      if (decoded == null) return [];
+
+      return decoded
+          .map((item) {
+            if (item is! Map<String, dynamic>) return null;
+            final lat = double.tryParse('${item['lat']}');
+            final lon = double.tryParse('${item['lon']}');
+            final displayName =
+                (item['display_name'] as String?)?.trim() ?? '';
+            if (lat == null || lon == null || displayName.isEmpty) return null;
+            return SearchResult(
+              address: displayName,
+              point: LatLng(lat, lon),
+            );
+          })
+          .whereType<SearchResult>()
+          .toList();
+    } catch (e) {
+      debugPrint('[GeocodeService] searchPlaces failed: $e');
+      return [];
     }
-    if (resp.statusCode != 200) return [];
-
-    final decoded = jsonDecode(resp.body) as List<dynamic>?;
-    if (decoded == null) return [];
-
-    return decoded
-        .map((item) {
-          if (item is! Map<String, dynamic>) return null;
-          final lat = double.tryParse('${item['lat']}');
-          final lon = double.tryParse('${item['lon']}');
-          final displayName =
-              (item['display_name'] as String?)?.trim() ?? '';
-          if (lat == null || lon == null || displayName.isEmpty) return null;
-          return SearchResult(
-            address: displayName,
-            point: LatLng(lat, lon),
-          );
-        })
-        .whereType<SearchResult>()
-        .toList();
   }
 
   static void clearCache() {
