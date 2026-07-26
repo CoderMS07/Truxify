@@ -18,6 +18,19 @@ function canDispatch(user) {
     return DISPATCH_ROLES.has(user?.role);
 }
 
+function mapDriver(row) {
+    if (!row) return row;
+
+    return {
+        ...row,
+        userId: row.userId ?? row.user_id,
+        truckType: row.truckType ?? row.truck_type,
+        truckNumber: row.truckNumber ?? row.truck_number,
+        currentLocation: row.currentLocation ?? row.current_location,
+        tripsCompleted: row.tripsCompleted ?? row.trips_completed,
+    };
+}
+
 const typeDefs = gql`
     extend type Query {
         driver(id: ID!): Driver
@@ -89,7 +102,7 @@ const resolvers = {
                 .single();
             
             if (error) throw error;
-            return data;
+            return mapDriver(data);
         },
         drivers: async (_, { available, location }) => {
             let query = supabase.from('drivers').select('*');
@@ -108,7 +121,7 @@ const resolvers = {
             
             const { data, error } = await query;
             if (error) throw error;
-            return data;
+            return data.map(mapDriver);
         },
         nearbyDrivers: async (_, { lat, lng, radius = 10 }) => {
             const { data, error } = await supabase
@@ -121,7 +134,7 @@ const resolvers = {
                 .eq('status', 'AVAILABLE');
             
             if (error) throw error;
-            return data;
+            return data.map(mapDriver);
         }
     },
     Mutation: {
@@ -145,7 +158,7 @@ const resolvers = {
             const { data, error } = await query.select().single();
             
             if (error) throw error;
-            return data;
+            return mapDriver(data);
         },
         assignDriver: async (_, { orderId, driverId }, { user }) => {
             const currentUser = requireUser(user);
@@ -184,7 +197,7 @@ const resolvers = {
             const { data, error } = await query.select().single();
             
             if (error) throw error;
-            return data;
+            return mapDriver(data);
         }
     }
 };
