@@ -31,6 +31,19 @@ function isAdmin(user) {
     return ADMIN_ROLES.has(user?.role);
 }
 
+function mapOrder(row) {
+    if (!row) return row;
+
+    return {
+        ...row,
+        customerId: row.customerId ?? row.customer_id,
+        driverId: row.driverId ?? row.driver_id,
+        cargoType: row.cargoType ?? row.cargo_type,
+        createdAt: row.createdAt ?? row.created_at,
+        updatedAt: row.updatedAt ?? row.updated_at,
+    };
+}
+
 const typeDefs = gql`
     extend type Query {
         order(id: ID!): Order
@@ -136,7 +149,7 @@ const resolvers = {
             const { data, error } = await query.single();
             
             if (error) throw error;
-            return data;
+            return mapOrder(data);
         },
         orders: async (_, { status, limit = 10, offset = 0 }, { user }) => {
             const currentUser = requireUser(user);
@@ -156,7 +169,7 @@ const resolvers = {
             
             const { data, error } = await query;
             if (error) throw error;
-            return data;
+            return data.map(mapOrder);
         },
         ordersByCustomer: async (_, { customerId }, { user }) => {
             const currentUser = requireUser(user);
@@ -169,7 +182,7 @@ const resolvers = {
                 .order('created_at', { ascending: false });
             
             if (error) throw error;
-            return data;
+            return data.map(mapOrder);
         }
     },
     Mutation: {
@@ -194,7 +207,7 @@ const resolvers = {
                 .single();
             
             if (error) throw error;
-            return data;
+            return mapOrder(data);
         },
         updateOrder: async (_, { id, input }, { user }) => {
             const currentUser = requireUser(user);
@@ -221,7 +234,7 @@ const resolvers = {
             const { data, error } = await query.select().single();
             
             if (error) throw error;
-            return data;
+            return mapOrder(data);
         },
         cancelOrder: async (_, { id, reason }, { user }) => {
             const currentUser = requireUser(user);
@@ -241,7 +254,7 @@ const resolvers = {
             const { data, error } = await query.select().single();
             
             if (error) throw error;
-            return data;
+            return mapOrder(data);
         }
     },
     Order: {
