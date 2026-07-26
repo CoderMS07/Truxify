@@ -319,6 +319,7 @@ class VoiceAIService:
                 'timestamp': datetime.now().isoformat()
             })
             
+            await self.increment_language_usage(detection)
             return {
                 'success': True,
                 'detected_language': detection,
