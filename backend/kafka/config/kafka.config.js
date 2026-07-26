@@ -1,5 +1,5 @@
 import { Kafka } from 'kafkajs';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../api/src/middleware/logger.js';
 
 const kafka = new Kafka({
   clientId: 'truxify',

@@ -1,5 +1,5 @@
 import FrameBuffer from './FrameBuffer.js';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../api/src/middleware/logger.js';
 
 class DirtyRenderer {
     constructor(width = 80, height = 24) {
