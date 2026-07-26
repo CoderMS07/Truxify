@@ -110,8 +110,8 @@ class ZKPService {
 
             return {
                 success: true,
-                proof: `0x${proof.toString('hex')}`,
-                publicInputs: `0x${publicInputs.toString('hex')}`,
+                proof: `0x${ethers.hexlify(proof)}`,
+                publicInputs: `0x${ethers.hexlify(publicInputs)}`,
                 timestamp: new Date().toISOString()
             };
         } catch (error) {
