@@ -337,7 +337,12 @@ export class OrderLifecycleService {
     const trucks = trucksRes.data || [];
 
     const profileMap = Object.fromEntries(profiles.map(p => [p.id, p]));
-    const detailMap = Object.fromEntries(details.map(d => [d.user_id, d]));
+    // Normalize detailMap keys by both user_id and driver_id
+    const detailMap = {};
+    details.forEach(d => {
+      if (d.user_id) detailMap[d.user_id] = d;
+      if (d.driver_id && d.driver_id !== d.user_id) detailMap[d.driver_id] = d;
+    });
     const truckMap = Object.fromEntries(trucks.map(t => [t.id, t]));
 
     const enrichedBids = bids.map(bid => {
