@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from .models.eta_prediction import eta_predictor
+from ml.routes.demand_heatmap import router as heatmap_router
+app.include_router(heatmap_router)
 
 from .models.demand_forecast import (
     predict_demand,

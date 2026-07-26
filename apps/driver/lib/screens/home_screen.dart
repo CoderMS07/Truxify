@@ -27,6 +27,8 @@ import '../widgets/earnings_shimmer.dart';
 import '../widgets/map_markers.dart';
 import 'destination_picker_screen.dart';
 import '../widgets/pulsing_location_dot.dart';
+// NEW IMPORT for the demand heatmap screen
+import '../screens/demand_heatmap_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   HomeScreen({
@@ -1308,6 +1310,26 @@ class _HomeScreenState extends State<HomeScreen> {
             _buildErrorMetrics()
           else
             _buildMetricsRow(),
+          // ---------- NEW: Demand Heatmap Card ----------
+          const SizedBox(height: 16),
+          GestureDetector(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const DemandHeatmapScreen()),
+            ),
+            child: Card(
+              margin: EdgeInsets.zero,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: ListTile(
+                leading: const Icon(Icons.thermostat, color: Colors.orange),
+                title: const Text('Demand Heatmap'),
+                subtitle: const Text('View high-demand freight zones — next 48 hrs'),
+                trailing: const Icon(Icons.arrow_forward_ios, size: 14),
+              ),
+            ),
+          ),
         ],
       ),
     );
