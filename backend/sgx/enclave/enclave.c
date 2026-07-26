@@ -71,7 +71,7 @@ sgx_status_t ecall_store_data(
         return SGX_ERROR_OUT_OF_MEMORY;
     }
     
-    if (data_len > 256) {
+    if (data_len == 0 || data_len > sizeof(secure_storage[storage_count].data)) {
         return SGX_ERROR_INVALID_PARAMETER;
     }
     
