@@ -652,7 +652,7 @@ class _HomeScreenState extends State<HomeScreen> {
         
         if (stops.isNotEmpty) {
           final lastStop = stops.last;
-          final address = lastStop['drop_location'] as String;
+          final address = lastStop['drop_location'] as String? ?? '';
           await prefs.setString('cached_address', address);
           
           final dropPoint = await GeocodeService.resolvePlace(address);
