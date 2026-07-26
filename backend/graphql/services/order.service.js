@@ -18,6 +18,19 @@ function isAdmin(user) {
     return ADMIN_ROLES.has(user?.role);
 }
 
+const ADMIN_ROLES = new Set(['ADMIN', 'admin']);
+
+function requireUser(user) {
+    if (!user?.id) {
+        throw new Error('Authentication required');
+    }
+    return user;
+}
+
+function isAdmin(user) {
+    return ADMIN_ROLES.has(user?.role);
+}
+
 const typeDefs = gql`
     extend type Query {
         order(id: ID!): Order
@@ -161,10 +174,13 @@ const resolvers = {
     },
     Mutation: {
         createOrder: async (_, { input }, { user }) => {
+            const currentUser = requireUser(user);
+            const customerId = isAdmin(currentUser) ? input.customerId : currentUser.id;
+
             const { data, error } = await supabase
                 .from('orders')
                 .insert([{
-                    customer_id: input.customerId,
+                    customer_id: customerId,
                     pickup: input.pickup,
                     dropoff: input.dropoff,
                     weight: input.weight,
@@ -181,33 +197,48 @@ const resolvers = {
             return data;
         },
         updateOrder: async (_, { id, input }, { user }) => {
-            const { data, error } = await supabase
+            const currentUser = requireUser(user);
+            const updates = {
+                status: input.status,
+                pickup: input.pickup || undefined,
+                dropoff: input.dropoff || undefined,
+                updated_at: new Date().toISOString()
+            };
+
+            if (isAdmin(currentUser)) {
+                updates.driver_id = input.driverId || undefined;
+            }
+
+            let query = supabase
                 .from('orders')
-                .update({
-                    status: input.status,
-                    pickup: input.pickup || undefined,
-                    dropoff: input.dropoff || undefined,
-                    driver_id: input.driverId || undefined,
-                    updated_at: new Date().toISOString()
-                })
-                .eq('id', id)
-                .select()
-                .single();
+                .update(updates)
+                .eq('id', id);
+
+            if (!isAdmin(currentUser)) {
+                query = query.eq('customer_id', currentUser.id);
+            }
+
+            const { data, error } = await query.select().single();
             
             if (error) throw error;
             return data;
         },
         cancelOrder: async (_, { id, reason }, { user }) => {
-            const { data, error } = await supabase
+            const currentUser = requireUser(user);
+            let query = supabase
                 .from('orders')
                 .update({
                     status: 'CANCELLED',
                     cancellation_reason: reason,
                     updated_at: new Date().toISOString()
                 })
-                .eq('id', id)
-                .select()
-                .single();
+                .eq('id', id);
+
+            if (!isAdmin(currentUser)) {
+                query = query.eq('customer_id', currentUser.id);
+            }
+
+            const { data, error } = await query.select().single();
             
             if (error) throw error;
             return data;
