@@ -33,7 +33,7 @@ export class OrderLifecycleService {
     this.orderRepository = orderRepository;
     this.orderTimelineService = orderTimelineService;
     this.bidAcceptanceService = bidAcceptanceService;
-    this.deliveryVerification = new DeliveryVerificationService(orderRepository);
+    this.deliveryVerification = deps.deliveryVerificationService ?? new DeliveryVerificationService(orderRepository);
   }
 
   async createOrder(customerId, customerName, body) {
