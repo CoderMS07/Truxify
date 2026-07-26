@@ -241,7 +241,7 @@ export const registerTruckSchema = z.object({
     .min(2, 'Truck name must be at least 2 characters')
     .max(100, 'Truck name must be 100 characters or fewer'),
   number_plate: z.string()
-    .transform((v) => v.trim().toUpperCase())
+    .transform((v) => v.trim().toUpperCase().replace(/[^A-Z0-9]/g, ''))
     .pipe(
       z.string().regex(numberPlateRegex, 'Invalid number plate format (e.g. MH12AB1234)')
     ),
