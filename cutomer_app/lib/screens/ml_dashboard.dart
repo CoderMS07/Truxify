@@ -140,14 +140,20 @@ class _MLDashboardState extends State<MLDashboard> {
         // Trigger manual rollback
         final testId = metrics?['active_test']?['test_id'];
         if (testId != null) {
-          final response = await http.post(
-            Uri.parse('http://ml-engine:8000/ab-testing/rollback/$testId'),
-          );
-          if (response.statusCode == 200) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Rollback triggered successfully!')),
+          try {
+            final response = await http.post(
+              Uri.parse('http://ml-engine:8000/ab-testing/rollback/$testId'),
             );
-            fetchMetrics();
+            if (response.statusCode == 200) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Rollback triggered successfully!')),
+              );
+              fetchMetrics();
+            }
+          } catch (e) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Rollback failed: $e')),
+            );
           }
         }
       },
