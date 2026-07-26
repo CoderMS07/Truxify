@@ -394,7 +394,7 @@ flowchart TB
 | Database (Supabase) | ✅ 26 tables + 4 RPCs | Schema finalized, seed data included |
 | Auth (Firebase) | 🔧 Integrated in backend | Middleware working, test mode available |
 | GPS Tracking (MongoDB) | 🔧 WebSocket handler built | `tracker.js` handles live pings |
-| ML Engine (FastAPI) | 📋 Planned | Skeleton exists in `backend/ml/` |
-| Blockchain (Polygon) | 📋 Planned | Contract directory exists |
-| Automation (n8n) | 📋 Planned | Workflow definitions pending |
-| Voice AI | 📋 Planned | WebRTC + Whisper + LLM stack |
+| ML Engine (FastAPI) | ✅ Core models live | 10 models + 15 research modules in `backend/ml/` |
+| Blockchain (Polygon) | ✅ Contracts deployed | Escrow, document hash, and reputation Solidity contracts |
+| Automation (n8n) | ✅ 4 Workflows live | Dispute resolution, ML retraining, doc integrity, rollback |
+| Voice AI | 🔧 Integrated in stack | WebRTC + Whisper + ElevenLabs voice interface |

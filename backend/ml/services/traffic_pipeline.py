@@ -9,9 +9,16 @@ import pandas as pd
 from sqlalchemy import create_engine, Column, String, Float, DateTime, Integer, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers, models
+try:
+    import tensorflow as tf
+    from tensorflow import keras
+    from tensorflow.keras import layers, models
+    HAS_TF = True
+except ImportError:
+    tf = None
+    keras = None
+    models = None
+    HAS_TF = False
 import redis
 import os
 import logging
