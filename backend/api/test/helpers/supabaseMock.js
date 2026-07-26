@@ -108,49 +108,49 @@ class SupabaseQueryBuilder {
       negate = true;
       op = op.substring(4);
     }
-    let res = true;
+    let isMatched;
     switch (op) {
       case 'eq':
       case 'is':
-        res = v === f.val;
+        isMatched = v === f.val;
         break;
       case 'neq':
-        res = v !== f.val;
+        isMatched = v !== f.val;
         break;
       case 'gt':
-        res = v > f.val;
+        isMatched = v > f.val;
         break;
       case 'gte':
-        res = v >= f.val;
+        isMatched = v >= f.val;
         break;
       case 'lt':
-        res = v < f.val;
+        isMatched = v < f.val;
         break;
       case 'lte':
-        res = v <= f.val;
+        isMatched = v <= f.val;
         break;
       case 'ilike': {
         const valRegex = new RegExp(f.val.replace(/%/g, '.*'), 'i');
-        res = valRegex.test(v);
+        isMatched = valRegex.test(v);
         break;
       }
       case 'in': {
         if (typeof f.val === 'string') {
           const clean = f.val.replace(/^\s*\(\s*|\s*\)\s*$/g, '');
           const items = clean.split(',').map(s => s.trim().replace(/^["']|["']$/g, ''));
-          res = items.includes(v);
+          isMatched = items.includes(v);
         } else if (Array.isArray(f.val)) {
-          res = f.val.includes(v);
+          isMatched = f.val.includes(v);
         } else {
-          res = false;
+          isMatched = false;
         }
         break;
       }
       default:
-        res = true;
+        isMatched = true;
         break;
     }
-    return negate ? !res : res;
+    return negate ? !isMatched : isMatched;
   }
 
   async _exec() {
