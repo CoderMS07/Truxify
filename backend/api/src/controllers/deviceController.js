@@ -199,6 +199,21 @@ export async function unregisterAllDeviceTokens(userId) {
     logger.error('[DeviceController] Failed to unregister device tokens:', error.message);
     throw error;
   }
+
+  const { error: profileError } = await supabase
+    .from('profiles')
+    .update({
+      fcm_token: null,
+      fcm_token_updated_at: new Date().toISOString(),
+    })
+    .eq('id', userId);
+
+  if (profileError) {
+    logger.error(
+      '[DeviceController] Device tokens removed but failed to clear profiles.fcm_token:',
+      profileError.message
+    );
+  }
 }
 
 /**
