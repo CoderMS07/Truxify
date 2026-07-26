@@ -579,6 +579,56 @@ router.get('/trips', authenticate, userLimiter, requirePolicy('driver:view-trips
 });
 
 // ============================================================================
+// 5b. FETCH SINGLE TRIP DETAILS (DRIVER)
+// ============================================================================
+/**
+ * @openapi
+ * /api/driver/trips/{tripDisplayId}:
+ *   get:
+ *     tags: [Driver]
+ *     summary: Get single trip details
+ *     description: Returns parent details for a specific trip. Driver must own the trip.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: tripDisplayId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Trip display ID
+ *     responses:
+ *       200:
+ *         description: Single trip object
+ *       404:
+ *         description: Trip not found or Access denied
+ */
+router.get('/trips/:tripDisplayId', authenticate, userLimiter, requirePolicy('driver:view-trips'), async (req, res) => {
+  const { tripDisplayId } = req.params;
+
+  try {
+    const { data: trip, error } = await supabase
+      .from('trips')
+      .select('*')
+      .eq('trip_display_id', tripDisplayId)
+      .eq('driver_id', req.user.id)
+      .maybeSingle();
+
+    if (error) {
+      return res.status(500).json({ error: 'Failed to fetch trip details.', details: error.message });
+    }
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found or Access Denied.' });
+    }
+
+    res.json(trip);
+  } catch (err) {
+    logger.error('Driver single trip fetch error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
 // 6. FETCH TRIP ITEMS (DRIVER)
 // ============================================================================
 /**
