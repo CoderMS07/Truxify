@@ -114,6 +114,15 @@ class ConsulService {
                         tags: h.Service.Tags,
                         meta: h.Service.Meta
                     }));
+            } else {
+                // Normalize catalog format to match health format
+                healthyServices = services.map(s => ({
+                    id: s.Service.ID,
+                    address: s.Service.Address,
+                    port: s.Service.Port,
+                    tags: s.Service.Tags,
+                    meta: s.Service.Meta
+                }));
             }
 
             // Update cache
