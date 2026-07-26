@@ -66,7 +66,7 @@ class ShardManager {
     this.initializePools();
   }
 
-  async initializePools() {
+  initializePools() {
     for (const [name, config] of this.shards) {
       try {
         config.pool = new Pool({
