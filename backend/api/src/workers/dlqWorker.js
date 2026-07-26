@@ -1,19 +1,9 @@
 import { dlqService } from '../services/webhook/dlqService.js';
 import logger from '../middleware/logger.js';
+import { processEscrowWebhookEvent } from '../services/webhook/escrowWebhookProcessor.js';
 
-// Import our handlers
-// Currently we only have a placeholder for escrow, but we map it here
 const processFnMap = {
-  'escrow': async (eventType, payload) => {
-    logger.info(`[DLQ Worker] Processing escrow event ${eventType}...`);
-    // Placeholder logic for retrying an escrow webhook event
-    if (eventType === 'EscrowRefunded') {
-      // Simulate processing
-      logger.info(`[DLQ Worker] Simulating EscrowRefunded processing for order: ${payload.orderId}`);
-    } else {
-      throw new Error(`Unhandled escrow event type in DLQ worker: ${eventType}`);
-    }
-  }
+  escrow: processEscrowWebhookEvent,
 };
 
 let intervalId = null;
