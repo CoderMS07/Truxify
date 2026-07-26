@@ -20,7 +20,7 @@ import { escrowRelease as defaultEscrowRelease } from '../escrow.js';
 import logger from '../../middleware/logger.js';
 import { OrderTimelineService } from './orderTimelineService.js';
 
-const orderTimelineService = new OrderTimelineService({ supabase, logger });
+const orderTimelineService = new OrderTimelineService(supabase);
 
 const DELIVERY_OTP_READY_STATUSES = new Set(['arriving']);
 
