@@ -84,6 +84,7 @@ services:
 
   db:
     image: postgis/postgis:15-3.3-alpine
+    container_name: truxify-postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
@@ -168,57 +169,34 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  db:
-    image: postgis/postgis:15-3.3-alpine
-    container_name: truxify-postgres
-
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-
   mongo:
     image: mongo:6-jammy
+    container_name: truxify-mongo
     ports:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
-
-    restart: unless-stopped
-
-  mongo:
-    image: mongo:6-jammy
-    container_name: truxify-mongo
-
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     container_name: truxify-redis
-
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
-
     restart: unless-stopped
 
   # ── Optional: ClamAV malware scanner ──────────────────
@@ -239,6 +217,29 @@ services:
   #     start_period: 120s
   #   restart: unless-stopped
 
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: truxify-n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - NODE_ENV=development
+      - WEBHOOK_URL=http://localhost:5678/
+      - INTERNAL_RELAYER_KEY=${INTERNAL_RELAYER_KEY:-local_relayer_secret}
+      - ML_API_KEY=${ML_API_KEY:-local_ml_secret}
+      - ML_ENGINE_URL=http://ml-engine:8000
+    volumes:
+      - n8n_data:/home/node/.n8n
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
 
 volumes:
   mongo_data:
@@ -249,3 +250,4 @@ volumes:
   shard_west_data:
   redis_data:
   # clamav_data:
+  n8n_data:

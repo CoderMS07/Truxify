@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
-import logger from '../../api/src/middleware/logger.js';
-import { supabase } from '../../api/src/config/db.js';
+import logger from '../api/src/middleware/logger.js';
+import { supabase } from '../api/src/config/db.js';
 
 class TokenizationService {
     constructor() {
@@ -65,6 +65,9 @@ class TokenizationService {
     async purchaseFraction(assetId, amount, userAddress) {
         try {
             const asset = await this.getAsset(assetId);
+            if (!asset) {
+                throw new Error('Asset not found');
+            }
             const totalCost = parseFloat(asset.tokenPrice) * amount;
 
             const tx = await this.token.purchaseFraction(
@@ -163,6 +166,21 @@ class TokenizationService {
             };
         } catch (error) {
             logger.error('Trade order creation failed:', error);
+            throw error;
+        }
+    }
+
+    async getTradeOrder(assetId, orderIndex) {
+        try {
+            const order = await this.token.getTradeOrder(assetId, orderIndex);
+            return {
+                maker: order.maker,
+                price: ethers.formatEther(order.price),
+                amount: ethers.formatEther(order.amount),
+                filled: order.filled
+            };
+        } catch (error) {
+            logger.error('Failed to get trade order:', error);
             throw error;
         }
     }

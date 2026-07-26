@@ -50,9 +50,9 @@ jobs:
       - name: Get dependencies
         working-directory: apps/customer
         run: flutter pub get
-      - name: Run Dart Analyzer
+      - name: Run Flutter Analyzer
         working-directory: apps/customer
-        run: dart analyze
+        run: flutter analyze
 
   driver-lint:
     name: Driver App Analyzer
@@ -71,6 +71,6 @@ jobs:
       - name: Get dependencies
         working-directory: apps/driver
         run: flutter pub get
-      - name: Run Dart Analyzer
+      - name: Run Flutter Analyzer
         working-directory: apps/driver
-        run: dart analyze
+        run: flutter analyze

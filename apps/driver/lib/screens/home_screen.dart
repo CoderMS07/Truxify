@@ -652,7 +652,7 @@ class _HomeScreenState extends State<HomeScreen> {
         
         if (stops.isNotEmpty) {
           final lastStop = stops.last;
-          final address = lastStop['drop_location'] as String;
+          final address = lastStop['drop_location'] as String? ?? '';
           await prefs.setString('cached_address', address);
           
           final dropPoint = await GeocodeService.resolvePlace(address);
@@ -839,6 +839,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
     _loadDashboardMetrics();
   }
+}
 
   Future<void> _checkPendingPods() async {
     try {
@@ -1310,7 +1311,7 @@ class _HomeScreenState extends State<HomeScreen> {
     DateTime? latest;
     for (final record in _tripHistory) {
       if (!record.completed) continue;
-      final parsed = DateFormatter._parseDate(record.date);
+      final parsed = DateFormatter.parseDate(record.date);
       if (parsed == null) continue;
       if (latest == null || parsed.isAfter(latest)) {
         latest = parsed;
