@@ -32,6 +32,10 @@ class _MLDashboardState extends State<MLDashboard> {
           metrics = json.decode(response.body);
           isLoading = false;
         });
+      } else {
+        setState(() {
+          isLoading = false;
+        });
       }
     } catch (e) {
       setState(() {
