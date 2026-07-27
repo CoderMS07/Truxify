@@ -31,7 +31,7 @@ function canReadTelemetry(user, load) {
 // 1. POST TELEMETRY DATA (IoT)
 // POST /api/iot/telemetry/:id
 // ============================================================================
-router.post('/telemetry/:id', authenticate, validateParams(paramIdSchema), async (req, res) => {
+router.post('/telemetry/:id', telemetryHistoryLimiter, authenticate, validateParams(paramIdSchema), async (req, res) => {
   try {
     const parseResult = telemetrySchema.safeParse(req.body);
     if (!parseResult.success) {
