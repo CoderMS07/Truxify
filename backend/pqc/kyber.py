@@ -140,7 +140,7 @@ class KyberKEM:
         
         # Derive shared secret
         shared_secret = hashlib.sha256(
-            np.concatenate([u.flatten(), v.flatten(), result.flatten()]).tobytes()
+            np.concatenate([u.flatten(), v.flatten()]).tobytes()
         ).digest()
         
         return shared_secret

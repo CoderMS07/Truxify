@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-import '../core/api_client.dart';
+import 'package:truxify_shared/src/services/api_client.dart';
 import 'location_service.dart';
 
 class WeighStationEvent {

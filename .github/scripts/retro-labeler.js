@@ -3,6 +3,28 @@
 const difficultyLabels = ['level:beginner', 'level:intermediate', 'level:advanced', 'level:critical'];
 const difficultyLabelsLower = difficultyLabels.map(d => d.toLowerCase());
 
+const fs = require('fs');
+const path = require('path');
+
+const CONTESTED_TYPE_LABELS = [
+  'type:security', 'type:performance', 'type:bug', 'type:feature',
+  'type:refactor', 'type:testing', 'type:design', 'type:devops',
+  'type:docs', 'type:accessibility'
+];
+const CONTESTED_TYPE_LABELS_LOWER = CONTESTED_TYPE_LABELS.map(l => l.toLowerCase());
+
+function loadLabelRules() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'pr-labeler-rules.json'), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function normalizeLabel(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
 function checkRetroChanges(pr) {
   const currentLabels = (pr.labels || []).map(l => typeof l === 'string' ? l : l.name);
   const currentLabelsLower = currentLabels.map(l => l.toLowerCase());
@@ -72,7 +94,71 @@ function checkRetroChanges(pr) {
   return { toAdd: finalToAdd, toRemove: finalToRemove };
 }
 
-async function run({ github, context, core, dryRun = false }) {
+function deduplicateTypeLabels({ currentLabels, changedFiles, prTitle, rules }) {
+  const currentLabelNames = currentLabels.map(l => typeof l === 'string' ? l : l.name);
+  const contestedOnPR = currentLabelNames.filter(l =>
+    CONTESTED_TYPE_LABELS_LOWER.includes(normalizeLabel(l))
+  );
+
+  if (contestedOnPR.length <= 1) {
+    return { toKeep: contestedOnPR[0] || null, toRemove: [] };
+  }
+
+  const priority = (rules.typeLabelPriority || CONTESTED_TYPE_LABELS).map(normalizeLabel);
+  const scores = new Map();
+  for (const tl of contestedOnPR) {
+    scores.set(normalizeLabel(tl), 0);
+  }
+
+  // Score from path rules
+  for (const file of (changedFiles || [])) {
+    for (const rule of (rules.pathRules || [])) {
+      const pattern = new RegExp(rule.pattern, 'i');
+      if (pattern.test(file)) {
+        for (const ruleLabel of (rule.labels || [])) {
+          const key = normalizeLabel(ruleLabel);
+          if (scores.has(key)) {
+            scores.set(key, scores.get(key) + 1);
+          }
+        }
+      }
+    }
+  }
+
+  // Score from title rules (bonus +3)
+  for (const rule of (rules.titleRules || [])) {
+    const pattern = new RegExp(rule.pattern, 'i');
+    if (pattern.test(prTitle || '')) {
+      for (const ruleLabel of (rule.labels || [])) {
+        const key = normalizeLabel(ruleLabel);
+        if (scores.has(key)) {
+          scores.set(key, scores.get(key) + 3);
+        }
+      }
+    }
+  }
+
+  // Find winner
+  let winner = null;
+  let winnerScore = -1;
+  let winnerPriority = Infinity;
+
+  for (const [key, score] of scores) {
+    const pIdx = priority.indexOf(key);
+    if (score > winnerScore || (score === winnerScore && pIdx < winnerPriority)) {
+      winner = key;
+      winnerScore = score;
+      winnerPriority = pIdx;
+    }
+  }
+
+  const winnerLabel = contestedOnPR.find(l => normalizeLabel(l) === winner);
+  const toRemove = contestedOnPR.filter(l => normalizeLabel(l) !== winner);
+
+  return { toKeep: winnerLabel, toRemove };
+}
+
+async function run({ github, context, core, dryRun = false, prState = 'closed' }) {
   const { owner, repo } = context.repo;
 
   core.info(`Starting retrospective PR labeler (dryRun = ${dryRun})...`);
@@ -115,20 +201,64 @@ async function run({ github, context, core, dryRun = false }) {
   await ensureLabelExists('gssoc:approved', '0052cc', 'GSSoC approved contribution');
   await ensureLabelExists('level:beginner', '0e8a16', 'Beginner level task/PR');
 
-  // Fetch all closed pull requests
-  core.info('Fetching closed pull requests...');
+  // Fetch pull requests
+  core.info(`Fetching ${prState} pull requests...`);
   const pullRequests = await github.paginate(github.rest.pulls.list, {
     owner,
     repo,
-    state: 'closed',
+    state: prState,
     per_page: 100
   });
 
-  core.info(`Found ${pullRequests.length} closed pull requests. Processing...`);
+  core.info(`Found ${pullRequests.length} ${prState} pull requests. Processing...`);
+
+  const rules = loadLabelRules();
 
   let updatedCount = 0;
   for (const pr of pullRequests) {
     const { toAdd, toRemove } = checkRetroChanges(pr);
+
+    // Type label deduplication
+    const currentLabelNames = (pr.labels || []).map(l => typeof l === 'string' ? l : l.name);
+    const projectedLabels = [...new Set([...currentLabelNames, ...toAdd])].filter(
+      l => !toRemove.includes(l)
+    );
+    const contestedOnPR = projectedLabels.filter(l =>
+      CONTESTED_TYPE_LABELS_LOWER.includes(normalizeLabel(l))
+    );
+
+    if (contestedOnPR.length > 1) {
+      let changedFiles = [];
+      try {
+        const files = await github.paginate(github.rest.pulls.listFiles, {
+          owner,
+          repo,
+          pull_number: pr.number,
+          per_page: 100
+        });
+        changedFiles = files.map(f => f.filename);
+      } catch (error) {
+        core.warning(`Failed to fetch files for PR #${pr.number}: ${error.message}`);
+      }
+
+      const dedup = deduplicateTypeLabels({
+        currentLabels: projectedLabels.map(l => ({ name: l })),
+        changedFiles,
+        prTitle: pr.title,
+        rules
+      });
+
+      for (const label of dedup.toRemove) {
+        if (!toRemove.includes(label)) {
+          toRemove.push(label);
+        }
+        // Also remove from toAdd if it was about to be added
+        const addIdx = toAdd.indexOf(label);
+        if (addIdx !== -1) {
+          toAdd.splice(addIdx, 1);
+        }
+      }
+    }
 
     if (toAdd.length > 0 || toRemove.length > 0) {
       updatedCount++;
@@ -178,5 +308,6 @@ async function run({ github, context, core, dryRun = false }) {
 
 module.exports = {
   checkRetroChanges,
+  deduplicateTypeLabels,
   run
 };

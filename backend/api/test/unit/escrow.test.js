@@ -11,6 +11,7 @@
  * Run with:  npm test -- test/unit/escrow.test.js
  */
 import { describe, it, expect, vi } from 'vitest'
+import { ethers } from 'ethers'
 import {
   getEscrowBookingId,
   buildDepositTx,
@@ -18,6 +19,7 @@ import {
   submitEscrowRefund,
   confirmEscrowRefund,
   ESCROW_MATIC_PER_PAISA,
+  paisaToMaticWei,
   validateEscrowSetup,
   isEscrowEnabled
 } from '../../src/services/escrow.js'

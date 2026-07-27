@@ -20,6 +20,9 @@ class RouteDraft {
     this.minCapacity,
     this.maxCapacity,
     this.materialType,
+    this.requiresRefrigeration,
+    this.targetTemperatureMin,
+    this.targetTemperatureMax,
   });
 
   final String pickup;
@@ -40,6 +43,9 @@ class RouteDraft {
   final double? minCapacity;
   final double? maxCapacity;
   final String? materialType;
+  final bool? requiresRefrigeration;
+  final double? targetTemperatureMin;
+  final double? targetTemperatureMax;
 }
 
 class ShipmentCardData {
@@ -216,6 +222,9 @@ class HistoryOrderData {
     this.isStackable,
     this.isFragile,
     this.specialRequirements,
+    this.requiresRefrigeration,
+    this.targetTemperatureMin,
+    this.targetTemperatureMax,
   });
 
   final String orderId;

@@ -1,5 +1,5 @@
 import { Kafka } from 'kafkajs';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../api/src/middleware/logger.js';
 
 const kafka = new Kafka({
   clientId: 'truxify',
@@ -43,6 +43,10 @@ export const CONSUMER_GROUPS = {
 };
 
 class KafkaConfig {
+  get kafka() {
+    return kafka;
+  }
+
   constructor() {
     this.producer = null;
     this.consumers = new Map();

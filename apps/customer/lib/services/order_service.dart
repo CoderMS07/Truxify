@@ -194,6 +194,21 @@ class OrderService {
     }
   }
 
+
+
+  Future<List<Map<String, dynamic>>> fetchHistoryOrders() async {
+    try {
+      final body = await _apiClient.get(
+        '/api/orders/my/history',
+      );
+      return _historyFromResponse(body);
+    } on ApiException catch (e) {
+      throw StateError(e.message);
+    } catch (e) {
+      throw StateError('Failed to fetch history orders: $e');
+    }
+  }
+
   Future<List<Map<String, dynamic>>> searchTrucks({
     required double pickupLat,
     required double pickupLng,
@@ -352,6 +367,10 @@ class OrderService {
     } catch (e) {
       throw StateError('Failed to submit rating: $e');
     }
+  }
+
+  void dispose() {
+    _apiClient.close();
   }
 
   Future<Map<String, dynamic>> fetchOrderRoute(String orderDisplayId) async {

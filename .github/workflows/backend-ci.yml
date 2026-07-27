@@ -1,4 +1,5 @@
 name: Backend CI
+name: Backend Parallel Vitest CI
 
 on:
   pull_request:
@@ -14,6 +15,14 @@ on:
 
 concurrency:
   group: backend-ci-${{ github.ref }}
+      - 'backend/api/**'
+      - '.github/workflows/backend-ci.yml'
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: truxify-backend-ci-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -29,6 +38,10 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
+
+    name: Backend Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +94,14 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/truxify_test
       REDIS_URL: redis://localhost:6379
+      - name: Run unit tests
+        working-directory: backend/api
+        run: npm run test:unit
+
+  integration-tests:
+    name: Backend Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
