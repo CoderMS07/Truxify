@@ -51,15 +51,18 @@ export const startStaleOrderWorker = () => {
           .eq('order_display_id', order.order_display_id);
 
         // Send a notification to the customer
-        await sendPushNotification(
-          order.customer_id,
-          'Order Cancelled',
-          'Your order was cancelled because it received no accepted bids within 24 hours. Please try posting again.',
-          'ORDER_CANCELLED',
-          { orderId: order.id }
-        );
-
-        logger.info(`[StaleOrderWorker] Cancelled order ${order.id} and notified customer ${order.customer_id}.`);
+        try {
+          await sendPushNotification(
+            order.customer_id,
+            'Order Cancelled',
+            'Your order was cancelled because it received no accepted bids within 24 hours. Please try posting again.',
+            'ORDER_CANCELLED',
+            { orderId: order.id }
+          );
+          logger.info(`[StaleOrderWorker] Cancelled order ${order.id} and notified customer ${order.customer_id}.`);
+        } catch (notifyErr) {
+          logger.warn(`[StaleOrderWorker] Cancelled order ${order.id}, but failed to notify customer ${order.customer_id}: ${notifyErr.message}`);
+        }
       }
       
       logger.info('[StaleOrderWorker] Cleanup of stale pending orders completed.');

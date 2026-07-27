@@ -126,6 +126,10 @@ class FraudDetectionService {
       return JSON.parse(cached);
     }
 
+    // Check in-memory cache (written by trackBehavior during Redis outages)
+    const inMemory = this.behavioralProfiles.get(userId);
+    if (inMemory) return inMemory;
+
     // Check database
     const { data } = await supabase
       .from('behavioral_profiles')

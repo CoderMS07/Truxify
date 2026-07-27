@@ -711,7 +711,7 @@ export async function handleLocationPing(ws, data, req) {
   const usagePct = (telemetryWriteBuffer.length / MAX_BUFFER_SIZE) * 100;
   if (usagePct >= 80) {
     logger.warn(`[TRUXIFY BUFFER CRITICAL] Buffer at ${usagePct.toFixed(0)}% capacity (${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`);
-  } else if (usagePct >= 50 && usagePct < 60) {
+  } else if (usagePct >= 50 && usagePct < 80) {
     logger.warn(`[TRUXIFY BUFFER WARN] Buffer at ${usagePct.toFixed(0)}% capacity (${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`);
   }
 
@@ -1018,28 +1018,6 @@ export async function closeWebSocketServer() {
       resolve();
     });
   });
-}
-
-export function broadcastOrderMilestone(orderDisplayId, milestone, status) {
-  if (!orderDisplayId) return;
-  const broadcastPayload = JSON.stringify({
-    event: 'milestone_update',
-    data: {
-      order_display_id: orderDisplayId,
-      milestone: milestone,
-      status: status,
-      timestamp: new Date()
-    }
-  });
-
-  if (trackingSubscriptions.has(orderDisplayId)) {
-    const clients = trackingSubscriptions.get(orderDisplayId);
-    clients.forEach((client) => {
-      if (client.readyState === 1) { 
-        client.send(broadcastPayload);
-      }
-    });
-  }
 }
 
 export async function handleSubscribe(ws, data) {
