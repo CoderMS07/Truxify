@@ -5,6 +5,7 @@ import { computeOrderPricing } from '../../lib/pricing.js';
 import { predictPrice } from '../ml.js';
 import { DomainError } from './bidAcceptanceService.js';
 import logger from '../../middleware/logger.js';
+import { PriceLog } from '../../models/PriceLog.js';
 
 function generateOrderDisplayId() {
   const prefix = '#FF';
@@ -108,6 +109,21 @@ export async function createOrder({ orderData, userId, user }) {
   if (orderErr) {
     logger.error('Order Insertion Error:', orderErr.message);
     throw new DomainError(500, { error: 'Failed to create order record.', details: orderErr.message });
+  }
+
+  // Log Price Prediction to MongoDB for monitoring data drift (Issue 5011)
+  if (estimatedPrice) {
+    try {
+      await PriceLog.create({
+        order_id: orderDisplayId,
+        predicted_price: estimatedPrice,
+        accepted_price: pricing.totalAmount,
+        distance_km: pricing.distanceKm,
+        weight_tonnes: Number(weight_tonnes)
+      });
+    } catch (err) {
+      logger.error({ err: err.message }, 'Failed to log price prediction to MongoDB');
+    }
   }
 
   const milestones = [
