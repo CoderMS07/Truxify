@@ -4,6 +4,10 @@ import * as Sentry from '@sentry/node';
 import { redisClient } from '../config/db.js';
 import logger from './logger.js';
 
+function isRedisReady() {
+  return !!(redisClient && redisClient.status === 'ready');
+}
+
 function isSuspiciousForwardedHeader(header) {
   if (!header || typeof header !== 'string') return false;
 
@@ -14,13 +18,6 @@ function isSuspiciousForwardedHeader(header) {
 
   // Reject obviously malformed values.
   return parts.some((ip) => ip.length === 0 || ip.includes('\n') || ip.includes('\r'));
-}
-
-function isRedisReady() {
-  return !!(
-    redisClient?.status === 'ready' &&
-    redisClient?.isOpen
-  );
 }
 
 /**
@@ -92,32 +89,38 @@ class DeferredRedisStore {
  * Generates a rate-limit key from the proxy-resolved IP address.
  */
 export function safeIpKeyGenerator(req) {
-  const forwarded = req.headers?.['x-forwarded-for'];
+const forwarded = req.headers?.['x-forwarded-for'];
 
-  if (isSuspiciousForwardedHeader(forwarded)) {
-    logger.warn(
-      {
-        requestId: req.requestId,
-        header: forwarded,
-        socketIp: req.socket?.remoteAddress,
-      },
-      'Suspicious X-Forwarded-For header detected'
-    );
-    let ip = req.ip || req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
-    if (typeof ip === 'string') {
-      if (ip.includes(',')) ip = ip.split(',')[0].trim();
-      ip = ip.replace(/^::ffff:/, '');
-      if (ip === '::1') ip = '127.0.0.1';
-    }
-    return ip;
+if (isSuspiciousForwardedHeader(forwarded)) {
+  logger.warn(
+    {
+      requestId: req.requestId,
+      header: forwarded,
+      socketIp: req.socket?.remoteAddress,
+    },
+    'Suspicious X-Forwarded-For header detected'
+  );
+  let ip = req.ip || req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
+  if (typeof ip === 'string') {
+    if (ip.includes(',')) ip = ip.split(',')[0].trim();
+    ip = ip.replace(/^::ffff:/, '');
+    if (ip === '::1') ip = '127.0.0.1';
   }
-
-  let ip =
-    req.ip ||
-    req.socket?.remoteAddress ||
-    req.connection?.remoteAddress ||
-    'unknown';
   return ip;
+}
+
+let ip =
+  req.ip ||
+  req.socket?.remoteAddress ||
+  req.connection?.remoteAddress ||
+  'unknown';
+
+if (typeof ip === 'string') {
+  ip = ip.replace(/^::ffff:/, '');
+  if (ip === '::1') ip = '127.0.0.1';
+}
+
+return ip;
 }
 
 /**
@@ -239,10 +242,6 @@ export const deviceLimiter = rateLimit({
   message: { error: 'Rate limit exceeded', retryAfter: 600 },
 });
 
-// Dedicated limiter for administrative endpoints. Admin operations perform
-// privileged actions (dashboard queries, cache invalidation, cross-user
-// ticket access) and deserve stricter limits than the general user limiter.
-// Keyed by authenticated user ID so each admin gets an independent bucket.
 const adminWindowMs = Number(process.env.ADMIN_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000;
 const adminMaxRequests = Number(process.env.ADMIN_RATE_LIMIT_MAX_REQUESTS) || 50;
 
