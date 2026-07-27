@@ -133,9 +133,9 @@ class _EarningsScreenState extends State<EarningsScreen> {
       if (!mounted) return;
 
       setState(() {
-        _confirmedEarnings = ((summary['wallet_confirmed'] ?? 0) / 100.0);
-        _pendingEarnings = ((summary['wallet_pending'] ?? 0) / 100.0);
-        _totalEarnings = ((summary['wallet_total'] ?? 0) / 100.0);
+        _confirmedEarnings = ((summary['wallet_confirmed'] as num? ?? 0) / 100.0);
+        _pendingEarnings = ((summary['wallet_pending'] as num? ?? 0) / 100.0);
+        _totalEarnings = ((summary['wallet_total'] as num? ?? 0) / 100.0);
       });
     } catch (e) {
       debugPrint('Failed to load wallet summary: $e');
@@ -1124,7 +1124,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
             _buildEmptyMessage('No transactions found.')
           else
             ..._transactions.map((item) {
-              final amount = ((item['amount'] ?? 0) / 100.0);
+              final amount = ((item['amount'] as num? ?? 0) / 100.0);
               final isConfirmed = item['status'] == 'confirmed';
               final txHash = item['tx_hash'];
 
