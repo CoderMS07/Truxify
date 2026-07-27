@@ -610,18 +610,19 @@ export class OrderLifecycleService {
         throw new DomainError(409, { error: 'Cannot cancel: delivery OTP has already been verified.' });
       }
 
-      if (currentOrder.status === 'cancelled' && currentOrder.escrow_status === 'refunded') {
+      const requiresRefund = ['funded', 'refund_pending', 'refund_failed'].includes(currentOrder.escrow_status);
+
+      if (currentOrder.status === 'cancelled' && (!requiresRefund || currentOrder.escrow_status === 'refunded')) {
         return {
           status: 200,
           body: {
-            message: 'Order was already cancelled and refunded.',
+            message: currentOrder.escrow_status === 'refunded' ? 'Order was already cancelled and refunded.' : 'Order was already cancelled.',
             cancellation_fee: currentOrder.cancellation_fee ?? 0,
             order: currentOrder,
           },
         };
       }
 
-      const requiresRefund = ['funded', 'refund_pending', 'refund_failed'].includes(currentOrder.escrow_status);
       let workingOrder = currentOrder;
 
       if (requiresRefund && (currentOrder.status !== 'cancelled' || currentOrder.escrow_status !== 'refund_pending')) {
