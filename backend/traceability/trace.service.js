@@ -241,6 +241,7 @@ class TraceabilityService {
                     id: trace[0][0].toString(),
                     name: trace[0][1],
                     description: trace[0][2],
+                    category: trace[0][3],
                     manufacturer: trace[0][4]
                 },
                 events: trace[1].map(e => ({
