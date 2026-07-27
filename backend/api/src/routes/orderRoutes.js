@@ -153,21 +153,13 @@ import { scanDocument } from '../lib/malwareScanner.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { z } from 'zod';
 import {
-  createOrderSchema,
-  submitBidSchema,
-  submitRatingSchema,
-  paramIdSchema,
-  acceptBidParamsSchema,
-  updateMilestoneSchema,
-  verifyDeliverySchema,
-  predictDemandSchema,
-  changeDropSchema,
-  cancelOrderSchema,
+  createOrderSchema, submitBidSchema, submitRatingSchema, paramIdSchema, acceptBidParamsSchema,
+  updateMilestoneSchema, verifyDeliverySchema, predictDemandSchema, changeDropSchema, cancelOrderSchema, paginationQuerySchema,
 } from '../validation/requestSchemas.js';
 import { awardReputationPoints } from '../services/reputation.js';
 import { expireDeliveryOtps } from '../services/notificationService.js';
 import { DomainError } from '../services/order/domainError.js';
-import { predictDemand, predictPrice } from '../services/ml.js';
+import { predictDemand, predictPrice, matchEnRouteLoads } from '../services/ml.js';
 import { requireIdempotency } from '../middleware/idempotency.js';
 import { acquireLock, releaseLock } from '../lib/redisLock.js';
 import logger from '../middleware/logger.js';
@@ -185,6 +177,7 @@ import {
   confirmEscrowRefund,
   escrowRefund,
 } from '../core/container.js';
+import { getEscrowBookingId } from '../services/escrow.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
 import { computeOrderPricing } from '../lib/pricing.js';
 import { getEscrowBookingId } from '../services/escrow.js';
@@ -377,7 +370,7 @@ router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
 
     res.json(offers);
   } catch (err) {
-    logger.error("[orderRoutes] Failed to fetch load offers:", err.message);
+    logger.error('Fetch load offers exception:', err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -399,27 +392,74 @@ router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
  *         description: En-route offers
  */
 router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) => {
-  const page = Math.max(1, parseInt(req.query.page) || 1);
-  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
-  const cacheKey = `load-offers:en-route:${page}:${limit}`;
+  // Optional driver GPS — used to score loads by detour distance
+  const currentLat = parseFloat(req.query.current_lat);
+  const currentLng = parseFloat(req.query.current_lng);
+  const maxDetourKm = parseFloat(req.query.max_detour_km) || 50;
+
+  const hasGps = Number.isFinite(currentLat) && Number.isFinite(currentLng);
+
+  // Cache key includes GPS bucket (0.1° resolution ≈ 11 km) so nearby drivers
+  // share a cache entry without stale results.
+  const latBucket = hasGps ? (Math.round(currentLat * 10) / 10).toFixed(1) : 'x';
+  const lngBucket = hasGps ? (Math.round(currentLng * 10) / 10).toFixed(1) : 'x';
+  const cacheKey = `load-offers:en-route:${latBucket}:${lngBucket}:${maxDetourKm}`;
+
   try {
     const cachedOffers = await readLoadOfferCache(cacheKey);
     if (cachedOffers) {
       return res.json(cachedOffers);
     }
 
-    const { data: offers, error } = await orderRepository.findLoadOffers(
-      { is_en_route: true },
-      { pagination: { page, limit } }
+    // Fetch ALL available offers (not pre-filtered by is_en_route flag which may
+    // not be populated) so the ML model can rank by detour from the driver.
+    const { data: rawOffers, error } = await orderRepository.findLoadOffers(
+      { status: 'available' },
+      { pagination: { page: 1, limit: 100 } }
     );
 
-    if (error) return res.status(500).json({ error: 'Failed to fetch en-route loads.', details: error.message });
+    if (error) {
+      return res.status(500).json({ error: 'Failed to fetch load offers.', details: error.message });
+    }
 
-    await writeLoadOfferCache(cacheKey, offers);
+    let enriched;
+    let mlUnavailable = false;
 
-    res.json(offers);
+    if (hasGps && rawOffers && rawOffers.length > 0) {
+      try {
+        enriched = await matchEnRouteLoads({
+          currentLat,
+          currentLng,
+          offers: rawOffers,
+          maxDetourKm,
+        });
+      } catch (mlErr) {
+        // matchEnRouteLoads already handles its own fallback internally;
+        // this outer catch is a last-resort safety net.
+        logger.error('[orderRoutes] matchEnRouteLoads threw unexpectedly:', mlErr.message);
+        enriched = rawOffers;
+        mlUnavailable = true;
+      }
+    } else {
+      // No GPS provided — return all available offers unscored
+      enriched = (rawOffers || []).map(o => ({
+        ...o,
+        detour_km: null,
+        extra_earnings: o.freight_value || 0,
+        match_score: null,
+        ml_used: false,
+      }));
+    }
+
+    if (mlUnavailable) {
+      // Still return the data — just tell the client ML was not available
+      res.set('X-ML-Status', 'unavailable');
+    }
+
+    await writeLoadOfferCache(cacheKey, enriched);
+    res.json(enriched);
   } catch (err) {
-    logger.error("[orderRoutes] Failed to fetch en-route loads:", err.message);
+    logger.error('[orderRoutes] Failed to fetch en-route loads:', err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -497,7 +537,6 @@ router.get('/history', authenticate, userLimiter, requirePolicy('order:view-hist
  */
 router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
-
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, '*');
     orderValidationService.assertOrderFound(order);
@@ -554,7 +593,6 @@ router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), asy
  */
 router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
-
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'customer_id, driver_id, order_display_id');
     orderValidationService.assertOrderFound(order);

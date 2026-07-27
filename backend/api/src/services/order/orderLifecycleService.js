@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { DomainError } from './domainError.js';
 import { DeliveryVerificationService } from './deliveryVerificationService.js';
-import { expireDeliveryOtps } from '../notificationService.js';
+import { expireDeliveryOtps, sendPushNotification } from '../notificationService.js';
 import { acquireLock, releaseLock } from '../../lib/redisLock.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 import {
@@ -313,6 +313,14 @@ export class OrderLifecycleService {
 
       if (bidErr) throw new DomainError(500, { error: 'Failed to record bid.', details: bidErr.message });
 
+      sendPushNotification(
+        offer.customer_id,
+        'New Bid Received',
+        `A driver has submitted a bid of ₹${bidAmount} for your order.`,
+        'new_bid',
+        { loadOfferId, bidId: bid.id }
+      ).catch(err => logger.error(`[FCM] Failed to notify customer of new bid: ${err.message}`));
+
       return { message: 'Bid submitted successfully.', bid };
     } finally {
       await releaseLock(lockKey);
@@ -446,6 +454,14 @@ export class OrderLifecycleService {
       });
     }
 
+    sendPushNotification(
+      order.customer_id,
+      'Order Update',
+      `Order ${order.order_display_id} is now: ${milestone}`,
+      'order_update',
+      { orderId, orderDisplayId: order.order_display_id, milestone }
+    ).catch(err => logger.error(`[FCM] Failed to notify customer of order update: ${err.message}`));
+
     return { order: updatedOrder, milestone, status };
     });
   }
@@ -453,7 +469,7 @@ export class OrderLifecycleService {
   async verifyDeliveryFn(orderId, driverId, otp) {
     return measureExecution('OrderLifecycleService.verifyDeliveryFn', async () => {
       const lockKey = `escrow_lock:${orderId}`;
-      const lockValue = await acquireLock(lockKey, 30000);
+      const lockValue = await acquireLock(lockKey, 120000);
       if (!lockValue) {
         throw new DomainError(409, { error: 'Delivery verification is currently being processed. Please try again later.' });
       }

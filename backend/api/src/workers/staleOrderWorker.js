@@ -13,7 +13,7 @@ export const startStaleOrderWorker = () => {
       // Find all pending orders created more than 24 hours ago
       const { data: staleOrders, error: fetchError } = await supabase
         .from('orders')
-        .select('id, customer_id')
+        .select('id, customer_id, order_display_id')
         .eq('status', 'pending')
         .lt('created_at', twentyFourHoursAgo);
 
@@ -43,6 +43,12 @@ export const startStaleOrderWorker = () => {
           logger.error(`[StaleOrderWorker] Failed to cancel order ${order.id}: ${updateError.message}`);
           continue;
         }
+
+        // Cancel associated load offers
+        await supabase
+          .from('load_offers')
+          .update({ status: 'cancelled' })
+          .eq('order_display_id', order.order_display_id);
 
         // Send a notification to the customer
         await sendPushNotification(
