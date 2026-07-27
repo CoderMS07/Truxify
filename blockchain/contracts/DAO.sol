@@ -104,7 +104,7 @@ contract DAO is Ownable, ReentrancyGuard, Pausable {
     }
 
     modifier onlyActiveProposal(uint256 proposalId) {
-        require(proposals[proposalId].state == ProposalState.ACTIVE, "Proposal not active");
+        require(getProposalState(proposalId) == ProposalState.ACTIVE, "Proposal not active");
         _;
     }
 
@@ -197,7 +197,7 @@ contract DAO is Ownable, ReentrancyGuard, Pausable {
         uint256 votingPower = members[msg.sender].votingPower;
         require(votingPower > 0, "No voting power");
         require(!hasVoted[proposalId][msg.sender], "Already voted");
-        require(proposals[proposalId].state == ProposalState.ACTIVE, "Proposal not active");
+        require(getProposalState(proposalId) == ProposalState.ACTIVE, "Proposal not active");
 
         Proposal storage proposal = proposals[proposalId];
 
