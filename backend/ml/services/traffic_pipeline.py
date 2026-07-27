@@ -269,7 +269,7 @@ class TrafficPipeline:
                 # Predict ETA
                 eta_seconds = self.predict_eta(features)
                 
-                if eta_seconds:
+                if eta_seconds is not None:
                     eta_minutes = eta_seconds / 60
                     eta_string = str(timedelta(seconds=int(eta_seconds)))
                     
