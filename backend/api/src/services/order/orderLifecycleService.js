@@ -685,14 +685,14 @@ export class OrderLifecycleService {
           if (refundTxHash) {
             receipt = await confirmEscrowRefund(refundTxHash);
           } else {
-            const submitted = await submitEscrowRefund(order.order_display_id);
+            const submitted = await submitEscrowRefund(workingOrder.order_display_id);
             refundTxHash = submitted.txHash;
             if (!refundTxHash || !submitted.waitForConfirmation) {
               throw new Error('Escrow refund transaction was not submitted.');
             }
 
             const submittedAt = new Date().toISOString();
-            await this.orderRepository.updateOrder(order.id, {
+            await this.orderRepository.updateOrder(currentOrder.id, {
               refund_tx_hash: refundTxHash,
               escrow_refund_submitted_at: submittedAt,
               updated_at: submittedAt,
@@ -703,7 +703,7 @@ export class OrderLifecycleService {
 
           const refundedAt = new Date().toISOString();
           const { data: updatedOrder, error: updateErr } = await this.orderRepository.updateOrderWithFilter(
-            order.id,
+            currentOrder.id,
             {
               status: 'cancelled',
               cancellation_reason: reason ?? workingOrder.cancellation_reason,
@@ -730,8 +730,8 @@ export class OrderLifecycleService {
             };
           }
 
-          await this.orderTimelineService.insertCancelEvent(order.order_display_id);
-          await expireDeliveryOtps(order.id);
+          await this.orderTimelineService.insertCancelEvent(currentOrder.order_display_id);
+          await expireDeliveryOtps(currentOrder.id);
 
           return {
             status: 200,
@@ -745,7 +745,7 @@ export class OrderLifecycleService {
           logger.error('[escrow] Refund failed for order', orderId, ':', refundErr.message);
           const failedAt = new Date().toISOString();
           const nextEscrowStatus = refundTxHash ? 'refund_pending' : 'refund_failed';
-          await this.orderRepository.updateOrder(order.id, {
+          await this.orderRepository.updateOrder(currentOrder.id, {
             status: 'cancelled',
             escrow_status: nextEscrowStatus,
             refund_tx_hash: refundTxHash,
@@ -764,8 +764,8 @@ export class OrderLifecycleService {
             },
           };
         }
-      } else if (order.escrow_booking_id) {
-        logger.info(`[escrow] Escrow not funded (status: ${order.escrow_status}) - skipping on-chain refund.`);
+      } else if (currentOrder.escrow_booking_id) {
+        logger.info(`[escrow] Escrow not funded (status: ${currentOrder.escrow_status}) - skipping on-chain refund.`);
       }
 
       const updatePayload = {
@@ -775,7 +775,7 @@ export class OrderLifecycleService {
       };
 
       const { data: updatedOrder, error: updateErr } = await this.orderRepository.updateOrderGuardStatus(
-        order.id,
+        currentOrder.id,
         updatePayload,
         ['delivered', 'payment_released', 'cancelled']
       );
@@ -789,8 +789,8 @@ export class OrderLifecycleService {
 
       const cancellationFee = updatedOrder?.cancellation_fee ?? 0;
 
-      await this.orderTimelineService.insertCancelEvent(order.order_display_id);
-      await expireDeliveryOtps(order.id);
+      await this.orderTimelineService.insertCancelEvent(currentOrder.order_display_id);
+      await expireDeliveryOtps(currentOrder.id);
 
       return {
         status: 200,
