@@ -453,6 +453,11 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
       eventsQuery = eventsQuery.eq('event_type', type);
     }
 
+    if (min_lat !== undefined) eventsQuery = eventsQuery.gte('latitude', Number(min_lat));
+    if (max_lat !== undefined) eventsQuery = eventsQuery.lte('latitude', Number(max_lat));
+    if (min_lng !== undefined) eventsQuery = eventsQuery.gte('longitude', Number(min_lng));
+    if (max_lng !== undefined) eventsQuery = eventsQuery.lte('longitude', Number(max_lng));
+
     const { data: events, error: eventsErr, count } = await eventsQuery
       .order('event_timestamp', { ascending: isAscending })
       .range(offset, offset + limit - 1);
@@ -466,24 +471,9 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
       });
     }
 
-    let filteredEvents = events || [];
-
-    if (min_lat !== undefined || max_lat !== undefined || min_lng !== undefined || max_lng !== undefined) {
-      filteredEvents = filteredEvents.filter(e => {
-        if (e.latitude === null || e.longitude === null || e.latitude === undefined || e.longitude === undefined) return false;
-        const lat = Number(e.latitude);
-        const lng = Number(e.longitude);
-        if (min_lat !== undefined && lat < Number(min_lat)) return false;
-        if (max_lat !== undefined && lat > Number(max_lat)) return false;
-        if (min_lng !== undefined && lng < Number(min_lng)) return false;
-        if (max_lng !== undefined && lng > Number(max_lng)) return false;
-        return true;
-      });
-    }
-
     return res.json({
       trip_id: tripId,
-      events: filteredEvents,
+      events: events || [],
       pagination: {
         page,
         limit,
