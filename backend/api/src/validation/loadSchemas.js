@@ -15,8 +15,11 @@ const nonNegativeDecimalString = (field) => z
 export const loadFilterQuerySchema = z.object({
   min_price: nonNegativeDecimalString('min_price').optional(),
   max_price: nonNegativeDecimalString('max_price').optional(),
-  distance: nonNegativeDecimalString('distance').optional(),
+  distance: nonNegativeDecimalString('distance').optional().refine(v => v === undefined || v > 0, {
+    message: 'distance must be a positive number',
+  }),
   order: z.enum(['asc', 'desc']).optional(),
+  sort_by: z.enum(['estimated_price', 'created_at', 'distance']).optional(),
 }).superRefine((filters, ctx) => {
   if (
     filters.min_price !== undefined

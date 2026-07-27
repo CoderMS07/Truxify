@@ -1,26 +1,56 @@
-import { supabase, redisClient } from '../config/db.js';
+import { redisClient } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { confirmEscrowRefund, submitEscrowRefund } from './escrow.js';
 import { acquireLock, releaseLock } from '../lib/redisLock.js';
 import os from 'os';
+
+const RECONCILIATION_EVENTS = {
+  STARTED: 'reconciliation:started',
+  COMPLETED: 'reconciliation:completed',
+  FAILED: 'reconciliation:failed',
+  CLAIMED: 'reconciliation:claimed',
+  SKIPPED: 'reconciliation:skipped',
+};
+
+function logReconciliationEvent(event, details = {}) {
+  logger.info({ event, ...details }, `[escrow-reconciliation] ${event}`);
+}
+
+function createReconciliationSummary(results) {
+  return {
+    total: results.length,
+    succeeded: results.filter(r => r.success).length,
+    failed: results.filter(r => !r.success).length,
+    skipped: results.filter(r => r.skipped).length,
+    timestamp: new Date().toISOString(),
+  };
+}
 
 const DEFAULT_INTERVAL_MS = 60_000;
 const LOCK_KEY = 'escrow:reconciliation:lock';
 const LOCK_TTL_SECONDS = 120;
 const LEASE_EXTENSION_INTERVAL_MS = (LOCK_TTL_SECONDS * 1000) / 2;
 const MAX_RETRIES = 10;
+const BASE_BACKOFF_MS = 60_000; // Base backoff for exponential retries (1 minute)
 let reconciliationTimer = null;
 let reconciliationRunning = false;
 
-export async function reconcilePendingEscrowRefunds() {
+export async function reconcilePendingEscrowRefunds(orderRepository) {
+  if (!orderRepository) {
+    throw new Error('reconcilePendingEscrowRefunds requires an OrderRepository instance');
+  }
   if (reconciliationRunning) return;
   reconciliationRunning = true;
+  let globalLockAcquired = false;
 
   try {
-    // Acquire a global lock just to prevent multiple instances from pulling the exact same batch unnecessarily
-    let globalLockAcquired = false;
     if (redisClient) {
-      globalLockAcquired = await redisClient.set(LOCK_KEY, process.pid.toString(), 'NX', 'EX', LOCK_TTL_SECONDS);
+      try {
+        globalLockAcquired = await redisClient.set(LOCK_KEY, process.pid.toString(), 'NX', 'EX', LOCK_TTL_SECONDS);
+      } catch (err) {
+        logger.error('[escrow-reconciliation] Failed to acquire Redis global lock, skipping batch:', err.message);
+        return;
+      }
       if (!globalLockAcquired) {
         logger.info('[escrow-reconciliation] Global lock held by another instance, skipping batch pull.');
         return;
@@ -28,11 +58,7 @@ export async function reconcilePendingEscrowRefunds() {
     }
 
     const instanceId = process.env.HOSTNAME || os.hostname();
-    const { data: pendingOrders, error } = await supabase
-      .from('orders')
-      .select('id, order_display_id, refund_tx_hash, escrow_status, escrow_refund_retry_count')
-      .in('escrow_status', ['refund_pending', 'refund_failed'])
-      .limit(50);
+    const { data: pendingOrders, error } = await orderRepository.findPendingEscrowRefunds();
 
     if (error) {
       logger.error('[escrow-reconciliation] Failed to load pending refunds:', error.message);
@@ -40,8 +66,30 @@ export async function reconcilePendingEscrowRefunds() {
     }
 
     for (const order of pendingOrders ?? []) {
+      const retryCount = order.escrow_refund_retry_count ?? 0;
+
+      // Exponential backoff logic based on updated_at
+      if (retryCount > 0 && order.updated_at) {
+        const updatedAtTime = new Date(order.updated_at).getTime();
+        const backoffMs = Math.pow(2, retryCount - 1) * BASE_BACKOFF_MS;
+        const nextRetryTime = updatedAtTime + backoffMs;
+
+        if (Date.now() < nextRetryTime) {
+          logger.info(`[escrow-reconciliation] Order ${order.order_display_id} in backoff period (retry ${retryCount}), skipping until ${new Date(nextRetryTime).toISOString()}`);
+          continue;
+        }
+      }
+
+      if (globalLockAcquired && redisClient) {
+        try {
+          await redisClient.expire(LOCK_KEY, LOCK_TTL_SECONDS);
+        } catch (err) {
+          logger.warn('[escrow-reconciliation] Failed to refresh lock:', err.message);
+        }
+      }
+
       const lockKey = `escrow_lock:${order.id}`;
-      const lockValue = await acquireLock(lockKey, 30000); // 30 seconds for blockchain confirmation
+      const lockValue = await acquireLock(lockKey, 30000);
       if (!lockValue) {
         logger.info(`[escrow-reconciliation] Order ${order.order_display_id} locked by another process (API or Job), skipping.`);
         continue;
@@ -54,11 +102,7 @@ export async function reconcilePendingEscrowRefunds() {
           continue;
         }
 
-        const { data: claimed, error: claimError } = await supabase
-          .rpc('claim_refund_reconciliation', {
-            p_order_id: order.id,
-            p_instance_id: instanceId,
-          });
+        const { data: claimed, error: claimError } = await orderRepository.claimRefundReconciliation(order.id, instanceId);
 
         if ((!claimed || (Array.isArray(claimed) && claimed.length === 0)) && !claimError) {
           logger.info(`[escrow-reconciliation] Order ${order.order_display_id} already claimed by another instance, skipping.`);
@@ -66,11 +110,7 @@ export async function reconcilePendingEscrowRefunds() {
         }
 
         if (claimError) {
-          const { data: existing } = await supabase
-            .from('orders')
-            .select('escrow_status, reconciled_by')
-            .eq('id', order.id)
-            .maybeSingle();
+          const { data: existing } = await orderRepository.findOrderById(order.id, 'escrow_status, reconciled_by');
           if (existing && (existing.escrow_status !== 'refund_pending' || existing.reconciled_by)) {
             logger.info(`[escrow-reconciliation] Order ${order.order_display_id} already processed, skipping.`);
             continue;
@@ -78,26 +118,30 @@ export async function reconcilePendingEscrowRefunds() {
         }
 
         let refundTxHash = order.refund_tx_hash;
+        let receipt;
+
         if (!refundTxHash) {
           const submitted = await submitEscrowRefund(order.order_display_id);
-          await submitted.waitForConfirmation();
-          refundTxHash = submitted.txHash;
+          if (submitted.waitForConfirmation) {
+            receipt = await submitted.waitForConfirmation();
+          } else {
+            logger.warn(`[escrow-reconciliation] waitForConfirmation unavailable for ${order.order_display_id} — escrow contract may not be initialized.`);
+            receipt = { hash: submitted.txHash };
+          }
+          refundTxHash = receipt.hash ?? submitted.txHash;
+        } else {
+          receipt = await confirmEscrowRefund(refundTxHash);
         }
 
-        const receipt = await confirmEscrowRefund(refundTxHash);
         const refundedAt = new Date().toISOString();
-        const { error: updateError } = await supabase
-          .from('orders')
-          .update({
-            status: 'cancelled',
-            escrow_status: 'refunded',
-            refund_tx_hash: receipt.hash ?? refundTxHash,
-            escrow_refunded_at: refundedAt,
-            escrow_refund_error: null,
-            updated_at: refundedAt,
-          })
-          .eq('id', order.id)
-          .in('escrow_status', ['refund_pending', 'refund_failed']);
+        const { error: updateError } = await orderRepository.updateOrderWithFilter(order.id, {
+          status: 'cancelled',
+          escrow_status: 'refunded',
+          refund_tx_hash: receipt.hash ?? refundTxHash,
+          escrow_refunded_at: refundedAt,
+          escrow_refund_error: null,
+          updated_at: refundedAt,
+        }, [{ op: 'in', column: 'escrow_status', value: ['refund_pending', 'refund_failed'] }], 'id');
 
         if (updateError) {
           logger.error(
@@ -107,11 +151,11 @@ export async function reconcilePendingEscrowRefunds() {
         }
       } catch (err) {
         const newRetryCount = (order.escrow_refund_retry_count ?? 0) + 1;
-        await supabase.from('orders').update({
+        await orderRepository.updateOrder(order.id, {
           escrow_refund_retry_count: newRetryCount,
           escrow_refund_error: err.message,
           updated_at: new Date().toISOString(),
-        }).eq('id', order.id);
+        });
         logger.warn(
           `[escrow-reconciliation] Refund for ${order.order_display_id} is not confirmed yet (retry ${newRetryCount}/${MAX_RETRIES}):`,
           err.message
@@ -120,7 +164,7 @@ export async function reconcilePendingEscrowRefunds() {
         await releaseLock(lockKey, lockValue);
       }
     }
-
+  } finally {
     if (globalLockAcquired && redisClient) {
       try {
         await redisClient.del(LOCK_KEY);
@@ -128,12 +172,11 @@ export async function reconcilePendingEscrowRefunds() {
         logger.warn('[escrow-reconciliation] Failed to release global lock:', err.message);
       }
     }
-  } finally {
     reconciliationRunning = false;
   }
 }
 
-export function startEscrowRefundReconciliation() {
+export function startEscrowRefundReconciliation(orderRepository) {
   if (reconciliationTimer) return;
 
   const configuredInterval = Number(process.env.ESCROW_RECONCILIATION_INTERVAL_MS);
@@ -142,7 +185,7 @@ export function startEscrowRefundReconciliation() {
     : DEFAULT_INTERVAL_MS;
 
   reconciliationTimer = setInterval(() => {
-    void reconcilePendingEscrowRefunds();
+    void reconcilePendingEscrowRefunds(orderRepository);
   }, intervalMs);
   reconciliationTimer.unref?.();
 }
