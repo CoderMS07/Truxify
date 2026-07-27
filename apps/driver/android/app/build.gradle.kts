@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.truxify_driver"
+    namespace = "com.truxify.driver"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
