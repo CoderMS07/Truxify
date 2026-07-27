@@ -1,31 +1,25 @@
-class ObdTelemetryModel {
+class ObdTelemetry {
   final double engineTemperature;
-  final double tirePressure;
-  final double fluidLevels;
-  final DateTime timestamp;
+  final double oilLevel;
+  final double tirePressureAvg;
+  final double predictiveHealthScore;
+  final List<String> warnings;
 
-  ObdTelemetryModel({
+  ObdTelemetry({
     required this.engineTemperature,
-    required this.tirePressure,
-    required this.fluidLevels,
-    required this.timestamp,
+    required this.oilLevel,
+    required this.tirePressureAvg,
+    required this.predictiveHealthScore,
+    required this.warnings,
   });
 
-  factory ObdTelemetryModel.fromJson(Map<String, dynamic> json) {
-    return ObdTelemetryModel(
-      engineTemperature: (json['engineTemperature'] ?? 0.0).toDouble(),
-      tirePressure: (json['tirePressure'] ?? 0.0).toDouble(),
-      fluidLevels: (json['fluidLevels'] ?? 0.0).toDouble(),
-      timestamp: DateTime.parse(json['timestamp']),
+  factory ObdTelemetry.fromJson(Map<String, dynamic> json) {
+    return ObdTelemetry(
+      engineTemperature: json['engineTemperature']?.toDouble() ?? 0.0,
+      oilLevel: json['oilLevel']?.toDouble() ?? 0.0,
+      tirePressureAvg: json['tirePressureAvg']?.toDouble() ?? 0.0,
+      predictiveHealthScore: json['predictiveHealthScore']?.toDouble() ?? 0.0,
+      warnings: List<String>.from(json['warnings'] ?? []),
     );
-  }
-
-  Map<String, dynamic> toJson() {
-    return {
-      'engineTemperature': engineTemperature,
-      'tirePressure': tirePressure,
-      'fluidLevels': fluidLevels,
-      'timestamp': timestamp.toIso8601String(),
-    };
   }
 }
