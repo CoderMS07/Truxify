@@ -711,7 +711,7 @@ export async function handleLocationPing(ws, data, req) {
   const usagePct = (telemetryWriteBuffer.length / MAX_BUFFER_SIZE) * 100;
   if (usagePct >= 80) {
     logger.warn(`[TRUXIFY BUFFER CRITICAL] Buffer at ${usagePct.toFixed(0)}% capacity (${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`);
-  } else if (usagePct >= 50 && usagePct < 60) {
+  } else if (usagePct >= 50 && usagePct < 80) {
     logger.warn(`[TRUXIFY BUFFER WARN] Buffer at ${usagePct.toFixed(0)}% capacity (${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`);
   }
 
