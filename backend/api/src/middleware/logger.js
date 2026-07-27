@@ -97,3 +97,4 @@ const logger = new Proxy(rootLogger, {
 
 export { LOG_LEVELS, sanitizeLogLevel };
 export default logger;
+export default logger;

@@ -847,3 +847,38 @@ async def list_models(_auth=Depends(verify_api_key)):
                 with open(os.path.join(MODEL_STORAGE_DIR, f)) as fh:
                     models.append(json.load(fh))
     return {"models": models}
+
+# ---------------------------------------------------------------------------
+# Predictive Fleet Maintenance
+# ---------------------------------------------------------------------------
+from app.models.predictive_maintenance import predictive_maintenance
+
+class PredictiveMaintenanceInput(BaseModel):
+    engine_temperature: float = Field(..., description="Engine temperature in Celsius")
+    tire_pressure: float = Field(..., description="Tire pressure in PSI")
+    oil_level: float = Field(..., description="Oil level percentage")
+    coolant_level: float = Field(..., description="Coolant level percentage")
+    mileage: float = Field(..., description="Total vehicle mileage")
+
+class PredictiveMaintenanceOutput(BaseModel):
+    failure_probability: float
+    is_at_risk: bool
+    anomalies_detected: List[str]
+    recommendation: str
+
+@app.post("/predict/maintenance", response_model=PredictiveMaintenanceOutput)
+async def predict_maintenance_endpoint(input: PredictiveMaintenanceInput, _auth=Depends(verify_api_key)):
+    try:
+        result = predictive_maintenance.predict(
+            engine_temperature=input.engine_temperature,
+            tire_pressure=input.tire_pressure,
+            oil_level=input.oil_level,
+            coolant_level=input.coolant_level,
+            mileage=input.mileage
+        )
+        return PredictiveMaintenanceOutput(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error("Predictive maintenance prediction failed: %s", e)
+        raise HTTPException(status_code=500, detail="Predictive maintenance prediction failed")

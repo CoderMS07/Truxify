@@ -344,6 +344,27 @@ class DriverEarningsService {
     }
   }
 
+  Future<Map<String, dynamic>> fetchEarningsAnalytics({
+    required String period,
+  }) async {
+    if (driverId == null) return {};
+
+    final path = '/api/driver/$driverId/earnings?period=$period';
+
+    try {
+      final decoded = await _apiClient.get(path);
+      if (decoded is! Map) {
+        throw StateError('Unexpected earnings analytics response format');
+      }
+      return Map<String, dynamic>.from(decoded);
+    } catch (e) {
+      if (e is ApiException) {
+        throw Exception(e.message.isNotEmpty ? e.message : 'Failed to load earnings analytics.');
+      }
+      throw Exception('Network error: Failed to fetch earnings analytics.');
+    }
+  }
+
   void dispose() {
     _apiClient.dispose();
   }

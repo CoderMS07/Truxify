@@ -75,8 +75,21 @@ class MarketplaceRepository {
     }
   }
 
-  Future<List<LoadOffer>> fetchEnRouteLoads() async {
-    final path = '/api/orders/load-offers/en-route';
+  Future<List<LoadOffer>> fetchEnRouteLoads({
+    double? currentLat,
+    double? currentLng,
+    double maxDetourKm = 50,
+  }) async {
+    final queryParams = <String, String>{};
+    if (currentLat != null && currentLng != null) {
+      queryParams['current_lat'] = currentLat.toStringAsFixed(6);
+      queryParams['current_lng'] = currentLng.toStringAsFixed(6);
+      queryParams['max_detour_km'] = maxDetourKm.toStringAsFixed(1);
+    }
+    final query = queryParams.isNotEmpty
+        ? '?${queryParams.entries.map((e) => '${e.key}=${e.value}').join('&')}'
+        : '';
+    final path = '/api/orders/load-offers/en-route$query';
     try {
       final decoded = await _apiClient.get(path);
       if (decoded is! List) throw StateError('Unexpected response type');

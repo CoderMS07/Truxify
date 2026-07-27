@@ -813,7 +813,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final stops = await _tripService.fetchTripStops(_activeTripId!);
       final currentStop = stops.where((s) => s['is_current'] == true).firstOrNull;
       if (currentStop != null) {
-        await _tripService.markStopCompleted(currentStop['id'], _activeTripId!);
+        await _tripService.markStopCompleted(currentStop['id'].toString(), _activeTripId!);
       }
     } catch (e) {
       if (mounted) {
