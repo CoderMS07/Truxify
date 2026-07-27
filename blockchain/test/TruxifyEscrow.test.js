@@ -159,4 +159,47 @@ describe("TruxifyEscrow", function () {
       expect(booking.amount).to.equal(0);
     });
   });
+
+  // "?"?"? resolveDisputeTimeout "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
+  describe("resolveDisputeTimeout", function () {
+    it("resolves dispute by refunding customer after timeout", async function () {
+      const { escrow, customer, driver } = await loadFixture(deployEscrowFixture);
+
+      const amount = ethers.parseEther("1.0");
+      await escrow.connect(customer).createBooking(2, driver.address, { value: amount });
+
+      // Raise dispute
+      await escrow.connect(customer).raiseDispute(2);
+
+      // Fast forward time by 8 days (7 days timeout)
+      await hre.network.provider.send("evm_increaseTime", [8 * 24 * 60 * 60]);
+      await hre.network.provider.send("evm_mine");
+
+      // Resolve dispute
+      await escrow.resolveDisputeTimeout(2);
+
+      // Check that customer got the pending withdrawal
+      const pendingRefund = await escrow.pendingWithdrawals(customer.address);
+      expect(pendingRefund).to.equal(amount);
+
+      const booking = await escrow.getBooking(2);
+      expect(booking.status).to.equal(2); // Cancelled
+      expect(booking.amount).to.equal(0);
+    });
+
+    it("reverts if timeout has not been reached", async function () {
+      const { escrow, customer, driver } = await loadFixture(deployEscrowFixture);
+
+      const amount = ethers.parseEther("1.0");
+      await escrow.connect(customer).createBooking(3, driver.address, { value: amount });
+
+      // Raise dispute
+      await escrow.connect(customer).raiseDispute(3);
+
+      // Try to resolve immediately
+      await expect(
+        escrow.resolveDisputeTimeout(3)
+      ).to.be.revertedWith("TruxifyEscrow: Dispute timeout not reached");
+    });
+  });
 });
