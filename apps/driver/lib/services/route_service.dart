@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../core/config.dart';
 import 'package:latlong2/latlong.dart';
@@ -46,7 +47,7 @@ class RouteService {
       }
       return out;
     } catch (e) {
-      print('Error: $e');
+      debugPrint('RouteService error: $e');
       return [];
     }
   }
