@@ -1,5 +1,6 @@
 import rateLimit, { MemoryStore } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
+import * as Sentry from '@sentry/node';
 import { redisClient } from '../config/db.js';
 import logger from './logger.js';
 
@@ -74,11 +75,6 @@ class DeferredRedisStore {
 
 /**
  * Generates a rate-limit key from the proxy-resolved IP address.
- *
- * Express's trust-proxy setting (1 hop) resolves X-Forwarded-For to req.ip.
- * Using req.socket.remoteAddress directly would see the load balancer / proxy
- * IP instead of the real client, collapsing all users behind the same proxy
- * into one rate-limit bucket.
  */
 export function safeIpKeyGenerator(req) {
   let ip = req.ip || req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
@@ -91,9 +87,6 @@ export function safeIpKeyGenerator(req) {
 
 /**
  * Keys a limiter by the authenticated principal, falling back to the client IP
- * for unauthenticated requests. Used wherever req.user is available so that
- * users sharing a public IP (e.g. mobile clients behind carrier-grade NAT) are
- * limited independently rather than against one shared bucket.
  */
 export function userKeyGenerator(req) {
   if (req.user?.id) return `user:${req.user.id}`;
@@ -101,10 +94,21 @@ export function userKeyGenerator(req) {
   return safeIpKeyGenerator(req);
 }
 
-// Coarse, pre-auth IP limiter. It runs before authentication, so it can only
-// key by IP; kept generous so that legitimate users sharing a NAT'd IP are not
-// throttled by each other. Per-user fairness is enforced by userLimiter once
-// the request is authenticated.
+const sentryAlertHandler = (limiterName) => (req, res, next, options) => {
+  logger.warn({ ip: req.ip, path: req.originalUrl, limiter: limiterName }, 'Rate limit exceeded');
+  
+  Sentry.withScope((scope) => {
+    scope.setTag('event_type', 'rate_limit_exceeded');
+    scope.setTag('limiter', limiterName);
+    scope.setExtra('ip', req.ip);
+    scope.setExtra('path', req.originalUrl);
+    scope.setExtra('headers', req.headers);
+    Sentry.captureMessage(`IP ${req.ip} exceeded rate limit on ${req.originalUrl} (${limiterName})`, 'warning');
+  });
+
+  return res.status(options.statusCode).json(options.message);
+};
+
 export const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 1000,
@@ -112,13 +116,11 @@ export const globalLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
   store: createStore('rl:global:'),
+  handler: sentryAlertHandler('globalLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 900 },
   skip: (req) => req.path === '/health' || req.path.startsWith('/health/'),
 });
 
-// Per-user limiter, applied in the route chains immediately after the
-// authenticate middleware so req.user is populated and each user gets an
-// independent bucket regardless of shared IPs.
 export const userLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 300,
@@ -126,6 +128,7 @@ export const userLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: userKeyGenerator,
   store: createStore('rl:user:'),
+  handler: sentryAlertHandler('userLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 900 },
 });
 
@@ -136,6 +139,7 @@ export const healthLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
   store: createStore('rl:health:'),
+  handler: sentryAlertHandler('healthLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 60 },
 });
 
@@ -146,6 +150,7 @@ export const authLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
   store: createStore('rl:auth:'),
+  handler: sentryAlertHandler('authLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 3600 },
 });
 
@@ -156,6 +161,7 @@ export const bidLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: userKeyGenerator,
   store: createStore('rl:bid:'),
+  handler: sentryAlertHandler('bidLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 60 },
 });
 
@@ -170,14 +176,10 @@ export const deviceLimiter = rateLimit({
     return safeIpKeyGenerator(req);
   },
   store: createStore('rl:device:'),
+  handler: sentryAlertHandler('deviceLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 600 },
 });
 
-/**
- * Factory that creates a DeferredRedisStore — used by both the built-in
- * limiters in this module and by route-level limiters (orderRoutes,
- * driverRoutes) that need Redis-backed shared state across instances.
- */
 export function createStore(prefix) {
   return new DeferredRedisStore(prefix);
 }
