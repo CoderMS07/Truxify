@@ -4,6 +4,9 @@ import { v4 as uuidv4 } from 'uuid';
 import logger from '../api/src/middleware/logger.js';
 import { supabase } from '../api/src/config/db.js';
 import { BaseEvent, EVENT_SOURCES, EVENT_CATEGORIES } from '../api/src/core/events/index.js';
+import { ContextPropagator } from '../api/src/core/telemetry/ContextPropagator.js';
+import spanFactory from '../api/src/core/telemetry/SpanFactory.js';
+import { context, trace, SpanStatusCode } from '@opentelemetry/api';
 
 class EventStore {
     constructor({ eventBus: externalEventBus } = {}) {
@@ -30,6 +33,13 @@ class EventStore {
     // ============ Command Handling ============
 
     async handleCommand(command) {
+        const span = spanFactory.startSpan('eventstore.handle_command', {
+            attributes: {
+                'command.type': command.type,
+                'command.aggregate_id': command.aggregateId,
+            },
+        });
+
         try {
             await this.initialize();
             
@@ -38,36 +48,44 @@ class EventStore {
             
             logger.info(`📝 Handling command: ${command.type}`, { commandId, aggregateId: command.aggregateId });
 
-            // Validate command
-            const validation = await this.validateCommand(command);
-            if (!validation.valid) {
-                throw new Error(`Command validation failed: ${validation.error}`);
-            }
+            const result = await context.with(trace.setSpan(context.active(), span), async () => {
+                // Validate command
+                const validation = await this.validateCommand(command);
+                if (!validation.valid) {
+                    throw new Error(`Command validation failed: ${validation.error}`);
+                }
 
-            // Execute command and generate events
-            const events = await this.executeCommand(command);
+                // Execute command and generate events
+                const events = await this.executeCommand(command);
 
-            // Store events
-            for (const event of events) {
-                await this.storeEvent(event);
-            }
+                // Store events
+                for (const event of events) {
+                    await this.storeEvent(event);
+                }
 
-            // Publish events to Kafka
-            await this.publishEvents(events);
+                // Publish events to Kafka
+                await this.publishEvents(events);
 
-            // Update read models
-            await this.updateReadModels(events);
+                // Update read models
+                await this.updateReadModels(events);
 
-            // Check if snapshot needed
-            await this.checkSnapshot(command.aggregateId);
+                // Check if snapshot needed
+                await this.checkSnapshot(command.aggregateId);
 
-            return {
-                commandId,
-                events,
-                timestamp,
-                success: true
-            };
+                return {
+                    commandId,
+                    events,
+                    timestamp,
+                    success: true
+                };
+            });
+
+            span.setStatus({ code: SpanStatusCode.OK });
+            span.end();
+            return result;
         } catch (error) {
+            spanFactory.recordError(span, error);
+            span.end();
             logger.error('Command handling failed:', error);
             throw error;
         }
@@ -428,7 +446,8 @@ class EventStore {
             logger.info(`📤 Event published via EventBus: ${event.type}`);
         } else {
             const topic = this.getEventTopic(event.type);
-            await kafka.publishEvent(topic, event, event.aggregateId);
+            const enriched = ContextPropagator.injectIntoEventPayload(event);
+            await kafka.publishEvent(topic, enriched, event.aggregateId);
             logger.info(`📤 Event published to Kafka: ${event.type}`);
         }
     }
