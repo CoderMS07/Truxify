@@ -177,7 +177,8 @@ class TokenizationService {
                 maker: order.maker,
                 price: ethers.formatEther(order.price),
                 amount: ethers.formatEther(order.amount),
-                filled: order.filled
+                filled: order.filled,
+                orderId: order.orderId
             };
         } catch (error) {
             logger.error('Failed to get trade order:', error);
