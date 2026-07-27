@@ -39,6 +39,7 @@ import adminRoutes from './routes/adminRoutes.js'
 import lookupRoutes from './routes/lookupRoutes.js'
 import webhookRoutes from './routes/webhookRoutes.js'
 import auditRoutes from './routes/auditRoutes.js'
+import voiceRoutes from './routes/voiceRoutes.js'
 
 // =====================================================================// 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
 // =====================================================================import verificationRoutes from './routes/verificationRoutes.js'
@@ -360,6 +361,7 @@ app.use('/api/public', publicTrackingRoutes)
 app.use('/api/auth', authLimiter, authRoutes)
 app.use('/api/v1/admin', adminRoutes)
 app.use('/api/v1/admin/audit-logs', auditRoutes)
+app.use('/api/voice', voiceRoutes)
 
 // =====================================================================// 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
 // =====================================================================app.use('/api/verify', verificationRoutes)
