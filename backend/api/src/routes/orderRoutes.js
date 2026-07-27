@@ -146,7 +146,7 @@ import rateLimit from 'express-rate-limit';
 
 import { bidLimiter, userLimiter, userKeyGenerator, createStore } from '../middleware/rateLimiter.js';
 import { mongoDb, supabase, redisClient, createUserClient } from '../config/db.js';
-import { authenticate, requireRole } from '../middleware/auth.js';
+import { authenticate } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { validateDocumentBuffer } from '../lib/documentValidation.js';
 import { scanDocument } from '../lib/malwareScanner.js';
@@ -1341,18 +1341,15 @@ router.post('/predict-demand', authenticate, userLimiter, requirePolicy('order:p
  *             schema:
  *               $ref: '#/components/schemas/DriverLocationResponse'
  */
-router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-driver-location'), validateParams(paramIdSchema), async (req, res) => {
+router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-driver-location', async (req) => {
+  const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id, status');
+  orderValidationService.assertOrderFound(order);
+  return { order };
+})), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, customer_id, driver_id, status');
     orderValidationService.assertOrderFound(order);
-
-    if (req.user.role === 'customer' && order.customer_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
-    }
-    if (req.user.role === 'driver' && order.driver_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You are not assigned to this order.' });
-    }
 
     if (!order.driver_id) {
       return res.status(404).json({ error: 'No driver assigned to this order.' });
@@ -1417,19 +1414,16 @@ router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, 
  *             schema:
  *               $ref: '#/components/schemas/OrderRouteResponse'
  */
-router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-route'), validateParams(paramIdSchema), async (req, res) => {
+router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-route', async (req) => {
+  const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id, status');
+  orderValidationService.assertOrderFound(order);
+  return { order };
+})), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
 
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, customer_id, driver_id, status, pickup_lat, pickup_lng, drop_lat, drop_lng');
     orderValidationService.assertOrderFound(order);
-
-    if (req.user.role === 'customer' && order.customer_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
-    }
-    if (req.user.role === 'driver' && order.driver_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You are not assigned to this order.' });
-    }
 
     if (order.drop_lat == null || order.drop_lng == null) {
       return res.status(500).json({ error: 'Order is missing destination coordinates.' });
@@ -1537,7 +1531,7 @@ async function validateAndScanPodFile(file, label) {
 }
 
 // POST /api/orders/:id/pod
-router.post('/:id/pod', authenticate, requireRole(['driver']), podUpload.fields([{ name: 'signature', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
+router.post('/:id/pod', authenticate, requirePolicy('order:upload-pod'), podUpload.fields([{ name: 'signature', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
   try {
     const orderId = req.params.id;
     const { data: order, error: orderErr } = await orderRepository.findOrderById(orderId);

@@ -273,6 +273,10 @@ export async function authenticate(req, res, next) {
 /**
  * Middleware to restrict route access to specific roles.
  * Must be used after authenticate middleware.
+ *
+ * This middleware delegates to the centralized authorization logging system
+ * for consistent audit trails. For new routes, prefer using requirePolicy()
+ * with named actions instead of requireRole() for better maintainability.
  */
 export function requireRole(allowedRoles) {
   if (!Array.isArray(allowedRoles) || allowedRoles.length === 0) {
@@ -285,7 +289,17 @@ export function requireRole(allowedRoles) {
     }
 
     if (!allowedRoles.includes(req.user.role)) {
-      return res.status(403).json({ 
+      const requestId = req.requestId || req.id;
+      logger.warn({
+        event: 'AUTH_DENIAL',
+        action: `requireRole(${allowedRoles.join(',')})`,
+        userId: req.user.id,
+        userRole: req.user.role,
+        allowedRoles,
+        requestId,
+      }, `[Auth] Role denied: user=${req.user.id} role=${req.user.role} not in [${allowedRoles}]`);
+
+      return res.status(403).json({
         error: 'Forbidden: Insufficient privileges.',
         details: `Your account role '${req.user.role}' is not authorized to access this resource.`
       });
