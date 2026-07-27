@@ -160,7 +160,6 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoadingMetrics = true;
   String? _metricsError;
   String? _networkError;
-  int _retryCount = 0;
 
   final BatteryService _batteryService = BatteryService.instance;
   int _batteryLevel = 100;
@@ -181,17 +180,18 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _withRetry(Future<void> Function() fn) async {
-    try {
-      _retryCount = 0;
-      await fn();
-    } catch (e) {
-      _retryCount++;
-      if (_retryCount <= 3) {
-        await Future.delayed(Duration(seconds: _retryCount));
+    for (int i = 0; i < 3; i++) {
+      try {
         await fn();
-      } else {
-        setState(() => _networkError = 'Operation failed after $_retryCount retries');
+        return;
+      } catch (e) {
+        if (i < 2) {
+          await Future.delayed(Duration(seconds: i + 1));
+        }
       }
+    }
+    if (mounted) {
+      setState(() => _networkError = 'Network error. Please check your connection and try again.');
     }
   }
 
