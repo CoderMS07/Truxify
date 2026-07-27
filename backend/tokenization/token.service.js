@@ -15,6 +15,7 @@ class TokenizationService {
             'function createTradeOrder(uint256 assetId, uint256 amount, uint256 price, string memory orderType) external',
             'function executeTradeOrder(uint256 assetId, uint256 orderIndex) external payable',
             'function cancelTradeOrder(uint256 assetId, uint256 orderIndex) external',
+            'function getTradeOrder(uint256 assetId, uint256 orderIndex) external view returns (tuple(address,uint256,uint256,uint256,bool))',
             'function getAsset(uint256 assetId) external view returns (tuple(uint256,string,string,string,uint256,uint256,uint256,uint256,address,bool,string,uint256,uint256))',
             'function getFractionalOwnership(uint256 assetId, address owner) external view returns (tuple(address,uint256,uint256,uint256))',
             'function getTotalAssets() external view returns (uint256)',
