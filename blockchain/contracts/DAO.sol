@@ -84,6 +84,7 @@ contract DAO is Ownable, ReentrancyGuard, Pausable {
     address public governanceToken;
     address public treasuryAddress;
     uint256 public totalMembers;
+    Treasury public treasury;
 
     // Events
     event ProposalCreated(uint256 indexed proposalId, address indexed proposer, string title);
@@ -247,7 +248,9 @@ contract DAO is Ownable, ReentrancyGuard, Pausable {
 
     function depositTreasury() external payable {
         require(msg.value > 0, "Amount must be > 0");
-        // In production: update treasury state
+        treasury.totalDeposited += msg.value;
+        treasury.balance = address(this).balance;
+        treasury.lastUpdated = block.timestamp;
         emit TreasuryDeposit(msg.sender, msg.value);
     }
 
@@ -258,6 +261,9 @@ contract DAO is Ownable, ReentrancyGuard, Pausable {
 
         (bool sent, ) = recipient.call{value: amount}("");
         require(sent, "Transfer failed");
+        treasury.totalWithdrawn += amount;
+        treasury.balance = address(this).balance;
+        treasury.lastUpdated = block.timestamp;
         emit TreasuryWithdraw(msg.sender, amount);
     }
 
