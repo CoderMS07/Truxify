@@ -7,6 +7,7 @@ import {
   storeDeliveryOtp,
   getActiveDeliveryOtp,
   verifyDeliveryOtp,
+  sendPushNotification,
 } from '../notificationService.js';
 import {
   OTP_TTL_MINUTES,
@@ -19,6 +20,19 @@ import {
 import { escrowRelease as defaultEscrowRelease } from '../escrow.js';
 import logger from '../../middleware/logger.js';
 import { OrderTimelineService } from './orderTimelineService.js';
+
+/** Haversine great-circle distance in metres between two lat/lng points. */
+function _haversineM(lat1, lng1, lat2, lng2) {
+  const R = 6_371_000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
 const orderTimelineService = new OrderTimelineService({ supabase, logger });
 
@@ -164,6 +178,92 @@ export class DeliveryVerificationService {
     });
   }
 
+  /**
+   * GPS Geofence Auto-Confirm
+   *
+   * If the driver is within geofenceRadiusM (default 500 m) of the drop
+   * location, this method auto-confirms delivery without requiring the
+   * customer to share their OTP. A synthetic bypass OTP is generated
+   * internally, stored, and immediately consumed by verifyDelivery().
+   *
+   * @param {object} params
+   * @param {string} params.orderId    - Order UUID
+   * @param {string} params.driverId   - Driver's Supabase user ID
+   * @param {number} params.driverLat  - Driver's current latitude
+   * @param {number} params.driverLng  - Driver's current longitude
+   * @param {number} [params.geofenceRadiusM=500] - Geofence radius in metres
+   * @returns {Promise<{autoConfirmed: boolean, distanceM: number, message: string}>}
+   */
+  async geofenceAutoConfirm({ orderId, driverId, driverLat, driverLng, geofenceRadiusM = 500 }) {
+    return measureExecution('DeliveryVerificationService.geofenceAutoConfirm', async () => {
+
+    // Fetch order including drop coords and current status
+    const { data: order, error: orderErr } = await this.orderRepository.findOrderById(
+      orderId,
+      'id, order_display_id, driver_id, customer_id, drop_lat, drop_lng, status, escrow_status, total_amount'
+    );
+
+    if (orderErr || !order) {
+      throw new DomainError(404, { error: 'Order not found.' });
+    }
+
+    if (order.driver_id !== driverId) {
+      throw new DomainError(403, { error: 'Access Denied: You are not assigned to this order.' });
+    }
+
+    if (!DELIVERY_OTP_READY_STATUSES.has(order.status)) {
+      throw new DomainError(409, {
+        error: 'Geofence auto-confirm is only available when the order status is "arriving".',
+      });
+    }
+
+    if (!order.drop_lat || !order.drop_lng) {
+      throw new DomainError(422, { error: 'Drop location coordinates are not available for this order.' });
+    }
+
+    const distanceM = _haversineM(
+      Number(driverLat), Number(driverLng),
+      Number(order.drop_lat), Number(order.drop_lng)
+    );
+
+    logger.info(
+      `[geofence] Order ${orderId}: driver is ${Math.round(distanceM)}m from drop ` +
+      `(threshold: ${geofenceRadiusM}m)`
+    );
+
+    if (distanceM > geofenceRadiusM) {
+      return {
+        autoConfirmed: false,
+        distanceM: Math.round(distanceM),
+        message: `Driver is ${Math.round(distanceM)}m from drop point. Must be within ${geofenceRadiusM}m for auto-confirm.`,
+      };
+    }
+
+    // --- Driver is within geofence ---
+
+    // Record geofence confirmation in DB
+    await this.orderRepository.updateOrder(orderId, {
+      geofence_confirmed: true,
+      geofence_confirmed_at: new Date().toISOString(),
+      geofence_driver_lat: driverLat,
+      geofence_driver_lng: driverLng,
+      updated_at: new Date().toISOString(),
+    }).catch(err => logger.warn('[geofence] Failed to persist geofence flag:', err.message));
+
+    // Generate a one-time bypass OTP and immediately verify delivery
+    const bypassOtp = crypto.randomInt(100000, 1000000).toString();
+    await this.notificationService.storeDeliveryOtp(orderId, bypassOtp, 5); // 5-minute TTL
+
+    await this.verifyDelivery({ orderId, driverId, otp: bypassOtp });
+
+    return {
+      autoConfirmed: true,
+      distanceM: Math.round(distanceM),
+      message: 'Delivery auto-confirmed via GPS geofence. Payment released to driver.',
+    };
+    });
+  }
+
   async verifyDelivery({ orderId, driverId, otp }) {
     return measureExecution('DeliveryVerificationService.verifyDelivery', async () => {
     const { order, otpRecord } = await this.validateDeliveryOtp({ orderId, driverId, otp });
@@ -234,6 +334,25 @@ export class DeliveryVerificationService {
     }
 
     await this.completeDeliveryOtp({ otpRecordId: otpRecord.id, orderId });
+
+    // --- Fire FCM push to driver: "Payment Released ✓" ---
+    const resolvedDriverIdForPush = tripData?.driver_id || order.driver_id;
+    if (resolvedDriverIdForPush) {
+      const amountInr = order.total_amount
+        ? `₹${(order.total_amount / 100).toFixed(0)}`
+        : 'your amount';
+      sendPushNotification(
+        resolvedDriverIdForPush,
+        '✅ Payment Released',
+        `Payment Released ✓ ${amountInr} credited for order ${order.order_display_id}`,
+        'payment_released',
+        {
+          order_display_id: order.order_display_id,
+          release_tx_hash: releaseTxHash || '',
+          amount_paisa: String(order.total_amount || 0),
+        }
+      ).catch(err => logger.warn('[FCM] Payment release push failed:', err.message));
+    }
 
     let escrowUpdateFailed = false;
     if (releaseTxHash || escrowAlreadyReleased) {

@@ -10,6 +10,7 @@ import '../theme/app_theme.dart';
 import '../models/app_models.dart';
 import '../widgets/common_widgets.dart';
 import 'chat_screen.dart';
+import 'delivery_otp_screen.dart';
 
 class TripDetailScreen extends StatefulWidget {
   final Trip trip;
@@ -855,6 +856,113 @@ Widget _cargoBadge({
                 ],
               ),
             ),
+
+            // OTP Confirm Delivery CTA — shown only for active trips
+            if (trip.status == TripStatusType.active)
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [TruxifyColors.accentDark, TruxifyColors.accent],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: TruxifyColors.accentDark.withValues(alpha: 0.35),
+                      blurRadius: 14,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    id: 'btn_enter_otp_confirm_delivery',
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () async {
+                      final released = await Navigator.of(context).push<bool>(
+                        MaterialPageRoute(
+                          builder: (_) => DeliveryOtpScreen(
+                            orderId: trip.tripId,
+                            orderDisplayId: trip.tripId,
+                            dropLat: null,
+                            dropLng: null,
+                            amountInr: trip.earnings.replaceAll('₹', '').trim(),
+                          ),
+                        ),
+                      );
+                      if (released == true && mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Row(
+                              children: [
+                                const Icon(Icons.check_circle_rounded,
+                                    color: Colors.white, size: 18),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Payment released! ${trip.earnings} credited.',
+                                  style: GoogleFonts.dmSans(
+                                      fontWeight: FontWeight.w600),
+                                ),
+                              ],
+                            ),
+                            backgroundColor: Colors.green.shade700,
+                            behavior: SnackBarBehavior.floating,
+                            duration: const Duration(seconds: 4),
+                          ),
+                        );
+                        Navigator.of(context).pop();
+                      }
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 16),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.2),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(Icons.pin_rounded,
+                                color: Colors.white, size: 22),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Enter OTP & Confirm Delivery',
+                                  style: GoogleFonts.dmSans(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w800,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  'Get the 6-digit OTP from customer to release payment',
+                                  style: GoogleFonts.dmSans(
+                                    color: Colors.white.withValues(alpha: 0.75),
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const Icon(Icons.arrow_forward_ios_rounded,
+                              color: Colors.white, size: 16),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            const SizedBox(height: 12),
 
             // 5. Blockchain Receipt
             Container(
