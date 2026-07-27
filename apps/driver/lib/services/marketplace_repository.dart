@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:developer' as developer;
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/app_models.dart';
@@ -41,7 +42,7 @@ class MarketplaceRepository {
     try {
       return await FirebaseAuth.instance.currentUser?.getIdToken();
     } catch (e) {
-      print('Error: $e');
+      debugPrint('Firebase token error: $e');
       return null;
     }
   }
@@ -50,16 +51,17 @@ class MarketplaceRepository {
     try {
       return _client.auth.currentSession?.accessToken;
     } catch (e) {
-      print('Error: $e');
+      debugPrint('Supabase token error: $e');
       return null;
     }
   }
 
   Future<Map<String, String>> _authHeaders() async {
+    final token = _supabaseAccessToken() ?? await _firebaseAccessToken();
     return <String, String>{
       'Content-Type': 'application/json',
-      if (accessToken != null && accessToken.isNotEmpty)
-        'Authorization': 'Bearer $accessToken',
+      if (token != null && token.isNotEmpty)
+        'Authorization': 'Bearer $token',
     };
   }
 
