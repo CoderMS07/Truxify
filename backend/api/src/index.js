@@ -28,6 +28,7 @@ import authRoutes from './routes/authRoutes.js'
 import healthRoutes from './routes/healthRoutes.js'
 import adminRoutes from './routes/adminRoutes.js'
 import lookupRoutes from './routes/lookupRoutes.js'
+import voiceRoutes from './routes/voice.routes.js'
 
 import logger from './middleware/logger.js'
 import { setupSwagger } from './config/swagger.js'
@@ -168,6 +169,7 @@ app.use('/api/v1/trips', tripRoutes)
   app.use('/api/v1', lookupRoutes)
   app.use('/api/auth', authLimiter, authRoutes)
   app.use('/api/v1/admin', adminRoutes)
+  app.use('/api/v1/voice', voiceRoutes)
 
 // Setup Swagger Documentation
 setupSwagger(app)

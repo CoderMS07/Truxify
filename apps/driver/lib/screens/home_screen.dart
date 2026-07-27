@@ -26,6 +26,7 @@ import '../widgets/earnings_shimmer.dart';
 import '../widgets/map_markers.dart';
 import 'destination_picker_screen.dart';
 import '../widgets/pulsing_location_dot.dart';
+import '../features/voice_ai/presentation/voice_assistant_sheet.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -845,7 +846,33 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-            // Recenter FAB — hidden until GPS is ready
+            // Voice Assistant FAB
+            AnimatedPositioned(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeInOut,
+              right: 16,
+              bottom: _showStatusCard ? (_destination == null ? 290 : 340) : 102,
+              child: FloatingActionButton(
+                heroTag: 'driver-home-voice-assistant',
+                onPressed: () {
+                  showModalBottomSheet(
+                    context: context,
+                    isScrollControlled: true,
+                    backgroundColor: Colors.transparent,
+                    builder: (context) => const VoiceAssistantSheet(
+                      backendUrl: 'http://10.0.2.2:5000/api/v1/voice/assistant',
+                    ),
+                  );
+                },
+                backgroundColor: TruxifyColors.primary,
+                foregroundColor: Colors.white,
+                elevation: 4,
+                shape: const CircleBorder(),
+                child: const Icon(Icons.mic),
+              ),
+            ),
+            
+            // Recenter FAB
             if (_currentLocation != null)
               AnimatedPositioned(
                 duration: const Duration(milliseconds: 300),
