@@ -1,11 +1,87 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+
 
 import 'api_client.dart';
 
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  print('[FCM] Background message: ${message.messageId}');
+  // Handle background data here
+}
+
 class FcmService {
+  static const String _baseUrl = 'http://localhost:3000'; // your Node.js API
+
+  static Future<void> initialize() async {
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+
+    // Request permission (iOS)
+    await FirebaseMessaging.instance.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+
+    // Handle foreground messages
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      print('[FCM] Foreground message: ${message.notification?.title}');
+      // TODO: Show local notification using flutter_local_notifications
+    });
+
+    // Handle notification tap when app is in background
+    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+      _handleNotificationTap(message);
+    });
+
+    // Handle notification tap when app was terminated
+    final initialMessage = await FirebaseMessaging.instance.getInitialMessage();
+    if (initialMessage != null) {
+      _handleNotificationTap(initialMessage);
+    }
+  }
+
+  static Future<void> registerTokenForUser(String userId) async {
+    final token = await FirebaseMessaging.instance.getToken();
+    if (token == null) return;
+
+    await http.post(
+      Uri.parse('$_baseUrl/api/users/fcm-token'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'userId': userId, 'fcmToken': token}),
+    );
+
+    // Refresh token listener
+    FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
+      await http.post(
+        Uri.parse('$_baseUrl/api/users/fcm-token'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'userId': userId, 'fcmToken': newToken}),
+      );
+    });
+  }
+
+  static void _handleNotificationTap(RemoteMessage message) {
+    final type = message.data['type'];
+    final loadId = message.data['loadId'];
+    // TODO: Use your app's navigator to route based on type
+    // e.g. navigatorKey.currentState?.pushNamed('/load/$loadId')
+    print('[FCM] Tapped: type=$type, loadId=$loadId');
+  }
+}
+
+class FcmService {
+  static final ApiClient apiClient = ApiClient();
+  static bool _initialized = false;
+  static StreamSubscription<String>? _tokenRefreshSub;
+
   static Future<void> initializeAndRegister() async {
+    if (_initialized) return;
+    _initialized = true;
     try {
       final messaging = FirebaseMessaging.instance;
 
@@ -26,7 +102,8 @@ class FcmService {
           await _sendTokenToBackend(token);
         }
 
-        messaging.onTokenRefresh.listen((newToken) async {
+        _tokenRefreshSub?.cancel();
+        _tokenRefreshSub = messaging.onTokenRefresh.listen((newToken) async {
           await _sendTokenToBackend(newToken);
         });
       } else {
@@ -60,20 +137,15 @@ class FcmService {
       debugPrint('[FCM] No authenticated user, skipping token unregister.');
       return;
     }
-    final accessToken = await firebaseUser.getIdToken();
 
-    final response = await http.post(
-      Uri.parse('$_apiBaseUrl/api/devices/unregister'),
-      headers: <String, String>{
-        'Content-Type': 'application/json',
-        if (accessToken != null && accessToken.isNotEmpty) 'Authorization': 'Bearer $accessToken',
-      },
-      body: jsonEncode(<String, dynamic>{
-        'fcmToken': token,
-      }),
-    );
-
-    if (response.statusCode >= 200 && response.statusCode < 300) {
+    final apiClient = ApiClient();
+    try {
+      await apiClient.post(
+        '/api/devices/unregister',
+        body: <String, dynamic>{
+          'fcmToken': token,
+        },
+      );
       debugPrint('[FCM] Device token unregistered successfully.');
     } catch (e) {
       debugPrint('[FCM] Failed to unregister device token: $e');
@@ -97,19 +169,6 @@ class FcmService {
       debugPrint('[FCM] No authenticated user, skipping token upload.');
       return;
     }
-    final accessToken = await firebaseUser?.getIdToken();
-
-    final response = await http.put(
-      Uri.parse('$_apiBaseUrl/api/profile/fcm-token'),
-      headers: <String, String>{
-        'Content-Type': 'application/json',
-        if (accessToken != null && accessToken.isNotEmpty) 'Authorization': 'Bearer $accessToken',
-      },
-      body: jsonEncode(<String, dynamic>{
-        'fcmToken': token,
-      }),
-    );
-
     final apiClient = ApiClient();
     try {
       await apiClient.put(
@@ -126,3 +185,4 @@ class FcmService {
     }
   }
 }
+export 'package:truxify_shared/src/services/fcm_service.dart' hide FcmService;
