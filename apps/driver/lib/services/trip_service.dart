@@ -1,10 +1,12 @@
 import 'dart:convert';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'api_client.dart';
+import 'sync_engine.dart';
 
 class TripService {
   TripService({
@@ -163,6 +165,16 @@ class TripService {
     String stopId,
     String tripDisplayId,
   ) async {
+    final connectivityResult = await Connectivity().checkConnectivity();
+    if (connectivityResult == ConnectivityResult.none) {
+      await SyncEngine.queueEvent(
+        tripId: tripDisplayId,
+        eventType: 'markStopCompleted',
+        payload: {'stopId': stopId},
+      );
+      return;
+    }
+
     await verifyTripOwnership(tripDisplayId);
     final path = '/api/trips/$tripDisplayId/stops/$stopId/complete';
     try {
