@@ -148,6 +148,19 @@ describe('Truck Routes', () => {
       const insertCall = m.calls.find(c => c.table === 'trucks' && c.mode === 'insert');
       expect(insertCall.payload.number_plate).toBe('MH12AB1234');
     });
+
+    it('normalises separators before duplicate lookup', async () => {
+      m.store.trucks.push({ id: 'truck-existing', number_plate: 'MH12AB1234', owner_id: 'other-driver' });
+
+      const res = await request(buildApp())
+        .post('/api/trucks')
+        .set(DRIVER_HEADERS)
+        .send({ name: 'Duplicate', number_plate: 'MH 12 AB 1234', max_capacity_tons: 5 });
+
+      expect(res.status).toBe(409);
+      const checkCall = m.calls.find(c => c.table === 'trucks' && c.mode === 'select');
+      expect(checkCall.filters).toContainEqual({ col: 'number_plate', op: 'eq', val: 'MH12AB1234' });
+    });
   });
 
   describe('GET /api/trucks', () => {

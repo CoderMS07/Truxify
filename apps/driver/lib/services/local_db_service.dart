@@ -6,12 +6,14 @@ import 'package:path_provider/path_provider.dart';
 class LocalDbService {
   static final LocalDbService instance = LocalDbService._init();
   static Database? _database;
+  static Future<Database>? _pendingInit;
 
   LocalDbService._init();
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('truxify_driver.db');
+    _pendingInit ??= _initDB('truxify_driver.db');
+    _database = await _pendingInit;
     return _database!;
   }
 

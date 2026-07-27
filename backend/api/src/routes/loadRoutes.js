@@ -56,7 +56,7 @@ import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 import logger from '../middleware/logger.js';
 import { loadFilterQuerySchema } from '../validation/loadSchemas.js';
-import { validateParams } from '../middleware/validate.js';
+import { validateParams, validateQuery } from '../middleware/validate.js';
 import { paramIdSchema, uuidParamSchema } from '../validation/requestSchemas.js';
 import { escapeLike } from '../lib/escapeLike.js';
 
@@ -151,17 +151,7 @@ function sanitizeLoadFilters(query) {
  */
 router.get('/', authenticate, userLimiter, requirePolicy('load-offer:browse'), async (req, res) => {
   try {
-    const filterResult = loadFilterQuerySchema.safeParse(req.query);
-    if (!filterResult.success) {
-      return res.status(400).json({
-        error: 'Validation failed',
-        details: filterResult.error.issues.map(issue => ({
-          field: issue.path.join('.') || 'query',
-          message: issue.message,
-        })),
-      });
-    }
-    const filters = filterResult.data;
+    const filters = req.query;
 
     const pageVal = req.query.page || '1';
     const limitVal = req.query.limit || '10';

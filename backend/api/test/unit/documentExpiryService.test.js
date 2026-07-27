@@ -57,6 +57,7 @@ vi.mock('../../src/config/db.js', () => ({
     set: redisSetMock,
     del: redisDelMock,
     expire: vi.fn(),
+    eval: vi.fn().mockResolvedValue(1),
   },
 }));
 

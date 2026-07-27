@@ -36,6 +36,9 @@ services:
       SHARD_WEST_DB: truxify_west
       SHARD_WEST_USER: postgres
       SHARD_WEST_PASSWORD: ${SHARD_PASSWORD:-password}
+      # Malware scanning
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
     volumes:
       - ./backend/api:/app
       - /app/node_modules
@@ -240,6 +243,24 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # ─── ClamAV (optional malware scanning daemon) ──────────────────────────
+  clamav:
+    image: clamav/clamav:1.4
+    container_name: truxify-clamav
+    ports:
+      - "3310:3310"
+    volumes:
+      - clamav_data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --version || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   mongo_data:
   postgres_data:
@@ -248,4 +269,5 @@ volumes:
   shard_east_data:
   shard_west_data:
   redis_data:
+  clamav_data:
   n8n_data:
