@@ -153,16 +153,8 @@ import { scanDocument } from '../lib/malwareScanner.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { z } from 'zod';
 import {
-  createOrderSchema,
-  submitBidSchema,
-  submitRatingSchema,
-  paramIdSchema,
-  acceptBidParamsSchema,
-  updateMilestoneSchema,
-  verifyDeliverySchema,
-  predictDemandSchema,
-  changeDropSchema,
-  cancelOrderSchema,
+  createOrderSchema, submitBidSchema, submitRatingSchema, paramIdSchema, acceptBidParamsSchema,
+  updateMilestoneSchema, verifyDeliverySchema, predictDemandSchema, changeDropSchema, cancelOrderSchema, paginationQuerySchema,
 } from '../validation/requestSchemas.js';
 import { awardReputationPoints } from '../services/reputation.js';
 import { expireDeliveryOtps } from '../services/notificationService.js';
@@ -377,7 +369,7 @@ router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
 
     res.json(offers);
   } catch (err) {
-    logger.error("[orderRoutes] Failed to fetch load offers:", err.message);
+    logger.error('Fetch load offers exception:', err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -544,7 +536,6 @@ router.get('/history', authenticate, userLimiter, requirePolicy('order:view-hist
  */
 router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
-
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, '*');
     orderValidationService.assertOrderFound(order);
@@ -601,7 +592,6 @@ router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), asy
  */
 router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
-
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'customer_id, driver_id, order_display_id');
     orderValidationService.assertOrderFound(order);

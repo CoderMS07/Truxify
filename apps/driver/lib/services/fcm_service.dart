@@ -79,6 +79,7 @@ class FcmService {
   static bool _initialized = false;
   static StreamSubscription<String>? _tokenRefreshSub;
 
+class FcmService {
   static Future<void> initializeAndRegister() async {
     if (_initialized) return;
     _initialized = true;
