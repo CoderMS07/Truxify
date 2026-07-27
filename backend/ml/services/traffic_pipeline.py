@@ -204,8 +204,10 @@ class TrafficPipeline:
     def train_model(self, epochs=50, batch_size=32):
         """Train LSTM model on historical data"""
         session = self.Session()
-        data = session.query(TrafficData).all()
-        session.close()
+        try:
+            data = session.query(TrafficData).all()
+        finally:
+            session.close()
         
         if len(data) < 100:
             logger.warning("Not enough data for training")
@@ -313,10 +315,12 @@ class TrafficPipeline:
         """Get traffic forecast for next N hours"""
         # Get historical data for this route
         session = self.Session()
-        data = session.query(TrafficData).filter(
-            TrafficData.route_id == route_id
-        ).order_by(TrafficData.timestamp.desc()).limit(24).all()
-        session.close()
+        try:
+            data = session.query(TrafficData).filter(
+                TrafficData.route_id == route_id
+            ).order_by(TrafficData.timestamp.desc()).limit(24).all()
+        finally:
+            session.close()
         
         if len(data) < 10:
             return {'forecast': None, 'confidence': 'low'}
