@@ -14,7 +14,7 @@ import maintenancePhotoRoutes from './routes/maintenancePhotoRoutes.js'
 
 import { closeDbConnections, waitForMongoDb, validateConfig } from './config/db.js'
 import { orderRepository } from './core/container.js'
-import { closeWebSocketServer, initWebSocketServer } from './sockets/tracker.js'
+import { closeWebSocketServer, initWebSocketServer, __testing as wsTesting } from './sockets/tracker.js'
 import { initLocationServer, closeLocationServer } from './sockets/locationServer.js'
 import { startEscrowReleaseReconciliation, stopEscrowReleaseReconciliation } from './services/escrowReleaseReconciliation.js'
 import { validateEscrowSetup } from './services/escrow.js'
@@ -517,6 +517,9 @@ app.use(errorHandler)
 initWebSocketServer(server, orderRepository)
 initLocationServer(server)
 
+// Expose WebSocket state for health aggregation
+globalThis.__truxify_wsState = wsTesting.getShutdownState()
+
 // =====================================================================// 🆕 WEBRTC SIGNALING SERVER INIT
 // =====================================================================initWebRTCSignaling(server)
 logger.info('🆕 WebRTC Signaling Server initialized at /webrtc')
@@ -542,6 +545,15 @@ server.listen(PORT, () => {
   startDlqWorker()
   startStaleOrderWorker()
   startDocumentExpiryWorker()
+
+  // Register worker states for health aggregation
+  globalThis.__truxify_workers = {
+    escrowRefundReconciliation: true,
+    reputationReconciliation: true,
+    dlqWorker: true,
+    staleOrderWorker: true,
+    documentExpiryWorker: true,
+  }
 })
 
 // =====================================================================// GRACEFUL SHUTDOWN
