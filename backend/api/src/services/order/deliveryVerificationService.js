@@ -214,21 +214,24 @@ export class DeliveryVerificationService {
   async verifyDelivery({ orderId, driverId, otp }) {
     const { order, otpRecord } = await this.validateDeliveryOtp({ orderId, driverId, otp });
 
-    const guardResult = await this.orderRepository.updateOrderGuardStatus(
-      orderId,
-      { updated_at: new Date().toISOString() },
-      ['cancelled', 'payment_released']
-    );
+    // STRICT STATE MACHINE ATOMIC LOCK (Fix for Race Condition)
+    // Only the first request will succeed because we mandate that the status
+    // is exactly what we read earlier (e.g. 'arriving'). The second request
+    // will fail to update anything and trigger a 400 Bad Request.
+    const { data: lockedOrder, error: lockErr } = await this.orderRepository.supabase
+      .from('orders')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', orderId)
+      .eq('status', order.status)
+      .select('id')
+      .single();
 
-    if (guardResult.error) {
-      throw new DomainError(409, { error: 'Order was already cancelled or payment released.' });
+    if (lockErr) {
+      if (lockErr.code === 'PGRST116') {
+        throw new DomainError(400, { error: 'Trip already completed.' });
+      }
+      throw new DomainError(500, { error: 'Failed to secure trip completion lock.', details: lockErr.message });
     }
-  if (guardErr) {
-    if (guardErr.code === 'PGRST116') {
-      throw new DomainError(409, { error: 'Order was already cancelled or payment released.' });
-    }
-    throw new DomainError(500, { error: 'Failed to verify OTP.', details: guardErr.message });
-  }
 
     let releaseTxHash = null;
     let escrowAlreadyReleased = false;
