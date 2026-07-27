@@ -1057,7 +1057,8 @@ describe('tracker Redis subscription metadata', () => {
   });
 
   it('restores subscriptions from Redis on reconnect', async () => {
-    const smembers = vi.fn().mockResolvedValue(['driver-redis']);
+    const driverId = '123e4567-e89b-12d3-a456-426614174000';
+    const smembers = vi.fn().mockResolvedValue([driverId]);
     const persist = vi.fn().mockResolvedValue(1);
 
     vi.resetModules();
@@ -1076,17 +1077,17 @@ describe('tracker Redis subscription metadata', () => {
 
     const { __testing: redisTesting } = await import('../../src/sockets/tracker.js');
     const ws = {
-      user: { id: 'driver-redis', role: 'driver' },
-      driverId: 'driver-redis',
+      user: { id: driverId, role: 'driver' },
+      driverId: driverId,
       send: vi.fn(),
     };
 
     await redisTesting.restoreSubscriptions(ws);
 
-    expect(smembers).toHaveBeenCalledWith('user:subscriptions:driver-redis');
-    expect(persist).toHaveBeenCalledWith('user:subscriptions:driver-redis');
-    expect(redisTesting.getTrackingSubscriptions().get('driver-redis')?.has(ws)).toBe(true);
-    expect(ws.subscriptionTargets.has('driver-redis')).toBe(true);
+    expect(smembers).toHaveBeenCalledWith(`user:subscriptions:${driverId}`);
+    expect(persist).toHaveBeenCalledWith(`user:subscriptions:${driverId}`);
+    expect(redisTesting.getTrackingSubscriptions().get(driverId)?.has(ws)).toBe(true);
+    expect(ws.subscriptionTargets.has(driverId)).toBe(true);
   });
 
   it('does not restore unauthorized subscriptions and prunes stale Redis entries', async () => {

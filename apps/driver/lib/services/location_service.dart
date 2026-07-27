@@ -347,7 +347,7 @@ class LocationService {
           debugPrint('[LocationService] WebSocket closed (code: $_lastCloseCode)');
           if (_lastCloseCode == 4001 || _lastCloseCode == 4003) {
             debugPrint('[LocationService] Auth rejected (code $_lastCloseCode) — not reconnecting');
-            _isTracking = false;
+            stopTracking();
             return;
           }
           _scheduleReconnect();

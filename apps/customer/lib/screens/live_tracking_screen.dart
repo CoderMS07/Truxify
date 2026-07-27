@@ -51,6 +51,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   ResilientWebSocket? _trackingWebSocket;
   StreamSubscription? _trackingSubscription;
   RealtimeChannel? _supabaseRealtimeChannel;
+  final MapController _mapController = MapController();
 
   // ── Route polyline state ──────────────────────────────────────────────
   Timer? _routeRefreshTimer;
@@ -177,6 +178,13 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
       setState(() {
         _currentPosition = newPosition;
       });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        try {
+          _mapController.move(newPosition, 13.0);
+        } catch (e) {
+          debugPrint('Error moving map: $e');
+        }
+      });
       return;
     }
 
@@ -195,6 +203,17 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
       _currentPosition = newPosition;
     });
     _movementController.forward(from: 0.0);
+
+    try {
+      final zoom = _mapController.camera.zoom;
+      _mapController.move(newPosition, zoom);
+    } catch (_) {
+      try {
+        _mapController.move(newPosition, 13.0);
+      } catch (e) {
+        debugPrint('Error moving map: $e');
+      }
+    }
   }
 
   Future<void> _loadOrder() async {
@@ -851,6 +870,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
         children: [
           Positioned.fill(
             child: FlutterMap(
+              mapController: _mapController,
               options: const MapOptions(
                 initialCenter: LatLng(24.25, 74.40),
                 initialZoom: 6.2,

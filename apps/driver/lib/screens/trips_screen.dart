@@ -423,9 +423,30 @@ class _TripsScreenState extends State<TripsScreen> {
     }
 
     try {
+      // Resolve driver's current GPS from the active trip's last known route
+      // point so the ML engine can compute detour distances accurately.
+      double? currentLat;
+      double? currentLng;
+      final activeTrip = _trips.cast<Map<String, dynamic>?>().firstWhere(
+        (t) => t?['status'] == 'active',
+        orElse: () => null,
+      );
+      if (activeTrip != null) {
+        final tripId = activeTrip['trip_display_id']?.toString();
+        final routePoints = tripId != null ? (_routePointsByTripId[tripId] ?? []) : [];
+        if (routePoints.isNotEmpty) {
+          final lastPoint = routePoints.last;
+          currentLat = (lastPoint['latitude'] as num?)?.toDouble();
+          currentLng = (lastPoint['longitude'] as num?)?.toDouble();
+        }
+      }
+
       final results = await Future.wait([
         _marketplaceRepository.fetchLoadOffers(),
-        _marketplaceRepository.fetchEnRouteLoads(),
+        _marketplaceRepository.fetchEnRouteLoads(
+          currentLat: currentLat,
+          currentLng: currentLng,
+        ),
         _marketplaceRepository.fetchDriverBids(),
       ]);
 

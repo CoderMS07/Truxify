@@ -138,10 +138,10 @@ class _TruckResultsScreenState extends State<TruckResultsScreen> {
 
   double _eta(String eta) {
     if (eta.contains('mins')) {
-      return double.parse(eta.replaceAll('mins', '').trim());
+      return double.tryParse(eta.replaceAll('mins', '').trim()) ?? double.infinity;
     }
     if (eta.contains('hrs')) {
-      return double.parse(eta.replaceAll('hrs', '').trim()) * 60;
+      return (double.tryParse(eta.replaceAll('hrs', '').trim()) ?? 0) * 60;
     }
     return double.infinity;
   }

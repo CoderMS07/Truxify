@@ -120,6 +120,7 @@ export function requireIdempotency(ttlSeconds = 3600) {
           redisClient.del(lockKey).catch(() => {});
         };
 
+        // Ensure lock is reliably released when response terminates
         res.once('finish', releaseLock);
         res.once('close', releaseLock);
       }
