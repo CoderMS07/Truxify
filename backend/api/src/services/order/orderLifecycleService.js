@@ -15,7 +15,7 @@ import { getRouteEstimate } from '../osrm.js';
 import { optimizeWaypoints } from '../routingService.js';
 import { predictPrice } from '../ml.js';
 import { getLiveTrafficMultiplier } from '../trafficService.js';
-import { eventBus } from '../../core/events.js';
+import { eventBus } from '../../core/events/index.js';
 import logger from '../../middleware/logger.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
