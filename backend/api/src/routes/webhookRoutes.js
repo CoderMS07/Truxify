@@ -2,6 +2,7 @@ import express from 'express';
 import crypto from 'crypto';
 import logger from '../middleware/logger.js';
 import { dlqService } from '../services/webhook/dlqService.js';
+import { processEscrowWebhookEvent } from '../services/webhook/escrowWebhookProcessor.js';
 
 const router = express.Router();
 
@@ -58,13 +59,7 @@ router.post('/escrow', verifyWebhookSignature, async (req, res) => {
 
   try {
     logger.info(`[Webhook] Received Escrow event: ${eventType} for order ${orderId}`);
-    
-    // Simulate some processing that might fail
-    if (req.body.simulateFailure === true) {
-      throw new Error('Simulated database lock or processing failure');
-    }
-
-    // Processing success
+    await processEscrowWebhookEvent(eventType, req.body);
     return res.status(200).json({ received: true });
   } catch (error) {
     logger.error(`[Webhook] Failed to process escrow webhook for order ${orderId}: ${error.message}`);

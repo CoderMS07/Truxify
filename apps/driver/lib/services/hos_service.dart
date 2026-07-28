@@ -47,7 +47,7 @@ class HosService {
       final response = await Supabase.instance.client
           .from('driver_details')
           .select('hos_status, accumulated_driving_minutes, accumulated_on_duty_minutes, shift_start_time')
-          .eq('driver_id', driverId)
+          .eq('user_id', driverId)
           .maybeSingle();
       
       return response;

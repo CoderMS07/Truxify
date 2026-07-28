@@ -3,15 +3,21 @@ import { TOPICS } from '../kafka/config/kafka.config.js';
 import { v4 as uuidv4 } from 'uuid';
 import logger from '../api/src/middleware/logger.js';
 import { supabase } from '../api/src/config/db.js';
+import { BaseEvent, EVENT_SOURCES, EVENT_CATEGORIES } from '../api/src/core/events/index.js';
 
 class EventStore {
-    constructor() {
+    constructor({ eventBus: externalEventBus } = {}) {
         this.eventStore = new Map(); // In-memory cache
         this.eventStreams = new Map();
         this.snapshots = new Map();
         this.snapshotThreshold = 50; // Take snapshot every 50 events
         this.kafkaProducer = null;
         this.isInitialized = false;
+        this._eventBus = externalEventBus || null;
+    }
+
+    setEventBus(eventBus) {
+        this._eventBus = eventBus;
     }
 
     async initialize() {
@@ -399,7 +405,7 @@ class EventStore {
         }
     }
 
-    // ============ Kafka Publishing ============
+    // ============ Event Publishing ============
 
     async publishEvents(events) {
         for (const event of events) {
@@ -408,9 +414,23 @@ class EventStore {
     }
 
     async publishEvent(event) {
-        const topic = this.getEventTopic(event.type);
-        await kafka.publishEvent(topic, event, event.aggregateId);
-        logger.info(`📤 Event published to Kafka: ${event.type}`);
+        if (this._eventBus) {
+            const baseEvent = new BaseEvent({
+                eventType: event.type,
+                payload: {
+                    aggregateId: event.aggregateId,
+                    ...event.payload,
+                },
+                source: EVENT_SOURCES.INTERNAL,
+                category: EVENT_CATEGORIES.DOMAIN,
+            });
+            this._eventBus.publish(baseEvent, { deduplicate: false });
+            logger.info(`📤 Event published via EventBus: ${event.type}`);
+        } else {
+            const topic = this.getEventTopic(event.type);
+            await kafka.publishEvent(topic, event, event.aggregateId);
+            logger.info(`📤 Event published to Kafka: ${event.type}`);
+        }
     }
 
     getEventTopic(eventType) {

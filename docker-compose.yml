@@ -14,6 +14,7 @@ services:
       REDIS_URL: redis://redis:6379
       ML_API_KEY: ${ML_API_KEY:?ML_API_KEY is required}
       ML_ENGINE_URL: http://ml-engine:8000
+      OSRM_BASE_URL: http://osrm:5000
       # Shard Configuration
       SHARD_NORTH_HOST: shard-north
       SHARD_NORTH_PORT: 5432
@@ -56,9 +57,8 @@ services:
         condition: service_healthy
       shard-west:
         condition: service_healthy
-      clamav:
-        condition: service_healthy
-        required: false
+      osrm:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:5000/api/health/live || curl -sf http://localhost:5000/api/health/live"]
       interval: 30s
@@ -79,6 +79,10 @@ services:
       - "8001:8000"
     environment:
       ML_API_KEY: ${ML_API_KEY:?ML_API_KEY is required}
+      OSRM_BASE_URL: http://osrm:5000
+    depends_on:
+      osrm:
+        condition: service_started
     volumes:
       - ./backend/ml:/app
     healthcheck:
@@ -87,6 +91,16 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  osrm:
+    image: osrm/osrm-backend:latest
+    container_name: truxify-osrm
+    volumes:
+      - ./osrm-data:/data
+    command: osrm-routed --algorithm mld /data/india-latest.osrm
+    ports:
+      - "5002:5000"
+    restart: unless-stopped
 
   db:
     image: postgis/postgis:15-3.3-alpine
@@ -205,6 +219,24 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # ── Optional: ClamAV malware scanner ──────────────────
+  # Uncomment to enable on-demand malware scanning for uploads.
+  # Requires CLAMAV_HOST=clamav:3310 in the api service environment.
+  # clamav:
+  #   image: clamav/clamav:latest
+  #   container_name: truxify-clamav
+  #   ports:
+  #     - "3310:3310"
+  #   volumes:
+  #     - clamav_data:/var/lib/clamav
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "clamdscan --ping 1 || exit 1"]
+  #     interval: 60s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 120s
+  #   restart: unless-stopped
+
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
     container_name: truxify-n8n
@@ -255,5 +287,6 @@ volumes:
   shard_east_data:
   shard_west_data:
   redis_data:
+  # clamav_data:
   clamav_data:
   n8n_data:

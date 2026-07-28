@@ -1,11 +1,11 @@
-import { eventBus } from '../core/events.js';
+import { eventBus } from '../core/events/index.js';
 import { awardReputationPoints } from '../services/reputation.js';
 import { OrderRepository } from '../repositories/orderRepository.js';
 import { supabase } from '../config/db.js';
 import logger from '../middleware/logger.js';
 
 
-eventBus.on('rating:submitted', async (payload) => {
+eventBus.subscribe('rating:submitted', async (payload) => {
   const { driverWallet, stars, orderDisplayId } = payload;
   
   if (!driverWallet) {

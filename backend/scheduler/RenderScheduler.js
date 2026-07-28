@@ -269,6 +269,9 @@ class RenderScheduler extends EventEmitter {
             
             this.running.delete(task.id);
             this.completed.push(task);
+            if (this.completed.length > 1000) {
+                this.completed = this.completed.slice(-1000);
+            }
             this.stats.completedTasks++;
             
             // Update stats

@@ -234,7 +234,7 @@ class _ProofOfDeliveryScreenState extends State<ProofOfDeliveryScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
-                      onPressed: _submit,
+                      onPressed: _isProcessing ? null : _submit,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: TruxifyColors.primary,
                         padding: const EdgeInsets.symmetric(vertical: 16),

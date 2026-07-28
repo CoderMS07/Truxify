@@ -15,7 +15,7 @@ import { getRouteEstimate } from '../osrm.js';
 import { optimizeWaypoints } from '../routingService.js';
 import { predictPrice } from '../ml.js';
 import { getLiveTrafficMultiplier } from '../trafficService.js';
-import { eventBus } from '../../core/events.js';
+import { eventBus } from '../../core/events/index.js';
 import logger from '../../middleware/logger.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -33,7 +33,7 @@ export class OrderLifecycleService {
     this.orderRepository = orderRepository;
     this.orderTimelineService = orderTimelineService;
     this.bidAcceptanceService = bidAcceptanceService;
-    this.deliveryVerification = new DeliveryVerificationService(orderRepository);
+    this.deliveryVerification = deps.deliveryVerificationService ?? new DeliveryVerificationService(orderRepository);
   }
 
   async createOrder(customerId, customerName, body) {
@@ -282,41 +282,49 @@ export class OrderLifecycleService {
 
   async submitBid(loadOfferId, driverId, bidAmount) {
     return measureExecution('OrderLifecycleService.submitBid', async () => {
-    const { data: offer, error: offerErr } = await this.orderRepository.findLoadOfferById(loadOfferId, 'id, status, customer_id');
-    if (offerErr || !offer) throw new DomainError(404, { error: 'Load offer not found.' });
-    if (offer.status !== 'available') throw new DomainError(410, { error: 'Load is no longer available for bidding.' });
-    if (offer.customer_id === driverId) throw new DomainError(403, { error: 'You cannot bid on your own load offer' });
+    const lockKey = `lock:submitBid:${driverId}:${loadOfferId}`;
+    const acquired = await acquireLock(lockKey, 5000);
+    if (!acquired) throw new DomainError(409, { error: 'Duplicate bid submission in progress.' });
 
-    const { data: driverDetails, error: driverDetailsErr } = await this.orderRepository.findDriverDetailMinimal(driverId);
-    if (driverDetailsErr) throw new DomainError(500, { error: 'Failed to verify driver profile.', details: driverDetailsErr.message });
-    if (!driverDetails?.truck_id) throw new DomainError(400, { error: 'You must assign a valid truck to your profile before bidding on loads' });
+    try {
+      const { data: offer, error: offerErr } = await this.orderRepository.findLoadOfferById(loadOfferId, 'id, status, customer_id');
+      if (offerErr || !offer) throw new DomainError(404, { error: 'Load offer not found.' });
+      if (offer.status !== 'available') throw new DomainError(410, { error: 'Load is no longer available for bidding.' });
+      if (offer.customer_id === driverId) throw new DomainError(403, { error: 'You cannot bid on your own load offer' });
 
-    const { data: truck, error: truckErr } = await this.orderRepository.findTruckById(driverDetails.truck_id);
-    if (truckErr) throw new DomainError(500, { error: 'Failed to verify assigned truck.', details: truckErr.message });
-    if (!truck) throw new DomainError(400, { error: 'Assigned truck record could not be found' });
+      const { data: driverDetails, error: driverDetailsErr } = await this.orderRepository.findDriverDetailMinimal(driverId);
+      if (driverDetailsErr) throw new DomainError(500, { error: 'Failed to verify driver profile.', details: driverDetailsErr.message });
+      if (!driverDetails?.truck_id) throw new DomainError(400, { error: 'You must assign a valid truck to your profile before bidding on loads' });
 
-    const { data: existingBid, error: existingBidErr } = await this.orderRepository.findExistingBid(loadOfferId, driverId, 'pending');
-    if (existingBidErr) throw new DomainError(500, { error: 'Failed to verify existing bids.', details: existingBidErr.message });
-    if (existingBid) throw new DomainError(409, { error: 'You already have a pending bid for this load.' });
+      const { data: truck, error: truckErr } = await this.orderRepository.findTruckById(driverDetails.truck_id);
+      if (truckErr) throw new DomainError(500, { error: 'Failed to verify assigned truck.', details: truckErr.message });
+      if (!truck) throw new DomainError(400, { error: 'Assigned truck record could not be found' });
 
-    const { data: bid, error: bidErr } = await this.orderRepository.createBid({
-      load_id: loadOfferId,
-      driver_id: driverId,
-      bid_amount: bidAmount,
-      status: 'pending',
-    });
+      const { data: existingBid, error: existingBidErr } = await this.orderRepository.findExistingBid(loadOfferId, driverId, 'pending');
+      if (existingBidErr) throw new DomainError(500, { error: 'Failed to verify existing bids.', details: existingBidErr.message });
+      if (existingBid) throw new DomainError(409, { error: 'You already have a pending bid for this load.' });
 
-    if (bidErr) throw new DomainError(500, { error: 'Failed to record bid.', details: bidErr.message });
+      const { data: bid, error: bidErr } = await this.orderRepository.createBid({
+        load_id: loadOfferId,
+        driver_id: driverId,
+        bid_amount: bidAmount,
+        status: 'pending',
+      });
 
-    sendPushNotification(
-      offer.customer_id,
-      'New Bid Received',
-      `A driver has submitted a bid of ₹${bidAmount} for your order.`,
-      'new_bid',
-      { loadOfferId, bidId: bid.id }
-    ).catch(err => logger.error(`[FCM] Failed to notify customer of new bid: ${err.message}`));
+      if (bidErr) throw new DomainError(500, { error: 'Failed to record bid.', details: bidErr.message });
 
-    return { message: 'Bid submitted successfully.', bid };
+      sendPushNotification(
+        offer.customer_id,
+        'New Bid Received',
+        `A driver has submitted a bid of ₹${bidAmount} for your order.`,
+        'new_bid',
+        { loadOfferId, bidId: bid.id }
+      ).catch(err => logger.error(`[FCM] Failed to notify customer of new bid: ${err.message}`));
+
+      return { message: 'Bid submitted successfully.', bid };
+    } finally {
+      await releaseLock(lockKey);
+    }
     });
   }
 
