@@ -64,31 +64,24 @@ class EdgeRuntime {
                 throw new Error('WASM module not loaded');
             }
             
-            // Execute function with timeout
-            const result = await this.executeWithTimeout(
-                () => {
-                    const func = wasm.exports[functionName];
-                    if (!func) {
-                        throw new Error(`Function ${functionName} not found`);
-                    }
-                    return func(...params);
-                },
-                this.timeoutLimit
-            );
+            // Execute function - sync WASM cannot be aborted by timeout
+            // Use Promise.race for async functions; sync calls will block
+            const func = wasm.exports[functionName];
+            if (!func) {
+                throw new Error(`Function ${functionName} not found`);
+            }
+            
+            const result = func(...params);
             
             return {
                 success: true,
-                result,
-                executionTime: Date.now(),
-                functionName
+                data: result
             };
-            
         } catch (error) {
-            logger.error(`Edge function execution failed: ${error}`);
+            logger.error(`Edge function execution error: ${error.message}`);
             return {
                 success: false,
-                error: error.message,
-                functionName
+                error: error.message
             };
         }
     }
