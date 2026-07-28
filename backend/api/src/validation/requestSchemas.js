@@ -84,6 +84,10 @@ export const uuidParamSchema = z.object({
   id: uuidSchema
 });
 
+export const driverIdParamSchema = z.object({
+  driverId: uuidSchema
+});
+
 export const submitBidSchema = z.object({
   bid_amount: z
     .number()
@@ -105,7 +109,7 @@ export const withdrawSchema = z.object({
     .number()
     .int({ message: 'Amount must be a whole number (paisa)' })
     .positive({ message: 'Amount must be greater than 0' })
-    .safe({ message: 'Amount is too large' }),
+    .safeInteger({ message: 'Amount must be a safe integer' }),
 }).strict();
 
 export const submitRatingSchema = z.object({
@@ -237,7 +241,7 @@ export const registerTruckSchema = z.object({
     .min(2, 'Truck name must be at least 2 characters')
     .max(100, 'Truck name must be 100 characters or fewer'),
   number_plate: z.string()
-    .transform((v) => v.trim().toUpperCase())
+    .transform((v) => v.trim().toUpperCase().replace(/[^A-Z0-9]/g, ''))
     .pipe(
       z.string().regex(numberPlateRegex, 'Invalid number plate format (e.g. MH12AB1234)')
     ),

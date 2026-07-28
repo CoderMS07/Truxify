@@ -280,13 +280,11 @@ Truxify/
 ├── docs/
 │   ├── architecture.md    # ← You are here
 │   ├── schema.md          # Database schema visualization
-│   ├── supabase_setup.sql # One-shot DB setup for contributors
-│   ├── supabase_drop_all.sql
-│   ├── supabase_schema.sql
-│   ├── supabase_queries.sql
-│   └── migrations/
-│       ├── 01_rpc_transactions.sql
-│       └── 02_patch_missing.sql
+│   ├── supabase_setup.sql    # One-shot DB setup for contributors
+│   └── supabase/
+│       └── migrations/
+│           ├── 002_rls_policies.sql
+│           └── test_rls_policies.sql
 ├── .env.example           # All service credentials template
 ├── docker-compose.yml
 └── README.md

@@ -77,7 +77,21 @@ class TraceabilityService {
             );
             const receipt = await tx.wait();
 
-            const shipmentId = await this.contract.getShipmentCount();
+            let shipmentId;
+            for (const log of receipt.logs) {
+                try {
+                    const parsed = this.contract.interface.parseLog(log);
+                    if (parsed && parsed.name === 'ShipmentCreated') {
+                        shipmentId = parsed.args.shipmentId;
+                        break;
+                    }
+                } catch (e) {
+                    // Not a matching event, continue
+                }
+            }
+            if (!shipmentId) {
+                shipmentId = await this.contract.getShipmentCount();
+            }
 
             await this.storeShipment({
                 productId,
@@ -241,6 +255,7 @@ class TraceabilityService {
                     id: trace[0][0].toString(),
                     name: trace[0][1],
                     description: trace[0][2],
+                    category: trace[0][3],
                     manufacturer: trace[0][4]
                 },
                 events: trace[1].map(e => ({
