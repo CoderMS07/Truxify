@@ -255,7 +255,8 @@ class VoiceAIService:
                 voice_profile = self.voice_profiles.get(language_code, 'English Female')
             
             # Generate audio with ElevenLabs
-            audio = generate(
+            audio = await asyncio.to_thread(
+                generate,
                 text=text,
                 voice=voice_profile,
                 model="eleven_monolingual_v1"
