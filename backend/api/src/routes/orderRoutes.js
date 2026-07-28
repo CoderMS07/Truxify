@@ -920,7 +920,7 @@ router.put('/:id/milestones', authenticate, userLimiter, requirePolicy('mileston
     if (err instanceof DomainError) {
       return res.status(err.status).json(err.payload);
     }
-    logger.error("[orderRoutes] Milestone update error:", err.message);
+    logger.error(err, "[orderRoutes] Milestone update error:");
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });

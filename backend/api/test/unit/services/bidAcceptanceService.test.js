@@ -49,6 +49,7 @@ describe('BidAcceptanceService', () => {
       driver_id: null,
       vehicle_id: null,
       status: 'pending',
+      version: 1,
     }];
     supabaseMock.store.load_bids = [{
       id: 'bid-1',
@@ -166,6 +167,7 @@ describe('BidAcceptanceService', () => {
       driver_id: null,
       vehicle_id: null,
       status: 'pending',
+      version: 1,
     }];
     supabaseMock.store.load_bids = [{
       id: 'bid-1',
@@ -232,6 +234,7 @@ describe('BidAcceptanceService', () => {
       driver_id: null,
       vehicle_id: null,
       status: 'pending',
+      version: 1,
     }];
     supabaseMock.store.load_bids = [{
       id: 'bid-1',
