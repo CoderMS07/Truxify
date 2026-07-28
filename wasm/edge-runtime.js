@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { WASI } from 'wasi';
 import { createRequire } from 'module';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../backend/api/src/middleware/logger.js';
 
 const require = createRequire(import.meta.url);
 
