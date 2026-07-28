@@ -2,6 +2,7 @@ import os
 import base64
 import json
 import asyncio
+import hashlib
 import logging
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
@@ -92,7 +93,7 @@ class VoiceAIService:
             
             # Store in Redis for caching
             self.redis.setex(
-                f"voice:detect:{hash(audio_data)}",
+                f"voice:detect:{hashlib.md5(audio_data).hexdigest()}",
                 3600,
                 json.dumps({
                     'language': detected_lang,
@@ -187,7 +188,7 @@ class VoiceAIService:
             
             # Store in Redis
             self.redis.setex(
-                f"voice:transcribe:{hash(audio_data)}",
+                f"voice:transcribe:{hashlib.md5(audio_data).hexdigest()}",
                 3600,
                 json.dumps({
                     'text': adapted_text,
@@ -262,7 +263,7 @@ class VoiceAIService:
             )
             
             # Cache in Redis
-            cache_key = f"voice:tts:{hash(text)}:{language_code}"
+            cache_key = f"voice:tts:{hashlib.md5(text.encode()).hexdigest()}:{language_code}"
             self.redis.setex(cache_key, 3600, json.dumps({
                 'audio': base64.b64encode(audio).decode('utf-8') if isinstance(audio, bytes) else audio,
                 'timestamp': datetime.now().isoformat()
