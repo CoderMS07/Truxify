@@ -222,7 +222,7 @@ class GlobalStore extends EventEmitter {
             }
             
             // Sync result
-            transaction.commit();
+            await transaction.commit();
             this.activeTransaction = null;
             this.transactionHistory.push({
                 id: transaction.id,
