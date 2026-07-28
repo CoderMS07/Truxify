@@ -21,7 +21,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.truxify.driver"
+        applicationId = "com.sigma.truxify.driver"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
