@@ -49,13 +49,15 @@ describe('BidAcceptanceService', () => {
       driver_id: null,
       vehicle_id: null,
       status: 'pending',
+      version: 1,
     }];
     supabaseMock.store.load_bids = [{
       id: 'bid-1',
       load_id: 'offer-1',
       order_id: 'order-1',
       driver_id: 'driver-1',
-      bid_amount: 250000,
+      version: 1,
+      bid_amount: 50000,
       status: 'pending',
       created_at: '2024-01-01T00:00:00.000Z',
     }];
@@ -97,7 +99,7 @@ describe('BidAcceptanceService', () => {
     expect(escrowDeposit).toHaveBeenCalled();
 
     // Verify the correct amountWei was computed using ESCROW_MATIC_PER_PAISA
-    // bid_amount = 250000 paisa (₹2500), rate = 0.01 MATIC/paisa => 2500 MATIC
+    // bid_amount = 50000 paisa (₹500), rate = 0.01 MATIC/paisa => 500 MATIC
     const escrowArgs = escrowDeposit.mock.calls[0];
     const amountWei = escrowArgs[3];
     expect(typeof amountWei).toBe('bigint');
@@ -120,7 +122,8 @@ describe('BidAcceptanceService', () => {
       load_id: 'offer-1',
       order_id: 'order-1',
       driver_id: 'driver-1',
-      bid_amount: 250000,
+      version: 1,
+      bid_amount: 50000,
       status: 'pending',
       created_at: '2024-01-01T00:00:00.000Z',
     }];
@@ -164,13 +167,15 @@ describe('BidAcceptanceService', () => {
       driver_id: null,
       vehicle_id: null,
       status: 'pending',
+      version: 1,
     }];
     supabaseMock.store.load_bids = [{
       id: 'bid-1',
       load_id: 'offer-1',
       order_id: 'order-1',
       driver_id: 'driver-1',
-      bid_amount: 250000,
+      version: 1,
+      bid_amount: 50000,
       status: 'pending',
       created_at: '2024-01-01T00:00:00.000Z',
     }];
@@ -229,13 +234,15 @@ describe('BidAcceptanceService', () => {
       driver_id: null,
       vehicle_id: null,
       status: 'pending',
+      version: 1,
     }];
     supabaseMock.store.load_bids = [{
       id: 'bid-1',
       load_id: 'offer-1',
       order_id: 'order-1',
       driver_id: 'driver-1',
-      bid_amount: 250000,
+      version: 1,
+      bid_amount: 50000,
       status: 'pending',
       created_at: '2024-01-01T00:00:00.000Z',
     }];

@@ -1,5 +1,6 @@
 import { paisaToMaticWei } from '../escrow.js';
 import { DomainError } from './domainError.js';
+import { sendPushNotification } from '../notificationService.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 
 // Re-export for backward compatibility — prefer importing from domainError.js
@@ -17,7 +18,7 @@ export class BidAcceptanceService {
 
   async acceptBid({ orderId, bidId, customerId }) {
     return measureExecution('BidAcceptanceService.acceptBid', async () => {
-    const { data: order, error: orderErr } = await this.orderRepository.findOrderById(orderId, 'order_display_id, customer_id');
+    const { data: order, error: orderErr } = await this.orderRepository.findOrderById(orderId, 'order_display_id, customer_id, version');
     if (orderErr) {
       throw new DomainError(500, { error: 'Failed to retrieve order.', details: orderErr.message });
     }
@@ -73,21 +74,27 @@ export class BidAcceptanceService {
       truckInfo = truck;
     }
 
-    // Build the escrow deposit transaction
-    let depositTx = null;
-    let bookingId = null;
-    const amountWei = paisaToMaticWei(bid.bid_amount);
-    try {
-      const buildResult = await this.buildDepositTxFn(order.order_display_id, customerWallet, driverWallet, amountWei);
-      depositTx = buildResult;
-      bookingId = buildResult?.bookingId || `escrow:${order.order_display_id}`;
-    } catch (buildErr) {
-      throw buildErr; // Let it bubble up as a generic error to return 500
+    // Re-validate wallets immediately before escrow deposit (close TOCTOU window)
+    const { data: freshDriverDetails } = await this.orderRepository.findDriverDetail(bid.driver_id);
+    const { data: freshCustomerProfile } = await this.orderRepository.findCustomerWallet(customerId);
+    const freshDriverWallet = freshDriverDetails?.polygon_wallet_address ?? null;
+    const freshCustomerWallet = freshCustomerProfile?.polygon_wallet_address ?? null;
+
+    if (!freshDriverWallet || !freshCustomerWallet) {
+      this.logger?.warn?.(`[escrow] Wallet disconnected between validation and deposit: driver=${!!freshDriverWallet}, customer=${!!freshCustomerWallet}`);
+      throw new DomainError(422, {
+        error: 'A wallet was disconnected before the escrow deposit could be initiated. Please reconnect your wallet and try again.'
+      });
     }
+
+    // Build the escrow deposit transaction
+    const amountWei = paisaToMaticWei(bid.bid_amount);
+    const depositTx = await this.buildDepositTxFn(order.order_display_id, freshDriverWallet, amountWei);
+    const bookingId = depositTx?.bookingId || `escrow:${order.order_display_id}`;
 
     // Guard against silent escrow disable: if buildDepositTx returned
     // null txData (contract not initialised), reject immediately.
-    if (!buildResult?.txData) {
+    if (!depositTx?.txData) {
       this.logger?.error?.('[escrow] Escrow deposit tx could not be built — escrow contract is not reachable or misconfigured.');
       throw new DomainError(502, {
         error: 'Escrow is not configured. Escrow deposit transaction could not be built.',
@@ -99,10 +106,17 @@ export class BidAcceptanceService {
     // Update order with escrow booking info
     const { error: escrowUpdateErr } = await this.orderRepository.updateEscrowBooking(orderId, bookingId, 'funding');
     if (escrowUpdateErr) {
-      this.logger?.warn?.('[escrow] Failed to update escrow booking reference:', escrowUpdateErr.message);
+      throw new DomainError(500, { error: 'Failed to store escrow booking reference.', details: escrowUpdateErr.message });
     }
 
     // Execute RPC to accept bid
+    if (order.version == null) {
+      throw new DomainError(500, {
+        error: 'Order version is missing. Cannot safely accept bid.',
+        recovery: 'Please retry the request.',
+      });
+    }
+
     const { error: rpcErr } = await this.orderRepository.executeRpc('accept_bid_tx', {
       p_bid_id: bidId,
       p_order_id: orderId,
@@ -114,6 +128,7 @@ export class BidAcceptanceService {
       p_truck_number: truckInfo?.number_plate || 'N/A',
       p_bid_amount: bid.bid_amount,
       p_order_display_id: order.order_display_id,
+      p_expected_version: order.version,
     });
 
     if (rpcErr) {
@@ -130,6 +145,14 @@ export class BidAcceptanceService {
       if (revertErr) {
         this.logger?.error?.('[escrow] Failed to revert escrow status after RPC failure:', revertErr.message);
       }
+
+      if (rpcErr.message?.includes('OPTIMISTIC_LOCK_FAIL') || rpcErr.message?.includes('Load offer is no longer available') || rpcErr.message?.includes('Order is no longer pending')) {
+        throw new DomainError(409, {
+          error: 'Conflict: This load offer was already accepted or is no longer available.',
+          details: rpcErr.message
+        });
+      }
+
       throw new DomainError(500, {
         error: 'Failed to accept bid atomically.',
         details: rpcErr.message,
@@ -150,6 +173,14 @@ export class BidAcceptanceService {
         this.logger?.warn?.('[bidAcceptance] Notification dispatcher failed:', notifyErr.message);
       }
     }
+
+    sendPushNotification(
+      bid.driver_id,
+      'Bid Accepted!',
+      `Your bid for order ${order.order_display_id} has been accepted. You are now assigned to this load.`,
+      'bid_accepted',
+      { orderId, orderDisplayId: order.order_display_id }
+    ).catch(err => this.logger?.error?.(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
 
     return {
       status: 200,

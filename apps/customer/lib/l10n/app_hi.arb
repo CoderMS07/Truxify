@@ -310,6 +310,11 @@
     "description": "Label for savings summary on home screen"
   },
 
+  "totalShipments": "कुल शिपमेंट",
+  "@totalShipments": {
+    "description": "Label for total shipments count on home screen"
+  },
+
   "yourUsualRoutes": "आपके नियमित मार्ग",
   "@yourUsualRoutes": {
     "description": "Section title for frequently used routes"
@@ -725,5 +730,83 @@
   "failedToUpdateProfile": "प्रोफ़ाइल अपडेट करने में असफल",
   "@failedToUpdateProfile": {
     "description": "Error message when profile update fails"
+  },
+
+  "shareTracking": "ट्रैकिंग शेयर करें",
+  "@shareTracking": {
+    "description": "Button text to share order tracking link"
+  },
+
+  "trackingLinkGenerated": "ट्रैकिंग लिंक बनाया गया",
+  "@trackingLinkGenerated": {
+    "description": "Success message when tracking link is generated"
+  },
+
+  "unableToShare": "शेयर करने में असमर्थ",
+  "@unableToShare": {
+    "description": "Error message when sharing fails"
+  },
+
+  "linkExpired": "यह ट्रैकिंग लिंक समाप्त हो गया है या अब मान्य नहीं है।",
+  "@linkExpired": {
+    "description": "Message shown when a tracking link has expired"
+  },
+
+  "trackingRevoked": "सभी ट्रैकिंग लिंक रद्द कर दिए गए हैं।",
+  "@trackingRevoked": {
+    "description": "Message shown when tracking links are revoked"
+  },
+
+  "copyLink": "लिंक कॉपी करें",
+  "@copyLink": {
+    "description": "Button text to copy tracking link to clipboard"
+  },
+
+  "shareMessage": "Truxify पर अपनी शिपमेंट ट्रैक करें",
+  "@shareMessage": {
+    "description": "Default message included when sharing tracking link"
+  },
+  "orderNotFound": "ऑर्डर नहीं मिला",
+  "@orderNotFound": {
+    "description": "Error message when an order referenced by a notification cannot be found"
+  },
+
+  "notification": "सूचना",
+  "@notification": {
+    "description": "Title for notification-related UI elements"
+  },
+
+  "unableToOpen": "सूचना खोलने में असमर्थ",
+  "@unableToOpen": {
+    "description": "Error message when a notification cannot be navigated to"
+  },
+  "downloadInvoice": "इनवॉइस डाउनलोड करें",
+  "@downloadInvoice": {
+    "description": "Button text to download the order invoice as PDF"
+  },
+
+  "generatingInvoice": "इनवॉइस बना रहे हैं...",
+  "@generatingInvoice": {
+    "description": "Status text while the PDF invoice is being generated"
+  },
+
+  "invoiceReady": "इनवॉइस तैयार है",
+  "@invoiceReady": {
+    "description": "Success message after invoice PDF is generated"
+  },
+
+  "shareInvoice": "इनवॉइस साझा करें",
+  "@shareInvoice": {
+    "description": "Button text to share the generated invoice"
+  },
+
+  "printInvoice": "इनवॉइस प्रिंट करें",
+  "@printInvoice": {
+    "description": "Button text to print the generated invoice"
+  },
+
+  "downloadFailed": "डाउनलोड असफल",
+  "@downloadFailed": {
+    "description": "Error message when invoice download or generation fails"
   }
 }

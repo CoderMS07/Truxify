@@ -718,5 +718,148 @@
   "thisLoadIsMissingId": "This load is missing an ID",
   "@thisLoadIsMissingId": {
     "description": "Error message when a load record has no valid identifier"
+  },
+
+  "recommendedReturnLoads": "Recommended Return Loads",
+  "@recommendedReturnLoads": {
+    "description": "Section title for ML-powered return load recommendations"
+  },
+
+  "recommendedForYou": "Recommended For You",
+  "@recommendedForYou": {
+    "description": "Label shown when a recommendation has no route"
+  },
+
+  "matchScore": "Match Score",
+  "@matchScore": {
+    "description": "Label for ML match score percentage"
+  },
+
+  "bestMatch": "Best Match",
+  "@bestMatch": {
+    "description": "Label for the top recommendation"
+  },
+
+  "noRecommendations": "No return load recommendations available",
+  "@noRecommendations": {
+    "description": "Empty state when ML returns no recommendations"
+  },
+
+  "couldNotLoadRecommendations": "Could not load recommendations",
+  "@couldNotLoadRecommendations": {
+    "description": "Error state when ML endpoint fails"
+  },
+
+  "noActiveTripForRecommendations": "Complete a trip to see return load suggestions",
+  "@noActiveTripForRecommendations": {
+    "description": "Hint shown when driver has no active trip for recommendations"
+  },
+
+  "detourDistance": "Detour",
+  "@detourDistance": {
+    "description": "Label for detour distance"
+  },
+
+  "bidOnLoad": "Bid",
+  "@bidOnLoad": {
+    "description": "Button label to place a bid on a load"
+  },
+
+  "updateBid": "Update Bid",
+  "@updateBid": {
+    "description": "Button label to update an existing bid"
+  },
+
+  "placeYourBid": "Place Your Bid",
+  "@placeYourBid": {
+    "description": "Title of the bid placement bottom sheet"
+  },
+
+  "bidAmount": "Bid Amount",
+  "@bidAmount": {
+    "description": "Label for the bid amount input field"
+  },
+
+  "submitBid": "Submit Bid",
+  "@submitBid": {
+    "description": "Button label to submit a bid"
+  },
+
+  "enterValidBid": "Enter a valid bid amount",
+  "@enterValidBid": {
+    "description": "Validation message for invalid bid input"
+  },
+  "unableToOpen": "Unable to open notification",
+  "@unableToOpen": {
+    "description": "Error message when a notification cannot be navigated to"
+  },
+  "withdraw": "Withdraw",
+  "@withdraw": {
+    "description": "Button label to withdraw funds from wallet"
+  },
+
+  "withdrawFunds": "Withdraw Funds",
+  "@withdrawFunds": {
+    "description": "Title of the withdrawal bottom sheet"
+  },
+
+  "availableBalance": "Available Balance",
+  "@availableBalance": {
+    "description": "Label for the confirmed wallet balance in the withdrawal sheet"
+  },
+
+  "enterAmount": "Enter Amount",
+  "@enterAmount": {
+    "description": "Label for the amount input field in the withdrawal sheet"
+  },
+
+  "amountRequired": "Amount is required",
+  "@amountRequired": {
+    "description": "Validation error when amount field is empty"
+  },
+
+  "enterValidAmount": "Please enter a valid amount",
+  "@enterValidAmount": {
+    "description": "Validation error when amount is not a valid number"
+  },
+
+  "amountMustBePositive": "Amount must be greater than zero",
+  "@amountMustBePositive": {
+    "description": "Validation error when amount is zero or negative"
+  },
+
+  "insufficientBalance": "Insufficient balance",
+  "@insufficientBalance": {
+    "description": "Validation error when amount exceeds confirmed balance"
+  },
+
+  "max": "Max",
+  "@max": {
+    "description": "Label for the quick-fill button that sets the maximum withdrawal amount"
+  },
+
+  "withdrawalSuccessful": "Withdrawal successful",
+  "@withdrawalSuccessful": {
+    "description": "Success message after a successful withdrawal"
+  },
+  "networkError": "Network error. Please check your connection.",
+  "@networkError": {
+    "description": "Error message when network connection fails"
+  },
+  "theme": "Theme",
+  "@theme": {
+    "description": "Label for the theme selection setting"
+  },
+  "system": "System",
+  "@system": {
+    "description": "System theme option label"
+  },
+  "light": "Light",
+  "@light": {
+    "description": "Light theme option label"
+  },
+  "dark": "Dark",
+  "@dark": {
+    "description": "Dark theme option label"
   }
 }

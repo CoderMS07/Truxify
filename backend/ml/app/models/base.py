@@ -58,7 +58,7 @@ async def ensure_model_loaded(model_name: str, train_fn, *args, **kwargs) -> Opt
     async with _get_lock(model_name):
         if not model_exists(model_name):
             logger.info("Model '%s' not found, training...", model_name)
-            await train_fn(*args, **kwargs)
+            train_fn(*args, **kwargs)
         return load_model(model_name)
 
 SUPPORTED_MODELS: list[str] = [

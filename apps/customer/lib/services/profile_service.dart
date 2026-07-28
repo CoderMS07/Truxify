@@ -37,7 +37,7 @@ class ProfileService {
         await prefs.setString(_profileCacheKey, jsonEncode(result));
         return result;
       }
-      return <String, dynamic>{};
+      throw StateError('Expected profile object but received ${result.runtimeType}');
     } on ApiException catch (e) {
       final cached = await _readCachedProfile(prefs);
       if (cached != null) {
@@ -57,6 +57,22 @@ class ProfileService {
     }
   }
 
+
+  Future<Map<String, dynamic>?> fetchCustomerStats() async {
+    try {
+      final result = await _apiClient.get('/api/profile/customer-stats');
+      if (result is Map<String, dynamic>) {
+        return result['stats'] as Map<String, dynamic>?;
+      }
+      return null;
+    } on ApiException catch (e) {
+      developer.log('Failed to fetch customer stats: ${e.message}');
+      return null;
+    } catch (e) {
+      developer.log('Unexpected error fetching customer stats: $e');
+      return null;
+    }
+  }
 
   Future<void> updateProfile({
     required String fullName,
@@ -90,7 +106,11 @@ class ProfileService {
     // Unregister this device's FCM token first so a signed-out device stops
     // receiving push notifications intended for the next user of a shared
     // device, then sign out from local clients.
-    await FcmService.unregisterToken();
+    try {
+      await FcmService.unregisterToken();
+    } catch (e) {
+      developer.log('FCM token unregister failed during logout: $e');
+    }
 
     await Future.wait([
       FirebaseAuth.instance.signOut(),

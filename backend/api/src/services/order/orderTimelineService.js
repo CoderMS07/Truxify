@@ -66,7 +66,7 @@ export class OrderTimelineService {
       sort_order: 25,
     }]);
     if (error) {
-      this.logger?.error?.('Failed to update timeline for change-drop:', error.message);
+      logger.error('Failed to update timeline for change-drop:', error.message);
       throw new DomainError(500, { error: 'Failed to record drop-change event.', details: error.message });
     }
   }
@@ -143,5 +143,9 @@ export class OrderTimelineService {
 
   async deleteTimeline(orderDisplayId) {
     return this.orderRepository.deleteTimeline(orderDisplayId);
+  }
+
+  async insertCancelEvent(orderDisplayId) {
+    return this.insertEntry(orderDisplayId, 'Cancelled', 70);
   }
 }

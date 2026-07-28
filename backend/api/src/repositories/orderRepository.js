@@ -1,3 +1,4 @@
+import { getRequestCache } from '../lib/requestContext.js';
 import { executeWithRetry, isRetryable } from '../core/retry.js';
 import { measureExecution } from '../core/performanceMetrics.js';
 import { buildPagination } from '../utils/pagination.js';
@@ -115,21 +116,6 @@ export class OrderRepository {
       .eq('id', id)
       .maybeSingle(), 'findOrderForTimeline');
   } 
-  async findOrderById(id, columns = '*') {
-    return this._retryableQuery(() => this.supabase
-      .from('orders')
-      .select(columns)
-      .eq('id', id)
-      .maybeSingle(), 'findOrderById');
-  }
-
-  async findOrderByDisplayId(displayId, columns = '*') {
-    return this._retryableQuery(() => this.supabase
-      .from('orders')
-      .select(columns)
-      .eq('order_display_id', displayId)
-      .maybeSingle(), 'findOrderByDisplayId');
-  }
 
   async updateOrder(id, updates) {
     return this._retryableQuery(() => this.supabase
@@ -370,8 +356,9 @@ export class OrderRepository {
   // RPC
   // ===================================================================
 
-  async executeRpc(name, params) {
-    return this._retryableQuery(() => this.supabase.rpc(name, params), `executeRpc:${name}`);
+  async executeRpc(name, params, client) {
+    const supabaseClient = client || this.supabase;
+    return this._retryableQuery(() => supabaseClient.rpc(name, params), `executeRpc:${name}`);
   }
 
   // ===================================================================
@@ -503,7 +490,9 @@ export class OrderRepository {
       .update(updates)
       .eq('driver_id', driverId)
       .eq('order_display_id', orderDisplayId)
-      .eq('txn_type', 'credit'), 'updateWalletTransaction');
+      .eq('txn_type', 'credit')
+      .order('created_at', { ascending: false })
+      .limit(1), 'updateWalletTransaction');
   }
 
   // ===================================================================
@@ -547,13 +536,14 @@ export class OrderRepository {
   async findPendingEscrowRefunds() {
     return this._retryableQuery(() => this.supabase
       .from('orders')
-      .select('id, order_display_id, refund_tx_hash, escrow_status, escrow_refund_retry_count')
+      .select('id, order_display_id, refund_tx_hash, escrow_status, escrow_refund_retry_count, updated_at')
       .in('escrow_status', ['refund_pending', 'refund_failed'])
       .limit(50), 'findPendingEscrowRefunds');
   }
 
-  async claimRefundReconciliation(orderId, instanceId) {
-    return this._retryableQuery(() => this.supabase
+  async claimRefundReconciliation(orderId, instanceId, client) {
+    const supabaseClient = client || this.supabase;
+    return this._retryableQuery(() => supabaseClient
       .rpc('claim_refund_reconciliation', {
         p_order_id: orderId,
         p_instance_id: instanceId,

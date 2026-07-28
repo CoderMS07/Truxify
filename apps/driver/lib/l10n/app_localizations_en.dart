@@ -432,4 +432,75 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get thisLoadIsMissingId => 'This load is missing an ID';
+
+  @override
+  String get recommendedReturnLoads => 'Recommended Return Loads';
+
+  @override
+  String get recommendedForYou => 'Recommended For You';
+
+  @override
+  String get matchScore => 'Match Score';
+
+  @override
+  String get bestMatch => 'Best Match';
+
+  @override
+  String get noRecommendations => 'No return load recommendations available';
+
+  @override
+  String get couldNotLoadRecommendations => 'Could not load recommendations';
+
+  @override
+  String get noActiveTripForRecommendations => 'Complete a trip to see return load suggestions';
+
+  @override
+  String get detourDistance => 'Detour';
+
+  @override
+  String get bidOnLoad => 'Bid';
+
+  @override
+  String get updateBid => 'Update Bid';
+
+  @override
+  String get placeYourBid => 'Place Your Bid';
+
+  @override
+  String get bidAmount => 'Bid Amount';
+
+  @override
+  String get submitBid => 'Submit Bid';
+
+  @override
+  String get enterValidBid => 'Enter a valid bid amount';
+  String get unableToOpen => 'Unable to open notification';
+  String get withdraw => 'Withdraw';
+
+  @override
+  String get withdrawFunds => 'Withdraw Funds';
+
+  @override
+  String get availableBalance => 'Available Balance';
+
+  @override
+  String get enterAmount => 'Enter Amount';
+
+  @override
+  String get amountRequired => 'Amount is required';
+
+  @override
+  String get enterValidAmount => 'Please enter a valid amount';
+
+  @override
+  String get amountMustBePositive => 'Amount must be greater than zero';
+
+  @override
+  String get insufficientBalance => 'Insufficient balance';
+
+  @override
+  String get max => 'Max';
+
+  @override
+  String get withdrawalSuccessful => 'Withdrawal successful';
 }

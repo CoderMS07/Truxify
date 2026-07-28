@@ -7,11 +7,18 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, Column, String, Float, DateTime, Integer, Boolean
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers, models
+try:
+    import tensorflow as tf
+    from tensorflow import keras
+    from tensorflow.keras import layers, models
+    HAS_TF = True
+except ImportError:
+    tf = None
+    keras = None
+    models = None
+    HAS_TF = False
 import redis
 import os
 import logging
@@ -58,7 +65,7 @@ class TrafficPipeline:
     def _create_lstm_model(self):
         """Create LSTM model for ETA prediction"""
         model = models.Sequential([
-            layers.LSTM(64, input_shape=(60, 10), return_sequences=True),
+            layers.LSTM(64, input_shape=(60, 5), return_sequences=True),
             layers.Dropout(0.2),
             layers.LSTM(32, return_sequences=True),
             layers.Dropout(0.2),
@@ -99,9 +106,14 @@ class TrafficPipeline:
             )
             
             session = self.Session()
-            session.add(traffic_entry)
-            session.commit()
-            session.close()
+            try:
+                session.add(traffic_entry)
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
             
             # Cache in Redis
             self.redis.setex(
@@ -192,8 +204,10 @@ class TrafficPipeline:
     def train_model(self, epochs=50, batch_size=32):
         """Train LSTM model on historical data"""
         session = self.Session()
-        data = session.query(TrafficData).all()
-        session.close()
+        try:
+            data = session.query(TrafficData).all()
+        finally:
+            session.close()
         
         if len(data) < 100:
             logger.warning("Not enough data for training")
@@ -257,7 +271,7 @@ class TrafficPipeline:
                 # Predict ETA
                 eta_seconds = self.predict_eta(features)
                 
-                if eta_seconds:
+                if eta_seconds is not None:
                     eta_minutes = eta_seconds / 60
                     eta_string = str(timedelta(seconds=int(eta_seconds)))
                     
@@ -301,10 +315,12 @@ class TrafficPipeline:
         """Get traffic forecast for next N hours"""
         # Get historical data for this route
         session = self.Session()
-        data = session.query(TrafficData).filter(
-            TrafficData.route_id == route_id
-        ).order_by(TrafficData.timestamp.desc()).limit(24).all()
-        session.close()
+        try:
+            data = session.query(TrafficData).filter(
+                TrafficData.route_id == route_id
+            ).order_by(TrafficData.timestamp.desc()).limit(24).all()
+        finally:
+            session.close()
         
         if len(data) < 10:
             return {'forecast': None, 'confidence': 'low'}

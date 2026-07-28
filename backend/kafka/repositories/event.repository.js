@@ -1,5 +1,5 @@
-import { supabase } from '../../api/src/config/db.js';
-import logger from '../../api/src/middleware/logger.js';
+import { supabase } from '../api/src/config/db.js';
+import logger from '../api/src/middleware/logger.js';
 
 class EventRepository {
   async saveEvent(event) {
@@ -38,7 +38,7 @@ class EventRepository {
       return data;
     } catch (error) {
       logger.error('Failed to get events:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -55,7 +55,7 @@ class EventRepository {
       return data;
     } catch (error) {
       logger.error('Failed to get events by type:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -65,13 +65,13 @@ class EventRepository {
         .from('events')
         .select('*')
         .eq('event_id', eventId)
-        .single();
+        .maybeSingle();
 
       if (error) throw error;
       return data;
     } catch (error) {
       logger.error('Failed to get event:', error);
-      return null;
+      throw error;
     }
   }
 
@@ -80,7 +80,7 @@ class EventRepository {
       const events = await this.getEventsByOrderId(orderId);
       
       // Replay events in order
-      for (const event of events.reverse()) {
+      for (const event of [...events].reverse()) {
         // Emit event again
         await this.reemitEvent(event);
       }
@@ -123,7 +123,7 @@ class EventRepository {
         timeline: [],
       };
       
-      for (const event of events.reverse()) {
+      for (const event of [...events].reverse()) {
         snapshot.timeline.push({
           eventId: event.event_id,
           type: event.event_type,
@@ -171,11 +171,15 @@ class EventRepository {
     try {
       const { data, error } = await supabase
         .from('events')
-        .select('event_type, count')
-        .groupBy('event_type');
+        .select('event_type');
 
       if (error) throw error;
-      return data;
+
+      const stats = {};
+      for (const row of data ?? []) {
+        stats[row.event_type] = (stats[row.event_type] || 0) + 1;
+      }
+      return Object.entries(stats).map(([event_type, count]) => ({ event_type, count }));
     } catch (error) {
       logger.error('Failed to get event stats:', error);
       return [];

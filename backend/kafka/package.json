@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "kafkajs": "^2.2.4",
-    "uuid": "^9.0.0",
+    "uuid": "^14.0.1",
     "dotenv": "^16.0.3",
     "redis": "^4.6.5",
     "@supabase/supabase-js": "^2.38.0",
@@ -20,6 +20,6 @@
   },
   "devDependencies": {
     "nodemon": "^3.0.1",
-    "vitest": "^0.34.0"
+    "vitest": "^4.1.10"
   }
 }

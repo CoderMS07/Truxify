@@ -11,9 +11,11 @@ import '../core/driver_session.dart';
 import '../core/supabase_config.dart';
 import '../l10n/app_localizations.dart';
 import '../models/app_models.dart';
+import '../models/deadhead_recommendation.dart';
 import '../models/marketplace_models.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
+import '../widgets/marketplace/deadhead_recommendation_card.dart';
 import '../services/bid_submission_guard.dart';
 import '../services/marketplace_repository.dart';
 import '../services/trip_cache.dart';
@@ -61,6 +63,12 @@ class _TripsScreenState extends State<TripsScreen> {
   Map<String, DriverBid> _bidsByLoadId = const {};
   Set<String> _submittingLoadIds = const <String>{};
 
+  bool _deadheadLoading = false;
+  String? _deadheadError;
+  List<DeadheadRecommendation> _deadheadRecommendations = const [];
+  Map<String, DriverBid> _deadheadBidsByLoadId = const {};
+  Set<String> _submittingDeadheadLoadIds = const <String>{};
+
   final List<String> _statusFilters = [
     'All',
     'Active',
@@ -78,6 +86,7 @@ class _TripsScreenState extends State<TripsScreen> {
     if (SupabaseConfig.isConfigured) {
       _refreshMarketplace();
       _subscribeToRealtime();
+      _fetchDeadheadRecommendations();
     } else {
       _marketplaceError =
           'Supabase is not configured. Pass --dart-define=SUPABASE_URL=... and --dart-define=SUPABASE_ANON_KEY=...';
@@ -247,7 +256,8 @@ class _TripsScreenState extends State<TripsScreen> {
         },
       ),
     ));
-    
+
+    if (!mounted) return;
     await _loadTrips();
   }
 
@@ -272,7 +282,7 @@ class _TripsScreenState extends State<TripsScreen> {
         customerName: item['customer_name']?.toString() ?? 'Unknown',
         goods: item['goods']?.toString() ?? '',
         destination: item['destination']?.toString() ?? '',
-        earnings: '₹${((item['earnings'] ?? 0) / 100).toStringAsFixed(0)}',
+        earnings: '₹${((item['earnings'] as num? ?? 0) / 100).toStringAsFixed(0)}',
         delivered: item['is_delivered'] as bool? ?? false,
         isFragile: item['is_fragile'] as bool? ?? false,
         isStackable: item['is_stackable'] as bool? ?? true,
@@ -286,16 +296,16 @@ class _TripsScreenState extends State<TripsScreen> {
       route: row['route_label']?.toString() ?? 'Unknown route',
       date: row['trip_date']?.toString() ?? '',
       items: tripItems.map((i) => i.goods).toList(),
-      itemCount: row['distance']?.toString() ?? '',
+      itemCount: '${tripItems.length} item${tripItems.length == 1 ? '' : 's'} · ${row['distance']?.toString() ?? ''}',
       distance: row['distance']?.toString() ?? '',
-      earnings: '₹${((row['net_earnings'] ?? 0) / 100).toStringAsFixed(0)}',
+      earnings: '₹${((row['net_earnings'] as num? ?? 0) / 100).toStringAsFixed(0)}',
       status: _mapStatus(row['status']?.toString()),
       tripId: tripId,
       hash: '',
       duration: row['duration']?.toString() ?? '',
       endTime: '',
       paymentBreakdown: PaymentBreakdown(
-        baseFreight: '₹${((row['total_earnings'] ?? 0) / 100).toStringAsFixed(0)}',
+        baseFreight: '₹${((row['total_earnings'] as num? ?? 0) / 100).toStringAsFixed(0)}',
         fuelDeducted: '₹0',
         tollDeducted: '₹0',
         platformFee: '₹0',
@@ -414,9 +424,30 @@ class _TripsScreenState extends State<TripsScreen> {
     }
 
     try {
+      // Resolve driver's current GPS from the active trip's last known route
+      // point so the ML engine can compute detour distances accurately.
+      double? currentLat;
+      double? currentLng;
+      final activeTrip = _trips.cast<Map<String, dynamic>?>().firstWhere(
+        (t) => t?['status'] == 'active',
+        orElse: () => null,
+      );
+      if (activeTrip != null) {
+        final tripId = activeTrip['trip_display_id']?.toString();
+        final routePoints = tripId != null ? (_routePointsByTripId[tripId] ?? []) : [];
+        if (routePoints.isNotEmpty) {
+          final lastPoint = routePoints.last;
+          currentLat = (lastPoint['latitude'] as num?)?.toDouble();
+          currentLng = (lastPoint['longitude'] as num?)?.toDouble();
+        }
+      }
+
       final results = await Future.wait([
         _marketplaceRepository.fetchLoadOffers(),
-        _marketplaceRepository.fetchEnRouteLoads(),
+        _marketplaceRepository.fetchEnRouteLoads(
+          currentLat: currentLat,
+          currentLng: currentLng,
+        ),
         _marketplaceRepository.fetchDriverBids(),
       ]);
 
@@ -455,11 +486,133 @@ class _TripsScreenState extends State<TripsScreen> {
         .subscribe();
   }
 
+  Future<void> _fetchDeadheadRecommendations() async {
+    final activeTrip = _trips.cast<Map<String, dynamic>?>().firstWhere(
+      (t) => t?['status'] == 'active',
+      orElse: () => null,
+    );
+    if (activeTrip == null) return;
+
+    final tripId = activeTrip['trip_display_id']?.toString();
+    if (tripId == null) return;
+
+    final routePoints = _routePointsByTripId[tripId];
+    if (routePoints == null || routePoints.isEmpty) return;
+
+    final destination = routePoints.last;
+    final destLat = (destination['latitude'] as num?)?.toDouble();
+    final destLng = (destination['longitude'] as num?)?.toDouble();
+    if (destLat == null || destLng == null) return;
+
+    setState(() {
+      _deadheadLoading = true;
+      _deadheadError = null;
+    });
+
+    try {
+      final loads = await _marketplaceRepository.fetchLoadOffers();
+      if (!mounted) return;
+      if (loads.isEmpty) {
+        setState(() {
+          _deadheadRecommendations = const [];
+          _deadheadLoading = false;
+        });
+        return;
+      }
+
+      final now = DateTime.now();
+      final payload = _marketplaceRepository.buildDeadheadPayload(
+        loads: loads,
+        driverLat: destLat,
+        driverLng: destLng,
+        truckMaxWeightKg: 25000,
+        truckMaxLengthM: 12,
+        truckMaxWidthM: 2.5,
+        truckMaxHeightM: 4,
+        arrivalTime: now.add(const Duration(hours: 6)).toIso8601String(),
+      );
+      final availableLoadMaps = payload['available_loads'] as List<Map<String, dynamic>>;
+
+      final recommendations = await _marketplaceRepository
+          .fetchDeadheadRecommendations(
+        destLat: destLat,
+        destLng: destLng,
+        maxWeightKg: 25000,
+        maxLengthM: 12,
+        maxWidthM: 2.5,
+        maxHeightM: 4,
+        arrivalTime: now.add(const Duration(hours: 6)).toIso8601String(),
+        availableLoads: availableLoadMaps,
+      );
+
+      if (!mounted) return;
+
+      final enrichedRecs = recommendations.map((rec) {
+        final matchingLoad = loads.firstWhere(
+          (l) => l.id == rec.loadId,
+          orElse: () => const LoadOffer(
+            id: '',
+            route: '',
+            customer: '',
+            company: '',
+            goods: '',
+            pickup: '',
+            distanceFromDriver: '',
+            estimatedProfit: '',
+            fuelCost: '',
+            tollCost: '',
+            capacityUsed: 0,
+            truckFillLabel: '',
+            sharingTruckWith: '',
+            badgeLabel: '',
+            badgeEmoji: '',
+            routeDistance: '',
+            routeDuration: '',
+            weight: '',
+            dimensions: '',
+            stackable: '',
+            fragile: '',
+            specialHandling: '',
+            freightValue: '',
+            netProfit: '',
+            routeNote: '',
+            extraDistance: 0,
+            extraEarnings: '',
+            spaceAvailable: '',
+            updatedTotalEarnings: '',
+          ),
+        );
+        return DeadheadRecommendation(
+          loadId: rec.loadId,
+          distanceToPickupKm: rec.distanceToPickupKm,
+          matchScore: rec.matchScore,
+          detourKm: rec.detourKm,
+          estimatedEarnings: rec.estimatedEarnings,
+          route: matchingLoad.route.isNotEmpty ? matchingLoad.route : rec.loadId,
+          goodsType: matchingLoad.goods,
+          pickup: matchingLoad.pickup,
+          drop: matchingLoad.route,
+          weight: matchingLoad.weight,
+        );
+      }).toList();
+
+      setState(() {
+        _deadheadRecommendations = enrichedRecs;
+        _deadheadLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _deadheadError = e.toString();
+        _deadheadLoading = false;
+      });
+    }
+  }
+
   @override
   void dispose() {
     SyncService.instance.stopListening();
     _scrollController.dispose();
-    _marketScrollController.dispose();
     if (SupabaseConfig.isConfigured && _bidChannel != null) {
       Supabase.instance.client.removeChannel(_bidChannel!);
     }
@@ -721,7 +874,6 @@ class _TripsScreenState extends State<TripsScreen> {
                           loadId: loadId,
                           action: () async => _marketplaceRepository.submitBid(
                             loadId: loadId,
-                            driverId: DriverSession.driverId,
                             amount: amount,
                           ),
                         );
@@ -898,7 +1050,10 @@ class _TripsScreenState extends State<TripsScreen> {
               Expanded(
                 child: RefreshIndicator(
                   color: TruxifyColors.accent,
-                  onRefresh: _loadTrips,
+                  onRefresh: () async {
+                    await _loadTrips();
+                    await _fetchDeadheadRecommendations();
+                  },
                   child: _isLoadingTrips
                       ? ListView.builder(
                           physics: const AlwaysScrollableScrollPhysics(),
@@ -927,7 +1082,10 @@ class _TripsScreenState extends State<TripsScreen> {
                                 ),
                               ],
                             )
-                          : trips.isEmpty
+                          : trips.isEmpty &&
+                                  _deadheadRecommendations.isEmpty &&
+                                  !_deadheadLoading &&
+                                  _deadheadError == null
                               ? ListView(
                                   physics:
                                       const AlwaysScrollableScrollPhysics(),
@@ -950,15 +1108,185 @@ class _TripsScreenState extends State<TripsScreen> {
                                   physics:
                                       const AlwaysScrollableScrollPhysics(),
                                   padding: const EdgeInsets.all(12),
-                                  itemCount: trips.length + (_hasMoreTrips && trips.isNotEmpty ? 1 : 0),
+                                  itemCount:
+                                      (_deadheadRecommendations.isNotEmpty ||
+                                              _deadheadLoading ||
+                                              _deadheadError != null
+                                          ? 1
+                                          : 0) +
+                                          _deadheadRecommendations.length +
+                                          1 +
+                                          trips.length +
+                                          (_hasMoreTrips && trips.isNotEmpty
+                                              ? 1
+                                              : 0),
                                   itemBuilder: (context, index) {
-                                    if (index == trips.length) {
-                                      return const Padding(
-                                        padding: EdgeInsets.symmetric(vertical: 16.0),
-                                        child: Center(child: CircularProgressIndicator()),
+                                    final hasRecs =
+                                        _deadheadRecommendations.isNotEmpty;
+                                    final showDeadheadHeader = hasRecs ||
+                                        _deadheadLoading ||
+                                        _deadheadError != null;
+                                    if (showDeadheadHeader && index == 0) {
+                                      return Padding(
+                                        padding: const EdgeInsets.only(
+                                            bottom: 4),
+                                        child: Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                AppLocalizations.of(context)!
+                                                    .recommendedReturnLoads,
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .titleMedium
+                                                    ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w800,
+                                                    ),
+                                              ),
+                                            ),
+                                            if (_deadheadLoading)
+                                              const SizedBox(
+                                                width: 16,
+                                                height: 16,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                        strokeWidth: 2),
+                                              )
+                                            else if (_deadheadError != null)
+                                              GestureDetector(
+                                                onTap:
+                                                    _fetchDeadheadRecommendations,
+                                                child: Text(
+                                                  AppLocalizations.of(context)!
+                                                      .retry,
+                                                  style: GoogleFonts.dmSans(
+                                                    fontSize: 12,
+                                                    color:
+                                                        TruxifyColors.accent,
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                        ),
                                       );
                                     }
-                                    return _buildTripCard(context, trips[index]);
+
+                                    final recStart =
+                                        showDeadheadHeader ? 1 : 0;
+                                    if (index >= recStart &&
+                                        index <
+                                            recStart +
+                                                _deadheadRecommendations
+                                                    .length) {
+                                      final recIndex = index - recStart;
+                                      final rec = _deadheadRecommendations[recIndex];
+                                      final bid =
+                                          _deadheadBidsByLoadId[rec.loadId];
+                                      final isSubmitting =
+                                          _submittingDeadheadLoadIds
+                                              .contains(rec.loadId);
+                                      return DeadheadRecommendationCard(
+                                        recommendation: rec,
+                                        bid: bid,
+                                        isSubmitting: isSubmitting,
+                                        onOpenLoad: () => Navigator.of(context)
+                                            .pushNamed(AppRoutes.loadDetail),
+                                        onBid: (amount) async {
+                                          final loadId = rec.loadId;
+                                          if (loadId.isEmpty) return;
+                                          if (_submittingDeadheadLoadIds
+                                              .contains(loadId)) return;
+                                          if (!mounted) return;
+                                          setState(() {
+                                            _submittingDeadheadLoadIds = {
+                                              ..._submittingDeadheadLoadIds,
+                                              loadId,
+                                            };
+                                          });
+                                          try {
+                                            final newBid =
+                                                await _bidSubmissionGuard
+                                                    .run<DriverBid>(
+                                              loadId: loadId,
+                                              action: () async =>
+                                                  _marketplaceRepository
+                                                      .submitBid(
+                                                loadId: loadId,
+                                                amount: amount,
+                                              ),
+                                            );
+                                            if (!mounted) return;
+                                            setState(() {
+                                              _deadheadBidsByLoadId = {
+                                                ..._deadheadBidsByLoadId,
+                                                newBid.loadId: newBid,
+                                              };
+                                              _bidsByLoadId = {
+                                                ..._bidsByLoadId,
+                                                newBid.loadId: newBid,
+                                              };
+                                            });
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(SnackBar(
+                                                content: Text(
+                                                    AppLocalizations.of(
+                                                            context)!
+                                                        .bidSubmitted),
+                                              ));
+                                            }
+                                          } catch (e) {
+                                            if (!mounted) return;
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(SnackBar(
+                                                content: Text(
+                                                    AppLocalizations.of(
+                                                            context)!
+                                                        .failedToSubmitBid),
+                                              ));
+                                            }
+                                          } finally {
+                                            if (!mounted) return;
+                                            setState(() {
+                                              _submittingDeadheadLoadIds = {
+                                                ..._submittingDeadheadLoadIds
+                                                    .where(
+                                                        (id) => id != loadId),
+                                              };
+                                            });
+                                          }
+                                        },
+                                      );
+                                    }
+                                    final recCount =
+                                        hasRecs
+                                            ? _deadheadRecommendations.length
+                                            : 0;
+                                    final tripStart = recStart + recCount + 1;
+                                    if (index == tripStart - 1) {
+                                      return const SizedBox.shrink();
+                                    }
+                                    final tripIndex = index - tripStart;
+                                    if (tripIndex >= 0 &&
+                                        tripIndex == trips.length) {
+                                      return const Padding(
+                                        padding:
+                                            EdgeInsets.symmetric(vertical: 16.0),
+                                        child: Center(
+                                            child:
+                                                CircularProgressIndicator()),
+                                      );
+                                    }
+                                    if (tripIndex >= 0 &&
+                                        tripIndex < trips.length) {
+                                      return _buildTripCard(
+                                          context, trips[tripIndex]);
+                                    }
+                                    return const SizedBox.shrink();
                                   },
                                 ),
                 ),
@@ -1401,7 +1729,7 @@ class _MarketplaceBody extends StatelessWidget {
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(16),
-        children: const [
+        children: [
           SizedBox(height: 80),
           Center(child: Text(AppLocalizations.of(context)!.noLoadsAvailable)),
         ],

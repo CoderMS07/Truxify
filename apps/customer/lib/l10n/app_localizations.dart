@@ -7,6 +7,9 @@ import 'package:intl/intl.dart' as intl;
 
 import 'app_localizations_en.dart';
 import 'app_localizations_hi.dart';
+import 'app_localizations_ta.dart';
+import 'app_localizations_kn.dart';
+import 'app_localizations_mr.dart';
 
 // ignore_for_file: type=lint
 
@@ -96,6 +99,9 @@ abstract class AppLocalizations {
   static const List<Locale> supportedLocales = <Locale>[
     Locale('en'),
     Locale('hi'),
+    Locale('ta'),
+    Locale('kn'),
+    Locale('mr'),
   ];
 
   String get appTitle;
@@ -207,6 +213,8 @@ abstract class AppLocalizations {
   String get moreStats;
 
   String get savings;
+
+  String get totalShipments;
 
   String get yourUsualRoutes;
 
@@ -369,6 +377,37 @@ abstract class AppLocalizations {
   String get failedToLoadProfile;
 
   String get failedToUpdateProfile;
+
+  String get orderNotFound;
+
+  String get notification;
+
+  String get unableToOpen;
+  String get downloadInvoice;
+
+  String get generatingInvoice;
+
+  String get invoiceReady;
+
+  String get shareInvoice;
+
+  String get printInvoice;
+
+  String get downloadFailed;
+
+  String get noRoutesFound;
+
+  String get bookAgain;
+
+  String get viewAllOrders;
+
+  String get recentRoutes;
+
+  String get allTrips;
+
+  String get filterStatus;
+
+  String get noMatchingTrips;
 }
 
 class _AppLocalizationsDelegate
@@ -382,7 +421,7 @@ class _AppLocalizationsDelegate
 
   @override
   bool isSupported(Locale locale) =>
-      <String>['en', 'hi'].contains(locale.languageCode);
+      <String>['en', 'hi', 'ta', 'kn', 'mr'].contains(locale.languageCode);
 
   @override
   bool shouldReload(_AppLocalizationsDelegate old) => false;
@@ -394,6 +433,12 @@ AppLocalizations lookupAppLocalizations(Locale locale) {
       return AppLocalizationsEn();
     case 'hi':
       return AppLocalizationsHi();
+    case 'ta':
+      return AppLocalizationsTa();
+    case 'kn':
+      return AppLocalizationsKn();
+    case 'mr':
+      return AppLocalizationsMr();
   }
 
   throw FlutterError(

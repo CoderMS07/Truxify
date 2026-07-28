@@ -1,11 +1,29 @@
-import { supabase } from '../../api/src/config/db.js';
-import logger from '../../api/src/middleware/logger.js';
+import { supabase } from '../api/src/config/db.js';
+import logger from '../api/src/middleware/logger.js';
 import eventRepository from '../repositories/event.repository.js';
 
 class OrderReadModel {
   constructor() {
     this.cache = new Map();
     this.cacheTTL = 300000; // 5 minutes
+    this.maxLimit = 100;
+    this.maxOffset = 10000;
+  }
+
+  parsePaginationValue(value, { field, min, max }) {
+    if (value === undefined || value === null || value === '') return null;
+    if (typeof value !== 'number' && typeof value !== 'string') {
+      throw new Error(`${field} must be an integer`);
+    }
+    const text = String(value);
+    if (!/^\d+$/.test(text)) {
+      throw new Error(`${field} must be an integer`);
+    }
+    const parsed = Number(text);
+    if (!Number.isSafeInteger(parsed) || parsed < min) {
+      throw new Error(`${field} must be at least ${min}`);
+    }
+    return Math.min(parsed, max);
   }
 
   async buildReadModel(orderId) {
@@ -121,11 +139,22 @@ class OrderReadModel {
       
       query = query.order('updated_at', { ascending: false });
       
-      if (filters.limit) {
-        query = query.limit(filters.limit);
+      const limit = this.parsePaginationValue(filters.limit, {
+        field: 'limit',
+        min: 1,
+        max: this.maxLimit,
+      });
+      const offset = this.parsePaginationValue(filters.offset, {
+        field: 'offset',
+        min: 0,
+        max: this.maxOffset,
+      });
+
+      if (limit !== null) {
+        query = query.limit(limit);
       }
-      if (filters.offset) {
-        query = query.offset(filters.offset);
+      if (offset !== null) {
+        query = query.offset(offset);
       }
       
       const { data, error } = await query;
@@ -138,22 +167,20 @@ class OrderReadModel {
   }
 
   async getOrderStats() {
-    try {
-      const { data, error } = await supabase
+    const statuses = ['pending', 'accepted', 'in_transit', 'delivered', 'cancelled', 'payment_released'];
+    const stats = {};
+
+    for (const status of statuses) {
+      const { count, error } = await supabase
         .from('order_read_models')
-        .select('status, count')
-        .groupBy('status');
+        .select('*', { count: 'exact', head: true })
+        .eq('status', status);
 
       if (error) throw error;
-      
-      return data.reduce((acc, curr) => {
-        acc[curr.status] = curr.count;
-        return acc;
-      }, {});
-    } catch (error) {
-      logger.error('Failed to get order stats:', error);
-      return {};
+      stats[status] = count ?? 0;
     }
+
+    return stats;
   }
 
   async clearCache() {

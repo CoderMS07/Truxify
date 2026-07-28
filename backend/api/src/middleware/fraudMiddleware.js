@@ -4,7 +4,24 @@ import logger from './logger.js';
 export const fraudDetectionMiddleware = async (req, res, next) => {
   try {
     const userId = req.user?.id;
+
+    const criticalEndpoints = [
+      '/api/orders',
+      '/api/payments',
+      '/api/escrow',
+      '/api/trips'
+    ];
+
+    const isCritical = criticalEndpoints.some(endpoint => req.path.startsWith(endpoint));
+
     if (!userId) {
+      if (isCritical) {
+        logger.warn('[Fraud] Blocking unauthenticated request to critical endpoint');
+        return res.status(401).json({
+          error: 'Authentication required for this endpoint',
+        });
+      }
+      logger.warn('[Fraud] Skipping fraud check — no userId on request');
       return next();
     }
 
@@ -20,16 +37,9 @@ export const fraudDetectionMiddleware = async (req, res, next) => {
     await fraudDetection.trackBehavior(userId, behaviorData);
 
     // Get real-time risk for critical endpoints
-    const criticalEndpoints = [
-      '/api/orders',
-      '/api/payments',
-      '/api/escrow',
-      '/api/trips'
-    ];
-
-    if (criticalEndpoints.some(endpoint => req.path.startsWith(endpoint))) {
+    if (isCritical) {
       const risk = await fraudDetection.getRealTimeRisk(userId, {
-        amount: req.body.amount || 0,
+        amount: req.body?.amount || 0,
         frequency: 1,
         deviceChanged: req.deviceChanged || false
       });
@@ -59,8 +69,10 @@ export const fraudDetectionMiddleware = async (req, res, next) => {
 
     next();
   } catch (error) {
-    logger.error('Fraud middleware error:', error);
-    next();
+    logger.error('Fraud middleware error — failing closed:', error);
+    return res.status(503).json({
+      error: 'Fraud detection service is temporarily unavailable. Please retry.',
+    });
   }
 };
 
@@ -68,6 +80,7 @@ export const networkAnalysisMiddleware = async (req, res, next) => {
   try {
     const userId = req.user?.id;
     if (!userId) {
+      logger.warn('[Fraud] Skipping network analysis — no userId on request');
       return next();
     }
 
@@ -83,7 +96,9 @@ export const networkAnalysisMiddleware = async (req, res, next) => {
     req.networkRisk = networkRisk;
     next();
   } catch (error) {
-    logger.error('Network analysis middleware error:', error);
-    next();
+    logger.error('Network analysis middleware error — failing closed:', error);
+    return res.status(503).json({
+      error: 'Fraud detection service is temporarily unavailable. Please retry.',
+    });
   }
 };

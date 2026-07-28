@@ -10,6 +10,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
+import 'package:truxify_shared/truxify_shared.dart';
 
 import '../core/app_routes.dart';
 import '../l10n/app_localizations.dart';
@@ -20,16 +21,22 @@ import '../services/geocode_service.dart';
 import '../services/marketplace_repository.dart';
 import '../services/route_service.dart';
 import '../services/trip_service.dart';
+import '../services/sync_service.dart';
+import '../services/battery_service.dart';
 import '../services/location_service.dart';
+import '../services/weigh_station_service.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/map_markers.dart';
 import '../widgets/home/offline_banner.dart';
+import '../widgets/home/low_battery_banner.dart';
 import '../widgets/home/active_navigation_header.dart';
 import '../widgets/home/search_destination_card.dart';
 import '../widgets/home/new_load_notification_banner.dart';
 import '../widgets/home/driver_status_sheet.dart';
 import '../widgets/home/active_trip_sheet.dart';
 import 'destination_picker_screen.dart';
+import 'pod_capture_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -60,6 +67,10 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<List<ll.LatLng>>? _routeFuture;
   DestinationPickResult? _destination;
   bool _isSearchExpanded = false;
+  Map<String, dynamic>? _heatmapData;
+
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  bool _hasPendingPods = false;
 
   List<Marker>? _cachedMarkers;
   ll.LatLng? _lastDest;
@@ -131,10 +142,13 @@ class _HomeScreenState extends State<HomeScreen> {
   String _activeTripPayout = '';
   bool _isLoadingLocation = true;
   String? _locationError;
-  final List<TripRecord> tripHistory = [];
-
   late final MarketplaceRepository _marketplaceRepo;
-  StreamSubscription<LoadOffer>? _loadSubscription;
+  StreamSubscription? _tripSubscription;
+
+  String _hosStatus = 'off_duty';
+  int _hosDrivingMinutes = 0;
+  int _hosOnDutyMinutes = 0;
+
   Timer? _autoHideTimer;
   LoadOffer? _latestNewLoad;
   bool _dismissedNewLoad = false;
@@ -146,12 +160,16 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoadingMetrics = true;
   String? _metricsError;
   String? _networkError;
-  int _retryCount = 0;
+
+  final BatteryService _batteryService = BatteryService.instance;
+  int _batteryLevel = 100;
+  bool _isCharging = false;
+  bool _criticalDialogShown = false;
 
   String _sanitizeCoordinate(dynamic coord) {
     if (coord == null) return '0.0';
     if (coord is double) return coord.toStringAsFixed(6);
-    if (coord is int) return coord.toStringAsFixed(6);
+    if (coord is int) return coord.toDouble().toStringAsFixed(6);
     return (double.tryParse(coord.toString()) ?? 0.0).toStringAsFixed(6);
   }
 
@@ -162,17 +180,18 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _withRetry(Future<void> Function() fn) async {
-    try {
-      _retryCount = 0;
-      await fn();
-    } catch (e) {
-      _retryCount++;
-      if (_retryCount <= 3) {
-        await Future.delayed(Duration(seconds: _retryCount));
+    for (int i = 0; i < 3; i++) {
+      try {
         await fn();
-      } else {
-        setState(() => _networkError = 'Operation failed after $_retryCount retries');
+        return;
+      } catch (e) {
+        if (i < 2) {
+          await Future.delayed(Duration(seconds: i + 1));
+        }
       }
+    }
+    if (mounted) {
+      setState(() => _networkError = 'Network error. Please check your connection and try again.');
     }
   }
 
@@ -187,6 +206,76 @@ class _HomeScreenState extends State<HomeScreen> {
     _initLocation();
     _subscribeToNewLoads();
     _loadDashboardMetrics();
+    _loadHeatmapData();
+    _initBatteryMonitoring();
+  }
+
+  Future<void> _loadHeatmapData() async {
+    try {
+      final heatmapData = await _marketplaceRepo.fetchDemandHeatmap();
+      if (mounted) {
+        setState(() {
+          _heatmapData = heatmapData;
+        });
+      }
+    } catch (e) {
+      debugPrint('Failed to load heatmap data: $e');
+    }
+  }
+
+  void _initBatteryMonitoring() {
+    _batteryService.addListener(_onBatteryChanged);
+    _batteryService.startMonitoring();
+  }
+
+  void _onBatteryChanged() {
+    if (!mounted) return;
+    final info = _batteryService.currentInfo;
+    setState(() {
+      _batteryLevel = info.level;
+      _isCharging = info.isCharging;
+    });
+    if (info.isCritical && !_criticalDialogShown) {
+      _criticalDialogShown = true;
+      _showCriticalBatteryDialog();
+    }
+  }
+
+  void _showCriticalBatteryDialog() {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(
+          Icons.battery_alert_rounded,
+          color: TruxifyColors.errorRed,
+          size: 48,
+        ),
+        title: const Text('Critical Battery'),
+        content: Text(
+          'Battery is at $_batteryLevel%. '
+          'Please connect your charger immediately to continue tracking.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Dismiss'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              BatteryService.instance.openBatterySettings();
+            },
+            child: const Text('Open Battery Settings'),
+          ),
+        ],
+      ),
+    ).then((_) {
+      if (mounted && _batteryService.currentInfo.isCritical) {
+        _criticalDialogShown = false;
+      }
+    });
   }
 
   @override
@@ -201,6 +290,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _batteryService.removeListener(_onBatteryChanged);
+    _connectivitySubscription?.cancel();
     _loadSubscription?.cancel();
     _autoHideTimer?.cancel();
     _mapController.dispose();
@@ -264,16 +355,30 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       final results = await Future.wait([
-        _earningsService.fetchTodayEarningsSummary().catchError((_) => null),
-        _earningsService.fetchDriverStats().catchError((_) => <String, dynamic>{}),
-        _tripService.fetchTripHistory(limit: 50).catchError((_) => <String, dynamic>{'trips': []}),
+        _earningsService.fetchTodayEarningsSummary().catchError((e) {
+          debugPrint('Failed to fetch earnings summary: $e');
+          return null;
+        }),
+        _earningsService.fetchDriverStats().catchError((e) {
+          debugPrint('Failed to fetch driver stats: $e');
+          return <String, dynamic>{};
+        }),
+        _tripService.fetchTripHistory(limit: 50).catchError((e) {
+          debugPrint('Failed to fetch trip history: $e');
+          return <String, dynamic>{'trips': []};
+        }),
       ]);
 
       if (!mounted) return;
 
       final historyData = results[2] as Map<String, dynamic>;
-      final historyList = (historyData['trips'] as List?)
-          ?.map((t) => TripRecord(
+      final historyRows = historyData['trips'] is List
+          ? (historyData['trips'] as List)
+              .whereType<Map>()
+              .map((t) => Map<String, dynamic>.from(t))
+          : const Iterable<Map<String, dynamic>>.empty();
+      final historyList = historyRows
+          .map((t) => TripRecord(
                 route: (t['route'] as String?) ?? (t['route_label'] as String?) ?? '',
                 date: (t['date'] as String?) ?? (t['trip_date'] as String?) ?? '',
                 earnings: (t['earnings'] as String?) ?? (t['payout'] as String?) ?? '',
@@ -283,7 +388,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 verifiedBadge: (t['verified_badge'] as String?) ?? '',
                 completed: (t['completed'] as bool?) ?? (t['is_completed'] as bool?) ?? false,
               ))
-          .toList() ?? [];
+          .toList();
 
       setState(() {
         _todayEarnings = results[0] as EarningsDailyModel?;
@@ -547,7 +652,7 @@ class _HomeScreenState extends State<HomeScreen> {
         
         if (stops.isNotEmpty) {
           final lastStop = stops.last;
-          final address = lastStop['drop_location'] as String;
+          final address = lastStop['drop_location'] as String? ?? '';
           await prefs.setString('cached_address', address);
           
           final dropPoint = await GeocodeService.resolvePlace(address);
@@ -615,6 +720,7 @@ class _HomeScreenState extends State<HomeScreen> {
         await LocationService.instance.startTracking();
       } else {
         LocationService.instance.stopTracking();
+        WeighStationService.instance.resetAlertedStations();
         if (mounted) {
           setState(() {
             _activeTripId = null;
@@ -707,7 +813,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final stops = await _tripService.fetchTripStops(_activeTripId!);
       final currentStop = stops.where((s) => s['is_current'] == true).firstOrNull;
       if (currentStop != null) {
-        await _tripService.markStopCompleted(currentStop['id'], _activeTripId!);
+        await _tripService.markStopCompleted(currentStop['id'].toString(), _activeTripId!);
       }
     } catch (e) {
       if (mounted) {
@@ -719,6 +825,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
   _clearDestination();
+  WeighStationService.instance.resetAlertedStations();
   if (mounted) {
     setState(() {
       _activeTripId = null;
@@ -731,6 +838,20 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
     _loadDashboardMetrics();
+  }
+}
+
+  Future<void> _checkPendingPods() async {
+    try {
+      final hasPending = await SyncService.instance.isStopPendingSync(_activeTripId ?? '');
+      if (hasPending && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Some deliveries are pending sync.')),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error checking pending PoDs: $e');
+    }
   }
 }
 
@@ -756,6 +877,22 @@ class _HomeScreenState extends State<HomeScreen> {
             Positioned.fill(
               child: _buildMapBody(context),
             ),
+
+            if (_hasPendingPods)
+              Positioned(
+                left: 0,
+                right: 0,
+                top: 0,
+                child: Container(
+                  color: Colors.orange,
+                  padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
+                  child: const Text(
+                    'Offline Mode - Pending Sync',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
+                ),
+              ),
 
             // Top Bar
             Positioned(
@@ -788,6 +925,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ),
                     if (_isOffline) const OfflineBanner(),
+                    if (!_isCharging && _batteryLevel <= 20)
+                      LowBatteryBanner(
+                        batteryLevel: _batteryLevel,
+                        isCritical: _batteryLevel <= 10,
+                      ),
                     _isTripStarted
                         ? ActiveNavigationHeader(
                             destinationAddress:
@@ -803,6 +945,62 @@ class _HomeScreenState extends State<HomeScreen> {
                             onOpenDestinationPicker: _openDestinationPicker,
                           ),
                   ],
+                ),
+              ),
+            ),
+
+            // HoS Warning Banner
+            if (_hosDrivingMinutes >= 660 || _hosOnDutyMinutes >= 840)
+              Positioned(
+                left: 12,
+                right: 12,
+                top: 96,
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.redAccent,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'HoS Limit Exceeded! Mandatory 30-min rest break required.',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+
+            // HoS Status Banner
+            Positioned(
+              left: 12,
+              right: 12,
+              top: (_hosDrivingMinutes >= 660 || _hosOnDutyMinutes >= 840) ? 156 : 96,
+              child: Card(
+                elevation: 4,
+                child: Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('HoS Status: ${_hosStatus.toUpperCase()}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          Text('Driving: ${(_hosDrivingMinutes / 60).toStringAsFixed(1)}h / 11h'),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          TextButton(
+                            onPressed: () => _toggleHosStatus('off_duty'),
+                            child: const Text('Off Duty', style: TextStyle(fontSize: 12)),
+                          ),
+                          TextButton(
+                            onPressed: () => _toggleHosStatus('driving'),
+                            child: const Text('Driving', style: TextStyle(fontSize: 12)),
+                          ),
+                        ],
+                      )
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -967,6 +1165,8 @@ class _HomeScreenState extends State<HomeScreen> {
                             todayEarnings: _todayEarnings,
                             driverRating: _driverRating,
                             onToggleOnline: _toggleOnlineState,
+                            batteryLevel: _batteryLevel,
+                            isCharging: _isCharging,
                           )
                         : ActiveTripSheet(
                             isTripStarted: _isTripStarted,
@@ -1059,8 +1259,51 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
           ),
+          IconButton(
+            icon: const Icon(Icons.qr_code_2, size: 28, color: TruxifyColors.accent),
+            onPressed: _showEbolQrCode,
+            tooltip: 'Show eBoL QR Code',
+          ),
         ],
       ),
+    );
+  }
+
+  void _showEbolQrCode() {
+    if (_activeTripId == null) return;
+    
+    final payload = jsonEncode({
+      "order_id": _activeTripId,
+      "type": "eBoL",
+    });
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Digital Bill of Lading (eBoL)'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Show this QR code to the warehouse clerk for instant verification.'),
+              const SizedBox(height: 20),
+              QrImageView(
+                data: payload,
+                version: QrVersions.auto,
+                size: 200.0,
+              ),
+              const SizedBox(height: 10),
+              Text('Order ID: $_activeTripId', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            )
+          ],
+        );
+      }
     );
   }
 
@@ -1068,7 +1311,7 @@ class _HomeScreenState extends State<HomeScreen> {
     DateTime? latest;
     for (final record in _tripHistory) {
       if (!record.completed) continue;
-      final parsed = _parseTripHistoryDate(record.date);
+      final parsed = DateFormatter.parseDate(record.date);
       if (parsed == null) continue;
       if (latest == null || parsed.isAfter(latest)) {
         latest = parsed;
@@ -1076,34 +1319,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (latest == null) return '-';
-
-    final now = DateTime.now();
-    var diff = now.difference(latest);
-    if (diff.isNegative) diff = diff * -1;
-
-    if (diff.inDays >= 1) return '${diff.inDays}d ago';
-    if (diff.inHours >= 1) return '${diff.inHours}h ago';
-    if (diff.inMinutes >= 1) return '${diff.inMinutes}m ago';
-    return 'Just now';
-  }
-
-  DateTime? _parseTripHistoryDate(String raw) {
-    final parts = raw.trim().split(RegExp(r'\s+'));
-    if (parts.length < 3) return null;
-
-    final day = int.tryParse(parts[0]);
-    final year = int.tryParse(parts[2]);
-    if (day == null || year == null) return null;
-
-    final monthMap = <String, int>{
-      'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
-      'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
-      'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
-    };
-    final month = monthMap[parts[1].toLowerCase()];
-    if (month == null) return null;
-
-    return DateTime(year, month, day);
+    return DateFormatter.formatRelativeTime(latest);
   }
 
   Widget _buildMapBody(BuildContext context) {
@@ -1180,6 +1396,7 @@ class _HomeScreenState extends State<HomeScreen> {
             urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
             userAgentPackageName: 'com.truxify.driver',
           ),
+          if (_buildHeatmapLayer() != null) _buildHeatmapLayer()!,
         ],
       );
     }
@@ -1187,12 +1404,15 @@ class _HomeScreenState extends State<HomeScreen> {
     return FutureBuilder<List<ll.LatLng>>(
       future: _routeFuture ??
           Future.value(<ll.LatLng>[_currentLocation!, _destination!.point]),
-      builder: (context, snap) {
-        final routePoints = (snap.connectionState == ConnectionState.done &&
-                snap.hasData &&
-                snap.data!.length >= 2)
-            ? snap.data!
-            : <ll.LatLng>[_currentLocation!, _destination!.point];
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final routePoints = snapshot.data ?? [];
+        if (routePoints.isEmpty) {
+          return const Center(child: Text('Failed to load route'));
+        }
 
         final center = _routeCenter(routePoints);
         final zoom = _routeZoom(routePoints);
@@ -1213,6 +1433,7 @@ class _HomeScreenState extends State<HomeScreen> {
               urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
               userAgentPackageName: 'com.truxify.driver',
             ),
+            if (_buildHeatmapLayer() != null) _buildHeatmapLayer()!,
             PolylineLayer(
               polylines: [
                 Polyline(
@@ -1349,11 +1570,14 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                           _isRefreshingLocation || _isLoadingLocation
                               ? const SizedBox(
-                                  width: 14,
-                                  height: 14,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 1.5,
-                                    color: TruxifyColors.accent,
+                                  width: 24,
+                                  height: 24,
+                                  child: Padding(
+                                    padding: EdgeInsets.all(4.0),
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.0,
+                                      color: TruxifyColors.accent,
+                                    ),
                                   ),
                                 )
                               : Icon(
@@ -1590,6 +1814,36 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget? _buildHeatmapLayer() {
+    if (_heatmapData == null) return null;
+    final features = _heatmapData!['features'] as List?;
+    if (features == null || features.isEmpty) return null;
+
+    final circles = <CircleMarker>[];
+    for (final feature in features) {
+      try {
+        final geom = feature['geometry'];
+        final coords = geom['coordinates'] as List;
+        final props = feature['properties'] ?? {};
+        final intensity = (props['intensity'] as num?)?.toDouble() ?? 0.5;
+
+        circles.add(CircleMarker(
+          point: ll.LatLng(coords[1], coords[0]),
+          color: Colors.red.withValues(alpha: (intensity * 0.5).clamp(0.1, 0.5)),
+          borderStrokeWidth: 0,
+          useRadiusInMeter: true,
+          radius: 2000,
+        ));
+      } catch (e) {
+        // Ignore invalid features
+      }
+    }
+
+    if (circles.isEmpty) return null;
+
+    return CircleLayer(circles: circles);
+  }
+
   Future<void> _openGoogleMapsRoute() async {
     if (_destination == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1717,8 +1971,20 @@ class _HomeScreenState extends State<HomeScreen> {
               _buildTripSpec(AppLocalizations.of(context)!.estPayout, _activeTripPayout.isNotEmpty ? _activeTripPayout : '--'),
             ],
           ),
-          const SizedBox(height: 16),
-          if (_isTripStarted) ...[
+            const SizedBox(height: 16),
+            if (_isTripStarted && _activeTripId != null) ...[
+              ElevatedButton.icon(
+                onPressed: () async {
+                  await Navigator.push(context, MaterialPageRoute(builder: (_) => PodCaptureScreen(orderId: _activeTripId!)));
+                  _checkPendingPods();
+                },
+                icon: const Icon(Icons.camera_alt),
+                label: const Text('Capture Proof of Delivery'),
+                style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(48)),
+              ),
+              const SizedBox(height: 12),
+            ],
+            if (_isTripStarted) ...[
             SlideToConfirmButton(
               label: AppLocalizations.of(context)!.slideToCompleteTrip,
               backgroundColor: TruxifyColors.success,

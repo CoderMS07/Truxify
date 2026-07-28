@@ -1,13 +1,24 @@
 import logger from '../../middleware/logger.js';
-import Redis from 'ioredis';
-import { supabase } from '../../config/db.js';
+import { redisClient, supabase } from '../../config/db.js';
 
 class FraudDetectionService {
   constructor() {
-    this.redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+    this.redis = redisClient;
+    if (!this.redis) {
+      logger.warn('[FraudDetection] Redis not configured — behavior tracking will use Supabase only');
+    }
     this.behavioralProfiles = new Map();
     this.fraudThreshold = parseFloat(process.env.FRAUD_THRESHOLD) || 0.7;
-    this.riskScores = {};
+    this.riskScores = new Map();
+    this._maxRiskScores = 10000;
+    this._maxBehavioralProfiles = 5000;
+    this._evictionFraction = 0.25;
+    this._lastRiskScoresEviction = null;
+    this._lastBehavioralProfilesEviction = null;
+    this._totalRiskScoresEvicted = 0;
+    this._totalBehavioralProfilesEvicted = 0;
+    this._cleanupInterval = setInterval(() => this._evictStale(), 300_000); // every 5 min
+    this._cleanupInterval.unref?.();
     
     // Initialize ML models (in production, load from FastAPI)
     this.models = {
@@ -22,6 +33,7 @@ class FraudDetectionService {
   // ============ Behavioral Fingerprinting ============
   async trackBehavior(userId, eventData) {
     try {
+      if (!supabase) return null;
       const profile = await this.getOrCreateProfile(userId);
       
       // Update behavioral metrics
@@ -40,15 +52,38 @@ class FraudDetectionService {
       this.updateBehavioralPatterns(profile, eventData);
       
       // Store in Redis
-      await this.redis.setex(
-        `behavior:${userId}`,
-        3600,
-        JSON.stringify(profile)
-      );
+      if (this.redis) {
+        await this.redis.setex(
+          `behavior:${userId}`,
+          3600,
+          JSON.stringify(profile)
+        );
+      } else {
+        this.behavioralProfiles.set(userId, profile);
+      }
+
+      // Persist to Supabase to prevent data loss across Redis expirations
+      const { error: dbErr } = await supabase
+        .from('behavioral_profiles')
+        .upsert({
+          user_id: userId,
+          events: profile.events,
+          patterns: profile.patterns,
+          last_activity: new Date(profile.lastActivity).toISOString(),
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'user_id' });
+
+      if (dbErr) {
+        logger.error('[FraudDetection] Failed to persist behavioral profile to DB:', dbErr.message);
+      }
 
       // Calculate risk score
       const riskScore = await this.calculateBehavioralRisk(profile);
-      this.riskScores[userId] = riskScore;
+      this.riskScores.set(userId, riskScore);
+
+      if (this.riskScores.size > this._maxRiskScores) {
+        this._evictStale();
+      }
 
       return {
         userId,
@@ -65,11 +100,16 @@ class FraudDetectionService {
   }
 
   async getOrCreateProfile(userId) {
+    if (!supabase) return null;
     // Check Redis cache
-    const cached = await this.redis.get(`behavior:${userId}`);
+    const cached = this.redis ? await this.redis.get(`behavior:${userId}`) : null;
     if (cached) {
       return JSON.parse(cached);
     }
+
+    // Check in-memory cache (written by trackBehavior during Redis outages)
+    const inMemory = this.behavioralProfiles.get(userId);
+    if (inMemory) return inMemory;
 
     // Check database
     const { data } = await supabase
@@ -79,6 +119,10 @@ class FraudDetectionService {
       .single();
 
     if (data) {
+      // Normalize: DB returns user_id, code expects userId
+      if (data.user_id && !data.userId) {
+        data.userId = data.user_id;
+      }
       return data;
     }
 
@@ -172,19 +216,28 @@ class FraudDetectionService {
       }
     }
 
-    // 2. Check location anomalies
+    // 2. Check location anomalies — flag genuinely impossible travel speed,
+    // not just cumulative distance. Truxify drivers legitimately cover
+    // hundreds of km per trip, so summing raw distance with no time window
+    // flagged nearly every long-haul driver.
     if (patterns.locationHistory.length > 10) {
       const locations = patterns.locationHistory;
-      let distanceTraveled = 0;
+      let maxSpeedKmh = 0;
       for (let i = 1; i < locations.length; i++) {
-        distanceTraveled += this.calculateDistance(
+        const dist = this.calculateDistance(
           locations[i-1].lat, locations[i-1].lng,
           locations[i].lat, locations[i].lng
         );
+        const hours = (locations[i].timestamp - locations[i-1].timestamp) / 3_600_000;
+        const speedKmh = hours > 0 ? dist / hours : Infinity;
+        if (speedKmh > maxSpeedKmh) {
+          maxSpeedKmh = speedKmh;
+        }
       }
-      
-      // Impossible travel distance in short time
-      if (distanceTraveled > 100) { // 100km in short time
+
+      // Sustained speed above ~150 km/h between consecutive pings is not
+      // achievable by road and indicates spoofed/shared location data.
+      if (maxSpeedKmh > 150) {
         riskScore += 0.3;
       }
     }
@@ -203,11 +256,12 @@ class FraudDetectionService {
 
     // 4. Check event frequency
     if (profile.events.length > 50) {
-      const timeSpan = Date.now() - profile.events[0].timestamp;
-      const eventsPerMinute = (profile.events.length / (timeSpan / 60000));
+      const recentWindow = 60000; // 1 minute
+      const cutoff = Date.now() - recentWindow;
+      const recentCount = profile.events.filter(e => e.timestamp > cutoff).length;
       
       // Too many events = bot
-      if (eventsPerMinute > 60) {
+      if (recentCount > 60) {
         riskScore += 0.3;
       }
     }
@@ -244,6 +298,7 @@ class FraudDetectionService {
   }
 
   async getUserConnections(userId) {
+    if (!supabase) return [];
     // Get all connections (orders, trips, shared routes)
     const { data: orders, error } = await supabase
       .from('orders')
@@ -271,6 +326,44 @@ class FraudDetectionService {
     return Array.from(connections);
   }
 
+  async getBatchUserConnections(userIds) {
+    if (userIds.length === 0) return {};
+
+    const { data: orders, error } = await supabase
+      .from('orders')
+      .select('customer_id, driver_id')
+      .or(userIds.map(id => `customer_id.eq.${id}`).join(',') + ',' + userIds.map(id => `driver_id.eq.${id}`).join(','));
+
+    if (error) {
+      logger.error('Failed to load batch user fraud connections:', error);
+      return {};
+    }
+
+    if (!Array.isArray(orders)) {
+      return {};
+    }
+
+    const connectionsMap = {};
+    for (const userId of userIds) {
+      connectionsMap[userId] = new Set();
+    }
+
+    orders.forEach(order => {
+      if (userIds.includes(order.customer_id) && order.driver_id) {
+        connectionsMap[order.customer_id].add(order.driver_id);
+      }
+      if (userIds.includes(order.driver_id) && order.customer_id) {
+        connectionsMap[order.driver_id].add(order.customer_id);
+      }
+    });
+
+    const result = {};
+    for (const userId of userIds) {
+      result[userId] = Array.from(connectionsMap[userId]);
+    }
+    return result;
+  }
+
   async buildGraph(userId, connections) {
     const graph = {
       nodes: [userId, ...connections],
@@ -286,9 +379,11 @@ class FraudDetectionService {
       });
     }
 
-    // Get second-degree connections
+    // Get second-degree connections in a single batch query
+    const secondDegreeMap = await this.getBatchUserConnections(connections);
+
     for (const conn of connections) {
-      const secondConn = await this.getUserConnections(conn);
+      const secondConn = secondDegreeMap[conn] || [];
       for (const sc of secondConn) {
         if (sc !== userId && !connections.includes(sc)) {
           graph.edges.push({
@@ -382,13 +477,10 @@ class FraudDetectionService {
       );
 
       // 2. Network risk
-      const networkRisk = await this.calculateNetworkRisk(
-        userId, 
-        await this.buildGraph(userId, await this.getUserConnections(userId)),
-        await this.detectFraudRings(
-          await this.buildGraph(userId, await this.getUserConnections(userId))
-        )
-      );
+      const connections = await this.getUserConnections(userId);
+      const graph = await this.buildGraph(userId, connections);
+      const fraudRings = await this.detectFraudRings(graph);
+      const networkRisk = await this.calculateNetworkRisk(userId, graph, fraudRings);
 
       // 3. Transaction risk
       const transactionRisk = this.calculateTransactionRisk(transactionData);
@@ -475,30 +567,42 @@ class FraudDetectionService {
   }
 
   async storeRiskScore(userId, score, components) {
-    await supabase
-      .from('fraud_risk_scores')
-      .insert([{
-        user_id: userId,
-        risk_score: score,
-        components: components,
-        created_at: new Date().toISOString()
-      }]);
+    try {
+      if (!supabase) return;
+      await supabase
+        .from('fraud_risk_scores')
+        .insert([{
+          user_id: userId,
+          risk_score: score,
+          components: components,
+          created_at: new Date().toISOString()
+        }]);
+    } catch (err) {
+      logger.error(`[FraudDetection] Failed to store risk score for user ${userId}: ${err.message}`);
+    }
 
     // Cache in Redis
-    await this.redis.setex(
-      `risk:${userId}`,
-      3600,
-      JSON.stringify({
-        score,
-        components,
-        timestamp: Date.now()
-      })
-    );
+    if (this.redis) {
+      try {
+        await this.redis.setex(
+          `risk:${userId}`,
+          3600,
+          JSON.stringify({
+            score,
+            components,
+            timestamp: Date.now()
+          })
+        );
+      } catch (err) {
+        logger.warn(`[FraudDetection] Failed to cache risk score for user ${userId}: ${err.message}`);
+      }
+    }
   }
 
   // ============ Auto-Review Queue ============
   async addToReviewQueue(userId, reason, riskScore) {
     try {
+      if (!supabase) return null;
       const { data } = await supabase
         .from('fraud_review_queue')
         .insert([{
@@ -520,6 +624,7 @@ class FraudDetectionService {
   }
 
   async getReviewQueue(limit = 50) {
+    if (!supabase) return [];
     const { data } = await supabase
       .from('fraud_review_queue')
       .select('*')
@@ -531,6 +636,7 @@ class FraudDetectionService {
   }
 
   async resolveReview(reviewId, action, notes) {
+    if (!supabase) return null;
     const { data } = await supabase
       .from('fraud_review_queue')
       .update({
@@ -560,23 +666,82 @@ class FraudDetectionService {
   }
 
   async getFraudStats() {
+    if (!supabase) return { total: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0, avgScore: 0 };
     const { data: scores } = await supabase
       .from('fraud_risk_scores')
       .select('risk_score, created_at')
       .order('created_at', { ascending: false })
       .limit(1000);
 
-    const highRisk = scores.filter(s => s.risk_score > 0.7).length;
-    const mediumRisk = scores.filter(s => s.risk_score > 0.4 && s.risk_score <= 0.7).length;
-    const lowRisk = scores.filter(s => s.risk_score <= 0.4).length;
+    const safe = scores || [];
+
+    const highRisk = safe.filter(s => s.risk_score > 0.7).length;
+    const mediumRisk = safe.filter(s => s.risk_score > 0.4 && s.risk_score <= 0.7).length;
+    const lowRisk = safe.filter(s => s.risk_score <= 0.4).length;
 
     return {
-      total: scores.length,
+      total: safe.length,
       highRisk,
       mediumRisk,
       lowRisk,
-      avgScore: scores.reduce((sum, s) => sum + s.risk_score, 0) / scores.length || 0
+      avgScore: safe.reduce((sum, s) => sum + s.risk_score, 0) / safe.length || 0
     };
+  }
+
+  _evictFromMap(map, maxSize, label) {
+    if (map.size <= maxSize) return 0;
+
+    const keys = [...map.keys()];
+    const toDelete = keys.slice(0, Math.floor(keys.length * this._evictionFraction));
+    toDelete.forEach(k => map.delete(k));
+
+    logger.info(`[FraudDetection] Evicted ${toDelete.length} stale ${label} (remaining: ${map.size})`);
+    return toDelete.length;
+  }
+
+  _evictStale() {
+    if (this.riskScores.size > this._maxRiskScores) {
+      const evicted = this._evictFromMap(this.riskScores, this._maxRiskScores, 'risk scores');
+      this._totalRiskScoresEvicted += evicted;
+      this._lastRiskScoresEviction = Date.now();
+    }
+    if (this.behavioralProfiles.size > this._maxBehavioralProfiles) {
+      const evicted = this._evictFromMap(this.behavioralProfiles, this._maxBehavioralProfiles, 'behavioral profiles');
+      this._totalBehavioralProfilesEvicted += evicted;
+      this._lastBehavioralProfilesEviction = Date.now();
+    }
+  }
+
+  getCacheStats() {
+    return {
+      riskScores: {
+        size: this.riskScores.size,
+        maxSize: this._maxRiskScores,
+        utilization: (this.riskScores.size / this._maxRiskScores * 100).toFixed(1) + '%',
+        totalEvicted: this._totalRiskScoresEvicted,
+        lastEviction: this._lastRiskScoresEviction ? new Date(this._lastRiskScoresEviction).toISOString() : null,
+      },
+      behavioralProfiles: {
+        size: this.behavioralProfiles.size,
+        maxSize: this._maxBehavioralProfiles,
+        utilization: (this.behavioralProfiles.size / this._maxBehavioralProfiles * 100).toFixed(1) + '%',
+        totalEvicted: this._totalBehavioralProfilesEvicted,
+        lastEviction: this._lastBehavioralProfilesEviction ? new Date(this._lastBehavioralProfilesEviction).toISOString() : null,
+      },
+    };
+  }
+
+  destroy() {
+    if (this._cleanupInterval) {
+      clearInterval(this._cleanupInterval);
+      this._cleanupInterval = null;
+    }
+    this.riskScores.clear();
+    this.behavioralProfiles.clear();
+    this._totalRiskScoresEvicted = 0;
+    this._totalBehavioralProfilesEvicted = 0;
+    this._lastRiskScoresEviction = null;
+    this._lastBehavioralProfilesEviction = null;
   }
 }
 

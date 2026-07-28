@@ -11,6 +11,11 @@ class _MLDashboardState extends State<MLDashboard> {
   Map<String, dynamic>? metrics;
   bool isLoading = true;
 
+  static const String _baseUrl = String.fromEnvironment(
+    'ML_ENGINE_URL',
+    defaultValue: 'http://localhost:8000',
+  );
+
   @override
   void initState() {
     super.initState();
@@ -20,11 +25,15 @@ class _MLDashboardState extends State<MLDashboard> {
   Future<void> fetchMetrics() async {
     try {
       final response = await http.get(
-        Uri.parse('http://ml-engine:8000/ab-testing/status'),
+        Uri.parse('$_baseUrl/ab-testing/status'),
       );
       if (response.statusCode == 200) {
         setState(() {
           metrics = json.decode(response.body);
+          isLoading = false;
+        });
+      } else {
+        setState(() {
           isLoading = false;
         });
       }
@@ -77,6 +86,18 @@ class _MLDashboardState extends State<MLDashboard> {
   }
 
   Widget _buildMetricsCard() {
+    final results = metrics?['results'] as Map<String, dynamic>? ?? {};
+    final rows = <Widget>[];
+    results.forEach((metric, values) {
+      final prod = values['production']?.toStringAsFixed(2);
+      final shadow = values['shadow']?.toStringAsFixed(2);
+      rows.add(_buildMetricRow(metric, prod, shadow, metric == 'rmse'));
+    });
+
+    if (rows.isEmpty) {
+      rows.add(Text('No metrics available'));
+    }
+
     return Card(
       child: Padding(
         padding: EdgeInsets.all(16),
@@ -85,9 +106,7 @@ class _MLDashboardState extends State<MLDashboard> {
           children: [
             Text('📈 Performance Metrics', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             SizedBox(height: 8),
-            _buildMetricRow('RMSE', '2.5', '2.1', true),
-            _buildMetricRow('MAE', '1.8', '1.5', true),
-            _buildMetricRow('Accuracy', '85%', '89%', false),
+            ...rows,
           ],
         ),
       ),
@@ -121,14 +140,20 @@ class _MLDashboardState extends State<MLDashboard> {
         // Trigger manual rollback
         final testId = metrics?['active_test']?['test_id'];
         if (testId != null) {
-          final response = await http.post(
-            Uri.parse('http://ml-engine:8000/ab-testing/rollback/$testId'),
-          );
-          if (response.statusCode == 200) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Rollback triggered successfully!')),
+          try {
+            final response = await http.post(
+              Uri.parse('http://ml-engine:8000/ab-testing/rollback/$testId'),
             );
-            fetchMetrics();
+            if (response.statusCode == 200) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Rollback triggered successfully!')),
+              );
+              fetchMetrics();
+            }
+          } catch (e) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Rollback failed: $e')),
+            );
           }
         }
       },

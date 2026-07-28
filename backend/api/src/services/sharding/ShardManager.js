@@ -1,4 +1,5 @@
-import { createPool } from 'mysql2/promise';
+import pkg from 'pg';
+const { Pool } = pkg;
 import Redis from 'ioredis';
 import logger from '../../middleware/logger.js';
 
@@ -6,6 +7,9 @@ class ShardManager {
   constructor() {
     this.shards = new Map();
     this.redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+    this.redis.quit = this.redis.quit.bind(this.redis);
+    process.on('SIGINT', () => this.closeAllConnections().catch(() => {}));
+    process.on('SIGTERM', () => this.closeAllConnections().catch(() => {}));
     this.initializeShards();
   }
 
@@ -62,18 +66,16 @@ class ShardManager {
     this.initializePools();
   }
 
-  async initializePools() {
+  initializePools() {
     for (const [name, config] of this.shards) {
       try {
-        config.pool = createPool({
+        config.pool = new Pool({
           host: config.host,
           port: config.port,
           database: config.database,
           user: config.user,
           password: config.password,
-          waitForConnections: true,
-          connectionLimit: 10,
-          queueLimit: 0
+          max: 10,
         });
         logger.info(`✅ Shard ${name} initialized`);
       } catch (error) {
@@ -122,11 +124,15 @@ class ShardManager {
 
   async getShardConnection(shardName) {
     const shard = this.shards.get(shardName);
-    if (!shard || !shard.pool) {
-      logger.error(`Shard ${shardName} not available`);
-      return this.shards.get('north').pool;
+    if (shard && shard.pool) {
+      return shard.pool;
     }
-    return shard.pool;
+    logger.error(`Shard ${shardName} not available, falling back to north`);
+    const north = this.shards.get('north');
+    if (north && north.pool) {
+      return north.pool;
+    }
+    throw new Error(`No database shard available (requested: ${shardName}, north fallback also unavailable)`);
   }
 
   async getOrderLocation(orderId) {
@@ -148,8 +154,11 @@ class ShardManager {
         // Default to north shard
         connection = await this.getShardConnection('north');
       }
-      const [rows] = await connection.execute(query, params);
-      return rows;
+      // node-postgres (`pg`) Pool exposes `.query()`, not `.execute()` (that's
+      // the mysql2 API). `.query()` resolves to `{ rows, rowCount, ... }`,
+      // not a `[rows, fields]` tuple.
+      const result = await connection.query(query, params);
+      return result.rows;
     } catch (error) {
       logger.error('Query execution error:', error);
       throw error;
@@ -162,8 +171,8 @@ class ShardManager {
     for (const [name, shard] of this.shards) {
       if (shard.pool) {
         try {
-          const [rows] = await shard.pool.execute(queries.query, queries.params || []);
-          results.push({ shard: name, data: rows });
+          const result = await shard.pool.query(queries.query, queries.params || []);
+          results.push({ shard: name, data: result.rows });
         } catch (error) {
           logger.error(`Error querying shard ${name}:`, error);
         }
@@ -177,7 +186,7 @@ class ShardManager {
     for (const [name, shard] of this.shards) {
       try {
         if (shard.pool) {
-          await shard.pool.execute('SELECT 1');
+          await shard.pool.query('SELECT 1');
           status[name] = 'healthy';
         } else {
           status[name] = 'uninitialized';

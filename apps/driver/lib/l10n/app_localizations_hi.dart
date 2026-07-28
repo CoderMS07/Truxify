@@ -432,4 +432,75 @@ class AppLocalizationsHi extends AppLocalizations {
 
   @override
   String get thisLoadIsMissingId => 'इस लोड में ID गायब है';
+
+  @override
+  String get recommendedReturnLoads => 'सुझाए गए वापसी लोड';
+
+  @override
+  String get recommendedForYou => 'आपके लिए सुझाया गया';
+
+  @override
+  String get matchScore => 'मैच स्कोर';
+
+  @override
+  String get bestMatch => 'सर्वोत्तम मैच';
+
+  @override
+  String get noRecommendations => 'कोई वापसी लोड सिफारिश उपलब्ध नहीं है';
+
+  @override
+  String get couldNotLoadRecommendations => 'सिफारिशें लोड नहीं हो सकीं';
+
+  @override
+  String get noActiveTripForRecommendations => 'वापसी लोड सुझाव देखने के लिए यात्रा पूरी करें';
+
+  @override
+  String get detourDistance => 'डायवर्जन';
+
+  @override
+  String get bidOnLoad => 'बोली लगाएं';
+
+  @override
+  String get updateBid => 'बोली अपडेट करें';
+
+  @override
+  String get placeYourBid => 'अपनी बोली लगाएं';
+
+  @override
+  String get bidAmount => 'बोली राशि';
+
+  @override
+  String get submitBid => 'बोली सबमिट करें';
+
+  @override
+  String get enterValidBid => 'एक मान्य बोली राशि दर्ज करें';
+  String get unableToOpen => 'सूचना खोलने में असमर्थ';
+  String get withdraw => 'निकालें';
+
+  @override
+  String get withdrawFunds => 'फंड निकालें';
+
+  @override
+  String get availableBalance => 'उपलब्ध शेष';
+
+  @override
+  String get enterAmount => 'राशि दर्ज करें';
+
+  @override
+  String get amountRequired => 'राशि आवश्यक है';
+
+  @override
+  String get enterValidAmount => 'कृपया एक वैध राशि दर्ज करें';
+
+  @override
+  String get amountMustBePositive => 'राशि शून्य से अधिक होनी चाहिए';
+
+  @override
+  String get insufficientBalance => 'अपर्याप्त शेष';
+
+  @override
+  String get max => 'अधिकतम';
+
+  @override
+  String get withdrawalSuccessful => 'निकासी सफल';
 }

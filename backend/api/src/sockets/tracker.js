@@ -57,20 +57,6 @@ let _orderRepository = null;
 let telemetryDropCounter = 0;
 const RECOVERY_FILE_PATH = process.env.RECOVERY_FILE_PATH || path.join(os.tmpdir(), 'truxify-telemetry-recovery.jsonl');
 
-function scrubPII(record) {
-  const scrubbed = { ...record };
-  if (scrubbed.driver_id) {
-    scrubbed.driver_id = 'scrubbed:' + crypto.createHash('sha256').update(scrubbed.driver_id).digest('hex').slice(0, 12);
-  }
-  if (typeof scrubbed.lat === 'number') {
-    scrubbed.lat = Math.round(scrubbed.lat * 100) / 100;
-  }
-  if (typeof scrubbed.lng === 'number') {
-    scrubbed.lng = Math.round(scrubbed.lng * 100) / 100;
-  }
-  return scrubbed;
-}
-
 // In-memory mapping of active client subscriptions
 const trackingSubscriptions = new Map();
 
@@ -323,17 +309,21 @@ export function initWebSocketServer(server, orderRepository) {
   });
 
   wss.on('connection', async (ws, req) => {
+    ws._request = req;
     const reqUrl = new URL(req.url, 'http://localhost');
     const token    = reqUrl.searchParams.get('token');
     const bypassAuth = process.env.BYPASS_AUTH === 'true';
+    let authenticated = false;
 
     if (bypassAuth) {
       if (process.env.NODE_ENV === 'production') {
+        ws.send(JSON.stringify({ error: 'BYPASS_AUTH is not allowed in production', code: 4003 }));
         ws.close(4003, 'BYPASS_AUTH is not allowed in production');
         return;
       }
       const devToken = reqUrl.searchParams.get('dev_access_token');
       if (!devToken || !process.env.DEV_ACCESS_TOKEN || devToken !== process.env.DEV_ACCESS_TOKEN) {
+        ws.send(JSON.stringify({ error: 'Unauthorized: Missing or invalid dev_access_token', code: 4001 }));
         ws.close(4001, 'Unauthorized: Missing or invalid dev_access_token');
         return;
       }
@@ -343,8 +333,10 @@ export function initWebSocketServer(server, orderRepository) {
         role: reqUrl.searchParams.get('user_role') || 'driver',
       };
       logger.warn({ event: 'WS_BYPASS_AUTH_USED', driverId: ws.driverId, role: ws.user.role }, 'WS Auth bypassed via DEV_ACCESS_TOKEN');
+      authenticated = true;
     } else {
       if (!token) {
+        ws.send(JSON.stringify({ error: 'Unauthorized: No token provided', code: 4001 }));
         ws.close(4001, 'Unauthorized: No token provided');
         return;
       }
@@ -364,6 +356,7 @@ export function initWebSocketServer(server, orderRepository) {
 
         if (isSupabaseToken) {
           if (!supabase) {
+            ws.send(JSON.stringify({ error: 'Unauthorized: Supabase client is not configured', code: 4001 }));
             ws.close(4001, 'Unauthorized: Supabase client is not configured');
             return;
           }
@@ -371,6 +364,7 @@ export function initWebSocketServer(server, orderRepository) {
           const user = response?.data?.user;
           const authError = response?.error;
           if (authError || !user) {
+            ws.send(JSON.stringify({ error: 'Unauthorized: Invalid or expired Supabase token', code: 4001 }));
             ws.close(4001, 'Unauthorized: Invalid or expired Supabase token');
             return;
           }
@@ -383,6 +377,7 @@ export function initWebSocketServer(server, orderRepository) {
             .maybeSingle();
 
           if (error || !userProfile) {
+            ws.send(JSON.stringify({ error: 'Unauthorized: User profile not found', code: 4001 }));
             ws.close(4001, 'Unauthorized: User profile not found');
             return;
           }
@@ -390,11 +385,13 @@ export function initWebSocketServer(server, orderRepository) {
         } else {
           // Firebase Verification
           if (!firebaseAdmin) {
+            ws.send(JSON.stringify({ error: 'Unauthorized: Firebase Auth is not configured', code: 4001 }));
             ws.close(4001, 'Unauthorized: Firebase Auth is not configured');
             return;
           }
           const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
           if (!supabase) {
+            ws.send(JSON.stringify({ error: 'Unauthorized: Profile lookup is not configured', code: 4001 }));
             ws.close(4001, 'Unauthorized: Profile lookup is not configured');
             return;
           }
@@ -407,6 +404,7 @@ export function initWebSocketServer(server, orderRepository) {
             .maybeSingle();
 
           if (error || !userProfile) {
+            ws.send(JSON.stringify({ error: 'Unauthorized: User profile not found', code: 4001 }));
             ws.close(4001, 'Unauthorized: User profile not found');
             return;
           }
@@ -421,12 +419,16 @@ export function initWebSocketServer(server, orderRepository) {
         ws.driverId = profile.id;
         await restoreSubscriptions(ws);
         logger.info(`✅ WS Authenticated user: ${ws.user.id}`);
+        authenticated = true;
       } catch (err) {
         logger.error({ err }, 'WS Auth failed');
+        ws.send(JSON.stringify({ error: 'Unauthorized: Invalid token', code: 4001 }));
         ws.close(4001, 'Unauthorized: Invalid token');
         return;
       }
     }
+
+    if (!authenticated) return;
 
     logger.info('🔌 New WebSocket connection established on /ws/tracking');
     ws.isAlive = true;
@@ -552,6 +554,7 @@ export async function handleLocationPing(ws, data, req) {
     }, 'Location spoofing attempt detected: Driver ID mismatch');
 
     if (typeof ws.close === 'function') {
+      ws.send(JSON.stringify({ error: 'Spoofed location detected: Driver ID mismatch', code: 4010 }));
       ws.close(4010, 'Spoofed location detected: Driver ID mismatch');
     }
     return;
@@ -708,7 +711,7 @@ export async function handleLocationPing(ws, data, req) {
   const usagePct = (telemetryWriteBuffer.length / MAX_BUFFER_SIZE) * 100;
   if (usagePct >= 80) {
     logger.warn(`[TRUXIFY BUFFER CRITICAL] Buffer at ${usagePct.toFixed(0)}% capacity (${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`);
-  } else if (usagePct >= 50 && usagePct < 60) {
+  } else if (usagePct >= 50 && usagePct < 80) {
     logger.warn(`[TRUXIFY BUFFER WARN] Buffer at ${usagePct.toFixed(0)}% capacity (${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`);
   }
 
@@ -821,8 +824,6 @@ async function flushTelemetryBuffer() {
   telemetryFlushBuffer = [];
   telemetryWriteBuffer.clear();
 
-  flushMutex = false;
-
   if (recordsToFlush.length === 0) {
     flushMutex = false;
     return;
@@ -849,11 +850,11 @@ async function flushTelemetryBuffer() {
         } else {
           logger.error(`[TRUXIFY VALIDATION] Bulk insert validation error: ${err.message}`);
         }
-        const succeeded = err.writeErrors
-          ? recordsToFlush.filter((_, i) => !err.writeErrors.some(e => e.index === i))
+        const failed = err.writeErrors
+          ? recordsToFlush.filter((_, i) => err.writeErrors.some(e => e.index === i))
           : [];
-        if (succeeded.length > 0) {
-          const overflowDrop = telemetryWriteBuffer.prepend(succeeded);
+        if (failed.length > 0) {
+          const overflowDrop = telemetryWriteBuffer.prepend(failed);
           if (overflowDrop > 0) {
             telemetryTotalDropped += overflowDrop;
             telemetryOverflowDropped += overflowDrop;
@@ -969,7 +970,7 @@ export async function closeWebSocketServer() {
       const dataLoss = telemetryWriteBuffer.length;
       if (dataLoss > 0) {
         try {
-          const lines = telemetryWriteBuffer.toArray().map(r => JSON.stringify(scrubPII(r))).join('\n');
+          const lines = telemetryWriteBuffer.toArray().map(r => JSON.stringify(r)).join('\n');
           fs.writeFileSync(RECOVERY_FILE_PATH, lines + '\n', { encoding: 'utf-8', mode: 0o600 });
           logger.warn(`[TRUXIFY SHUTDOWN] MongoDB not available. Wrote ${dataLoss} telemetry records to recovery file: ${RECOVERY_FILE_PATH}`);
         } catch (fileErr) {
@@ -1193,9 +1194,9 @@ async function restoreSubscriptions(ws) {
     for (const targetId of targets) {
       const allowed = await canSubscribe(
         ws,
-        targetId.startsWith('ORDER-')
-          ? { order_display_id: targetId }
-          : { driver_id: targetId }
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetId)
+          ? { driver_id: targetId }
+          : { order_display_id: targetId }
       );
 
       if (!allowed) {

@@ -59,7 +59,9 @@ class LocationService {
     }
 
     final decoded = jsonDecode(response.body);
-    if (decoded is! List) return const <LocationSuggestion>[];
+    if (decoded is! List) {
+      throw Exception('Search failed: unexpected response type (${uri.path})');
+    }
     final results = decoded
         .map((item) {
           if (item is! Map<String, dynamic>) return null;
