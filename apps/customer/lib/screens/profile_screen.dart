@@ -245,6 +245,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             'wallet_address': address,
                           },
                         );
+                        if (!mounted) return;
                         setState(() {
                           _walletAddress = address;
                         });

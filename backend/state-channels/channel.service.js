@@ -5,7 +5,7 @@ import { supabase } from '../api/src/config/db.js';
 class StateChannelService {
     constructor() {
         this.provider = new ethers.JsonRpcProvider(process.env.POLYGON_RPC_URL);
-        this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider);
+        this.wallet = new ethers.Wallet(process.env.RELAYER_WALLET_PRIVATE_KEY, this.provider);
         this.channelAddress = process.env.STATE_CHANNEL_ADDRESS;
 
         this.channelABI = [
@@ -283,8 +283,8 @@ class StateChannelService {
 
     async getChannelStats() {
         const channels = [];
-        for (const [id, _] of this.channelCache) {
-            channels.push(await this.getChannel(id));
+        for (const [id, cached] of this.channelCache) {
+            if (cached) channels.push(cached);
         }
 
         return {

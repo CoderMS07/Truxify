@@ -36,7 +36,8 @@ class FuelAnalyticsService {
 
       // Provide sample points for a chart (last 5 trips)
       final chartPoints = <Map<String, dynamic>>[];
-      for (int i = 0; i < trips.length && i < 5; i++) {
+      final startIndex = trips.length > 5 ? trips.length - 5 : 0;
+      for (int i = startIndex; i < trips.length; i++) {
         final t = trips[i];
         final numDist = double.tryParse(t['distance']?.toString().replaceAll(RegExp(r'[^0-9.]'), '') ?? '0') ?? 0;
         final numEarn = double.tryParse(t['earnings']?.toString().replaceAll(RegExp(r'[^0-9.]'), '') ?? '0') ?? 0;

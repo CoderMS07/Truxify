@@ -2,15 +2,19 @@ import kafka, { TOPICS, CONSUMER_GROUPS } from '../config/kafka.config.js';
 import logger from '../api/src/middleware/logger.js';
 
 class OrderConsumer {
-  constructor() {
+  constructor({ eventBus: externalEventBus } = {}) {
     this.handlers = new Map();
     this.initialized = false;
+    this._eventBus = externalEventBus || null;
+  }
+
+  setEventBus(eventBus) {
+    this._eventBus = eventBus;
   }
 
   async initialize() {
     if (this.initialized) return;
 
-    // Order service consumer
     await kafka.createConsumer(CONSUMER_GROUPS.ORDER_SERVICE, [
       TOPICS.ORDER_CREATED,
       TOPICS.ORDER_UPDATED,
@@ -23,7 +27,6 @@ class OrderConsumer {
       TOPICS.ESCROW_RELEASED,
     ]);
 
-    // Notification service consumer
     await kafka.createConsumer(CONSUMER_GROUPS.NOTIFICATION_SERVICE, [
       TOPICS.ORDER_CREATED,
       TOPICS.DRIVER_ASSIGNED,
@@ -32,7 +35,6 @@ class OrderConsumer {
       TOPICS.NOTIFICATION_SENT,
     ]);
 
-    // Analytics service consumer
     await kafka.createConsumer(CONSUMER_GROUPS.ANALYTICS_SERVICE, [
       TOPICS.ORDER_CREATED,
       TOPICS.ORDER_UPDATED,
@@ -45,7 +47,6 @@ class OrderConsumer {
       TOPICS.LOCATION_UPDATED,
     ]);
 
-    // Fraud service consumer
     await kafka.createConsumer(CONSUMER_GROUPS.FRAUD_SERVICE, [
       TOPICS.ORDER_CREATED,
       TOPICS.PAYMENT_CONFIRMED,
@@ -63,35 +64,53 @@ class OrderConsumer {
     this.handlers.get(topic).push(handler);
   }
 
+  registerHandlerViaEventBus(eventType, handler) {
+    if (this._eventBus) {
+      this._eventBus.subscribe(eventType, handler);
+      logger.info(`[OrderConsumer] Registered EventBus handler for "${eventType}"`);
+    } else {
+      logger.warn('[OrderConsumer] No EventBus set, falling back to direct handler registration');
+      this.registerHandler(eventType, handler);
+    }
+  }
+
   async startConsuming(groupId) {
     const consumer = await kafka.getConsumer(groupId);
     const handlers = this.handlers;
 
-    await kafka.consumeMessages(
-      groupId,
-      async (topic, message, rawMessage) => {
-        if (handlers.has(topic)) {
-          const topicHandlers = handlers.get(topic);
-          for (const handler of topicHandlers) {
-            try {
-              await handler(message, rawMessage);
-            } catch (error) {
-              logger.error(`Handler error for ${topic}:`, error);
-            }
+    const messageHandler = async (topic, message, rawMessage) => {
+      if (handlers.has(topic)) {
+        const topicHandlers = handlers.get(topic);
+        for (const handler of topicHandlers) {
+          try {
+            await handler(message, rawMessage);
+          } catch (error) {
+            logger.error(`Handler error for ${topic}:`, error);
           }
         }
-      },
+      }
+
+      if (this._eventBus) {
+        const eventType = topic.replace(/\./g, '_').toUpperCase();
+        this._eventBus.publish(eventType, message, {
+          adapters: [],
+          deduplicate: false,
+          source: `kafka:${groupId}`,
+        });
+      }
+    };
+
+    await kafka.consumeMessages(
+      groupId,
+      messageHandler,
       async (error, topic, message) => {
-        // Dead letter queue handling
         logger.error(`Dead letter: ${topic}`, { error: error.message });
-        // Store in DLQ for later processing
         await this.storeDeadLetter(topic, message, error);
       }
     );
   }
 
   async storeDeadLetter(topic, message, error) {
-    // Store dead letter messages in Redis or MongoDB
     const dlqEntry = {
       topic,
       message: message.value.toString(),
@@ -99,14 +118,12 @@ class OrderConsumer {
       timestamp: new Date().toISOString(),
       retryCount: 0,
     };
-    
-    // In production, store in Redis list or MongoDB collection
     logger.info(`📦 Dead letter stored for ${topic}`, dlqEntry);
   }
 
   async startAllConsumers() {
     await this.initialize();
-    
+
     const consumerGroups = Object.values(CONSUMER_GROUPS);
     for (const groupId of consumerGroups) {
       try {

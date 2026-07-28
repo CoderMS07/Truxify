@@ -313,6 +313,7 @@ export function initWebSocketServer(server, orderRepository) {
     const reqUrl = new URL(req.url, 'http://localhost');
     const token    = reqUrl.searchParams.get('token');
     const bypassAuth = process.env.BYPASS_AUTH === 'true';
+    let authenticated = false;
 
     if (bypassAuth) {
       if (process.env.NODE_ENV === 'production') {
@@ -332,6 +333,7 @@ export function initWebSocketServer(server, orderRepository) {
         role: reqUrl.searchParams.get('user_role') || 'driver',
       };
       logger.warn({ event: 'WS_BYPASS_AUTH_USED', driverId: ws.driverId, role: ws.user.role }, 'WS Auth bypassed via DEV_ACCESS_TOKEN');
+      authenticated = true;
     } else {
       if (!token) {
         ws.send(JSON.stringify({ error: 'Unauthorized: No token provided', code: 4001 }));
@@ -417,6 +419,7 @@ export function initWebSocketServer(server, orderRepository) {
         ws.driverId = profile.id;
         await restoreSubscriptions(ws);
         logger.info(`✅ WS Authenticated user: ${ws.user.id}`);
+        authenticated = true;
       } catch (err) {
         logger.error({ err }, 'WS Auth failed');
         ws.send(JSON.stringify({ error: 'Unauthorized: Invalid token', code: 4001 }));
@@ -424,6 +427,8 @@ export function initWebSocketServer(server, orderRepository) {
         return;
       }
     }
+
+    if (!authenticated) return;
 
     logger.info('🔌 New WebSocket connection established on /ws/tracking');
     ws.isAlive = true;
@@ -706,7 +711,7 @@ export async function handleLocationPing(ws, data, req) {
   const usagePct = (telemetryWriteBuffer.length / MAX_BUFFER_SIZE) * 100;
   if (usagePct >= 80) {
     logger.warn(`[TRUXIFY BUFFER CRITICAL] Buffer at ${usagePct.toFixed(0)}% capacity (${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`);
-  } else if (usagePct >= 50 && usagePct < 60) {
+  } else if (usagePct >= 50 && usagePct < 80) {
     logger.warn(`[TRUXIFY BUFFER WARN] Buffer at ${usagePct.toFixed(0)}% capacity (${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`);
   }
 
@@ -1013,28 +1018,6 @@ export async function closeWebSocketServer() {
       resolve();
     });
   });
-}
-
-export function broadcastOrderMilestone(orderDisplayId, milestone, status) {
-  if (!orderDisplayId) return;
-  const broadcastPayload = JSON.stringify({
-    event: 'milestone_update',
-    data: {
-      order_display_id: orderDisplayId,
-      milestone: milestone,
-      status: status,
-      timestamp: new Date()
-    }
-  });
-
-  if (trackingSubscriptions.has(orderDisplayId)) {
-    const clients = trackingSubscriptions.get(orderDisplayId);
-    clients.forEach((client) => {
-      if (client.readyState === 1) { 
-        client.send(broadcastPayload);
-      }
-    });
-  }
 }
 
 export async function handleSubscribe(ws, data) {
