@@ -1,13 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ethers } from 'ethers';
 
 import { createSupabaseMock } from '../../helpers/supabaseMock.js';
 import { OrderRepository } from '../../../src/repositories/orderRepository.js';
 import { BidAcceptanceService, DomainError } from '../../../src/services/order/bidAcceptanceService.js';
 
-vi.mock('../../../src/services/escrow.js', () => ({
-  escrowDeposit: vi.fn(),
-  escrowRefund: vi.fn(),
-}));
+vi.mock('../../../src/services/escrow.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    escrowDeposit: vi.fn(),
+    escrowRefund: vi.fn(),
+  };
+});
 
 describe('BidAcceptanceService', () => {
   let supabaseMock;
@@ -45,13 +50,15 @@ describe('BidAcceptanceService', () => {
       driver_id: null,
       vehicle_id: null,
       status: 'pending',
+      version: 1,
     }];
     supabaseMock.store.load_bids = [{
       id: 'bid-1',
       load_id: 'offer-1',
       order_id: 'order-1',
       driver_id: 'driver-1',
-      bid_amount: 250000,
+      version: 1,
+      bid_amount: 50000,
       status: 'pending',
       created_at: '2024-01-01T00:00:00.000Z',
     }];
@@ -91,6 +98,14 @@ describe('BidAcceptanceService', () => {
     expect(result.status).toBe(200);
     expect(result.body.message).toBe('Bid accepted. Driver and truck assigned.');
     expect(escrowDeposit).toHaveBeenCalled();
+
+    // Verify the correct amountWei was computed using ESCROW_MATIC_PER_PAISA
+    // bid_amount = 50000 paisa (₹500), rate = 0.01 MATIC/paisa => 500 MATIC
+    const escrowArgs = escrowDeposit.mock.calls[0];
+    const amountWei = escrowArgs[3];
+    expect(typeof amountWei).toBe('bigint');
+    expect(amountWei).toBe(ethers.parseEther('2500'));
+
     expect(supabaseMock.calls.some(call => call.rpc === 'accept_bid_tx')).toBe(true);
   });
 
@@ -108,7 +123,8 @@ describe('BidAcceptanceService', () => {
       load_id: 'offer-1',
       order_id: 'order-1',
       driver_id: 'driver-1',
-      bid_amount: 250000,
+      version: 1,
+      bid_amount: 50000,
       status: 'pending',
       created_at: '2024-01-01T00:00:00.000Z',
     }];
@@ -152,13 +168,15 @@ describe('BidAcceptanceService', () => {
       driver_id: null,
       vehicle_id: null,
       status: 'pending',
+      version: 1,
     }];
     supabaseMock.store.load_bids = [{
       id: 'bid-1',
       load_id: 'offer-1',
       order_id: 'order-1',
       driver_id: 'driver-1',
-      bid_amount: 250000,
+      version: 1,
+      bid_amount: 50000,
       status: 'pending',
       created_at: '2024-01-01T00:00:00.000Z',
     }];
@@ -218,13 +236,15 @@ describe('BidAcceptanceService', () => {
       driver_id: null,
       vehicle_id: null,
       status: 'pending',
+      version: 1,
     }];
     supabaseMock.store.load_bids = [{
       id: 'bid-1',
       load_id: 'offer-1',
       order_id: 'order-1',
       driver_id: 'driver-1',
-      bid_amount: 250000,
+      version: 1,
+      bid_amount: 50000,
       status: 'pending',
       created_at: '2024-01-01T00:00:00.000Z',
     }];
