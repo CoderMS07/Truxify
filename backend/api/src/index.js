@@ -23,6 +23,8 @@ import {
   requestIdMiddleware,
   requestLogger,
   securityHeaders,
+  suspiciousRequests,
+  responseSanitizer,
 } from "./middleware/index.js";
 
 // Load REST routes
@@ -322,6 +324,9 @@ app.use((req, res, next) => {
 app.use(requestIdMiddleware)
 app.use(requestLogger)
 
+app.use(hppProtection)
+app.use(suspiciousRequests)
+
 // Enforce a known request content-type on mutating requests (POST/PUT/PATCH).
 // `requireJsonContent` only rejects unrecognized media types; the three
 // allowed types match the parsers registered above.
@@ -499,6 +504,8 @@ app.get('/', (req, res) => {
   const wsPort = process.env.PORT || 5000
   res.send(`<h1>Truxify Backend API is running.</h1><p>Use WebSockets at <code>ws://${wsHost}:${wsPort}/ws/tracking</code></p>`)
 })
+
+app.use(responseSanitizer)
 
 // Handling 404 Route Not Found
 app.use((req, res) => {
