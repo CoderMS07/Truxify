@@ -7,6 +7,7 @@ import networkx as nx
 from datetime import datetime
 import logging
 from gat.model import SpatialTemporalGAT, TrafficGraphBuilder, GATTrainer
+import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/gat", tags=["Graph Attention Networks"])
@@ -155,6 +156,7 @@ async def get_model_info():
 
 @router.post("/save")
 async def save_model(path: str = "models/gat_traffic.pth"):
+    path = os.path.join("models", os.path.basename(path)):
     """Save GAT model"""
     try:
         trainer.save(path)
@@ -169,6 +171,7 @@ async def save_model(path: str = "models/gat_traffic.pth"):
 
 @router.post("/load")
 async def load_model(path: str = "models/gat_traffic.pth"):
+    path = os.path.join("models", os.path.basename(path)):
     """Load GAT model"""
     try:
         trainer.load(path)

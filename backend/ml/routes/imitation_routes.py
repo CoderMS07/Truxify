@@ -5,6 +5,7 @@ import numpy as np
 from datetime import datetime
 import logging
 from imitation.model import ImitationLearningModel
+import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/imitation", tags=["Imitation Learning"])
@@ -163,6 +164,7 @@ async def get_model_info():
 
 @router.post("/save")
 async def save_model(path: str = "models/imitation_model.pth"):
+    path = os.path.join("models", os.path.basename(path)):
     """Save imitation learning model"""
     try:
         model.save(path)
@@ -177,6 +179,7 @@ async def save_model(path: str = "models/imitation_model.pth"):
 
 @router.post("/load")
 async def load_model(path: str = "models/imitation_model.pth"):
+    path = os.path.join("models", os.path.basename(path)):
     """Load imitation learning model"""
     try:
         model.load(path)
