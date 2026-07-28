@@ -324,7 +324,6 @@ if (process.env.NODE_ENV === 'production') {
 // Payload parsers
 const jsonBodyLimit =
   process.env.JSON_BODY_LIMIT || '1mb';
-
 const urlEncodedBodyLimit =
   process.env.URLENCODED_BODY_LIMIT || '1mb';
 
