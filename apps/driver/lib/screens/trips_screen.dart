@@ -256,7 +256,8 @@ class _TripsScreenState extends State<TripsScreen> {
         },
       ),
     ));
-    
+
+    if (!mounted) return;
     await _loadTrips();
   }
 
