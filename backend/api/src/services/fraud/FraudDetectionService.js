@@ -107,6 +107,10 @@ class FraudDetectionService {
       return JSON.parse(cached);
     }
 
+    // Check in-memory cache (written by trackBehavior during Redis outages)
+    const inMemory = this.behavioralProfiles.get(userId);
+    if (inMemory) return inMemory;
+
     // Check database
     const { data } = await supabase
       .from('behavioral_profiles')
@@ -252,11 +256,12 @@ class FraudDetectionService {
 
     // 4. Check event frequency
     if (profile.events.length > 50) {
-      const timeSpan = Date.now() - profile.events[0].timestamp;
-      const eventsPerMinute = (profile.events.length / (timeSpan / 60000));
+      const recentWindow = 60000; // 1 minute
+      const cutoff = Date.now() - recentWindow;
+      const recentCount = profile.events.filter(e => e.timestamp > cutoff).length;
       
       // Too many events = bot
-      if (eventsPerMinute > 60) {
+      if (recentCount > 60) {
         riskScore += 0.3;
       }
     }
