@@ -27,6 +27,28 @@ vi.mock('../../src/middleware/logger.js', () => ({
   },
 }));
 
+vi.mock('../../src/core/telemetry/WorkerTracer.js', () => ({
+  WorkerTracer: {
+    wrapCronJob: vi.fn((_name, handler) => handler),
+    wrapIntervalWorker: vi.fn((_name, handler) => handler),
+  },
+}));
+
+vi.mock('../../src/core/telemetry/SpanFactory.js', () => ({
+  default: {
+    getActiveSpan: vi.fn(() => ({
+      setAttributes: vi.fn(),
+    })),
+    startWorkerSpan: vi.fn(() => ({
+      setAttributes: vi.fn(),
+      setStatus: vi.fn(),
+      end: vi.fn(),
+    })),
+  },
+  STANDARD_ATTRIBUTES: {},
+  SPAN_NAMES: {},
+}));
+
 function makeBuilder(table) {
   const builder = {
     _mode: 'select',
