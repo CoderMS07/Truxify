@@ -89,7 +89,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
       setState(() {
         _earningsMap = {
           for (final item in data)
-            item['day_date'].toString(): EarningsDailyModel.fromMap(item),
+            item['day_date']?.toString() ?? '': EarningsDailyModel.fromMap(item),
         };
       });
     } catch (e) {
