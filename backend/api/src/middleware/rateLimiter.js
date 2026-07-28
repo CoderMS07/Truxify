@@ -132,6 +132,29 @@ export function userKeyGenerator(req) {
   return safeIpKeyGenerator(req);
 }
 
+/**
+ * Returns a rate-limit handler that logs to Sentry and responds with 429.
+ */
+function sentryAlertHandler(limiterName) {
+  return (req, res) => {
+    logger.warn(
+      {
+        requestId: req.requestId,
+        ip: safeIpKeyGenerator(req),
+        path: req.originalUrl,
+        method: req.method,
+        userAgent: req.get('user-agent'),
+      },
+      `Rate limit exceeded (${limiterName})`
+    );
+    Sentry.captureMessage(`Rate limit exceeded: ${limiterName}`, 'warning');
+    res.status(429).json({
+      error: 'Rate limit exceeded',
+      retryAfter: 60,
+    });
+  };
+}
+
 // Coarse, pre-auth IP limiter. It runs before authentication, so it can only
 // key by IP; kept generous so that legitimate users sharing a NAT'd IP are not
 // throttled by each other. Per-user fairness is enforced by userLimiter once
