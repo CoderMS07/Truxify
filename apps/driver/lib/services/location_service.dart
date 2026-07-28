@@ -339,7 +339,7 @@ class LocationService {
           try {
             final parsed = jsonDecode(message.toString());
             if (parsed is Map && parsed['code'] != null) {
-              _lastCloseCode = parsed['code'] as int;
+              _lastCloseCode = (parsed['code'] as num?)?.toInt();
             }
           } catch (_) {}
         },
