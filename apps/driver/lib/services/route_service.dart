@@ -39,7 +39,8 @@ class RouteService {
         }
       }
       return out;
-    } catch (_) {
+    } catch (e) {
+      print('Error: $e');
       return [];
     }
   }
