@@ -154,8 +154,11 @@ class ShardManager {
         // Default to north shard
         connection = await this.getShardConnection('north');
       }
-      const { rows } = await connection.query(query, params);
-      return rows;
+      // node-postgres (`pg`) Pool exposes `.query()`, not `.execute()` (that's
+      // the mysql2 API). `.query()` resolves to `{ rows, rowCount, ... }`,
+      // not a `[rows, fields]` tuple.
+      const result = await connection.query(query, params);
+      return result.rows;
     } catch (error) {
       logger.error('Query execution error:', error);
       throw error;
@@ -168,8 +171,8 @@ class ShardManager {
     for (const [name, shard] of this.shards) {
       if (shard.pool) {
         try {
-          const { rows } = await shard.pool.query(queries.query, queries.params || []);
-          results.push({ shard: name, data: rows });
+          const result = await shard.pool.query(queries.query, queries.params || []);
+          results.push({ shard: name, data: result.rows });
         } catch (error) {
           logger.error(`Error querying shard ${name}:`, error);
         }
