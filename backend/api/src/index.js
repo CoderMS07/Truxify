@@ -25,6 +25,7 @@ import profileRoutes from './routes/profileRoutes.js'
 import loadRoutes from './routes/loadRoutes.js'
 import truckRoutes from './routes/truckRoutes.js'
 import authRoutes from './routes/authRoutes.js'
+import routeRoutes from './routes/routeRoutes.js'
 import healthRoutes from './routes/healthRoutes.js'
 import adminRoutes from './routes/adminRoutes.js'
 import lookupRoutes from './routes/lookupRoutes.js'
@@ -165,6 +166,7 @@ app.use('/api/v1/trips', tripRoutes)
   app.use('/api/devices', deviceRoutes)
   app.use('/api/driver/documents', documentRoutes)
   app.use('/api/trucks', truckRoutes)
+  app.use('/api/routes', routeRoutes)
   app.use('/api/v1', lookupRoutes)
   app.use('/api/auth', authLimiter, authRoutes)
   app.use('/api/v1/admin', adminRoutes)
