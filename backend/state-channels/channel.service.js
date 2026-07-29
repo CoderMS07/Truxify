@@ -1,4 +1,5 @@
 import { ethers } from 'ethers';
+import { randomUUID } from 'crypto';
 import logger from '../api/src/middleware/logger.js';
 import { supabase } from '../api/src/config/db.js';
 
@@ -53,7 +54,10 @@ class StateChannelService {
             });
             const channelId = eventLog
                 ? this.channel.interface.parseLog(eventLog).args[0].toString()
-                : (await this.getUserChannels(participantA).then(ch => ch[ch.length - 1]));
+                : (await this.getUserChannels(participantA).then(ch => {
+                    if (ch.length > 0) return ch[ch.length - 1];
+                    return randomUUID();
+                  }));
 
             logger.info(`✅ Channel opened: ${channelId}`);
             return {
