@@ -15,7 +15,8 @@
     "test:coverage": "vitest run --coverage",
     "lint": "eslint . --max-warnings=0",
     "verify-db": "node scripts/verify-db-schema.js",
-    "seed:dev": "node scripts/seed-dev-profile.js"
+    "seed:dev": "node scripts/seed-dev-profile.js",
+    "benchmark:postgis": "node scripts/benchmark-postgis.js"
   },
   "dependencies": {
     "@sentry/node": "^10.62.0",
