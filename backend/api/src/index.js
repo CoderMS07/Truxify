@@ -39,6 +39,7 @@ import authRoutes from './routes/authRoutes.js'
 import healthRoutes from './routes/healthRoutes.js'
 import adminRoutes from './routes/adminRoutes.js'
 import lookupRoutes from './routes/lookupRoutes.js'
+import { getRoot, notFound } from './controllers/rootController.js'
 import webhookRoutes from './routes/webhookRoutes.js'
 import auditRoutes from './routes/auditRoutes.js'
 import voiceRoutes from './routes/voiceRoutes.js'
@@ -82,8 +83,6 @@ import multiCloudService from '../../dr/multi-cloud.service.js'
 // =====================================================================// 🆕 OPENTELEMETRY DISTRIBUTED TRACING
 // =====================================================================import tracing from './tracing/tracing.js'
 import { tracingMiddleware } from './middleware/tracingMiddleware.js'
-
-
 import logger from './middleware/logger.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { setupSwagger } from './config/swagger.js'
@@ -499,19 +498,12 @@ app.get('/api/dr/health', async (req, res) => {
 setupSwagger(app)
 
 // Root route
-app.get('/', (req, res) => {
-  const wsHost = req.hostname || 'localhost'
-  const wsPort = process.env.PORT || 5000
-  res.send(`<h1>Truxify Backend API is running.</h1><p>Use WebSockets at <code>ws://${wsHost}:${wsPort}/ws/tracking</code></p>`)
-})
+app.get('/', getRoot)
 
 app.use(responseSanitizer)
 
 // Handling 404 Route Not Found
-app.use((req, res) => {
-  res.status(404).json({ error: 'Endpoint resource not found.' })
-})
-
+app.use(notFound)
 // Sentry error handler must come before the generic error handler;
 // it captures the exception automatically so we don't call captureException here.
 app.use(sentryErrorHandler())
