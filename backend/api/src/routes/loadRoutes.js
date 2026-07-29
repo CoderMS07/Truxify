@@ -3,8 +3,8 @@ import { supabase } from '../config/db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 import logger from '../middleware/logger.js';
-import { loadFilterQuerySchema } from '../validation/loadSchemas.js';
-import { validateParams } from '../middleware/validate.js';
+import { loadFilterQuerySchema, createLoadSchema } from '../validation/loadSchemas.js';
+import { validateParams, validateBody } from '../middleware/validate.js';
 import { paramIdSchema, uuidParamSchema } from '../validation/requestSchemas.js';
 import { escapeLike } from '../lib/escapeLike.js';
 import { startTimer, endTimer } from '../lib/routeTiming.js';
@@ -228,6 +228,40 @@ router.get('/:id', authenticate, userLimiter, requireRole(['driver']), validateP
 
   } catch (err) {
     logger.error('Internal Server Error in GET /api/loads/:id:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
+// 3. CREATE A NEW LOAD OFFER (CUSTOMER)
+// POST /api/loads
+// ============================================================================
+router.post('/', authenticate, requireRole(['customer']), userLimiter, validateBody(createLoadSchema), async (req, res) => {
+  try {
+    const { pickup_location, drop_location, weight_tons, goods_type } = req.body;
+
+    const { data: newLoad, error } = await supabase
+      .from('load_offers')
+      .insert({
+        customer_id: req.user.id,
+        pickup_address: pickup_location,
+        drop_address: drop_location,
+        weight_tonnes: weight_tons,
+        goods_type: goods_type,
+        status: 'available',
+        freight_value: 0 // Will be updated by ML price prediction engine asynchronously
+      })
+      .select('id')
+      .single();
+
+    if (error) {
+      logger.error('Failed to create load offer:', error.message);
+      return res.status(500).json({ error: 'Failed to create load offer.' });
+    }
+
+    res.status(201).json({ id: newLoad.id, message: 'Load offer created successfully' });
+  } catch (err) {
+    logger.error('Internal Server Error in POST /api/loads:', err);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
