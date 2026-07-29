@@ -1514,8 +1514,8 @@ router.get('/:id/earnings', authenticate, userLimiter, requirePolicy('driver:vie
         const prevTrip = allCompletedTrips[i - 1];
         const currTrip = allCompletedTrips[i];
         
-        const prevRoute = prevTrip.route_label.split(' → ');
-        const currRoute = currTrip.route_label.split(' → ');
+        const prevRoute = (prevTrip.route_label || '').split(' → ');
+        const currRoute = (currTrip.route_label || '').split(' → ');
         
         if (prevRoute.length === 2 && currRoute.length === 2) {
           const prevDrop = prevRoute[1].trim().toLowerCase();
