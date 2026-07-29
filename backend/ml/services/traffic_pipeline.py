@@ -22,6 +22,7 @@ except ImportError:
 import redis
 import os
 import logging
+from functools import partial
 
 logger = logging.getLogger(__name__)
 Base = declarative_base()
@@ -48,6 +49,7 @@ class TrafficPipeline:
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
         self.redis = redis.Redis.from_url(redis_url)
+        self._loop = asyncio.get_event_loop()
         self.model = self._load_or_create_model()
         self.gmaps_api_key = os.getenv('GOOGLE_MAPS_API_KEY', '')
         self.osrm_url = os.getenv('OSRM_URL', 'http://localhost:5000')
@@ -116,14 +118,16 @@ class TrafficPipeline:
                 session.close()
             
             # Cache in Redis
-            self.redis.setex(
-                f"traffic:{route_id}",
-                300,  # 5 minutes
-                json.dumps({
-                    'speed': traffic_entry.traffic_speed,
-                    'congestion': traffic_entry.congestion_level,
-                    'timestamp': traffic_entry.timestamp.isoformat()
-                })
+            await self._loop.run_in_executor(
+                None, partial(self.redis.setex,
+                    f"traffic:{route_id}",
+                    300,
+                    json.dumps({
+                        'speed': traffic_entry.traffic_speed,
+                        'congestion': traffic_entry.congestion_level,
+                        'timestamp': traffic_entry.timestamp.isoformat()
+                    })
+                )
             )
             
             logger.info(f"Traffic data ingested for route {route_id}")
@@ -181,7 +185,7 @@ class TrafficPipeline:
     
     async def get_real_time_traffic(self, route_id: str):
         """Get real-time traffic data for a route"""
-        cached = self.redis.get(f"traffic:{route_id}")
+        cached = await self._loop.run_in_executor(None, partial(self.redis.get, f"traffic:{route_id}"))
         if cached:
             return json.loads(cached)
         return None
@@ -276,17 +280,19 @@ class TrafficPipeline:
                     eta_string = str(timedelta(seconds=int(eta_seconds)))
                     
                     # Update Redis
-                    self.redis.setex(
-                        f"eta:order:{order_id}",
-                        300,  # 5 minutes
-                        json.dumps({
-                            'eta_seconds': eta_seconds,
-                            'eta_minutes': eta_minutes,
-                            'eta_string': eta_string,
-                            'timestamp': datetime.now().isoformat(),
-                            'traffic_speed': traffic_data.traffic_speed,
-                            'congestion_level': traffic_data.congestion_level
-                        })
+                    await self._loop.run_in_executor(
+                        None, partial(self.redis.setex,
+                            f"eta:order:{order_id}",
+                            300,
+                            json.dumps({
+                                'eta_seconds': eta_seconds,
+                                'eta_minutes': eta_minutes,
+                                'eta_string': eta_string,
+                                'timestamp': datetime.now().isoformat(),
+                                'traffic_speed': traffic_data.traffic_speed,
+                                'congestion_level': traffic_data.congestion_level
+                            })
+                        )
                     )
                     
                     logger.info(f"ETA updated for order {order_id}: {eta_string}")
