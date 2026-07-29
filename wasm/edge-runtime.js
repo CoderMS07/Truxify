@@ -25,7 +25,11 @@ class EdgeRuntime {
                 const wasmBytes = fs.readFileSync(wasmPath);
                 const wasi = new WASI({
                     args: [],
-                    env: process.env,
+                    env: Object.fromEntries(
+                        Object.entries(process.env).filter(([k]) =>
+                            /^(PATH|HOME|TMP|USER|LANG|LC_|RUST_|WASM_)/.test(k)
+                        )
+                    ),
                     preopens: { '/': './' }
                 });
                 const importObject = { wasi_snapshot_preview1: wasi.wasiImport };
