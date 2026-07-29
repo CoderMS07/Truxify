@@ -62,7 +62,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           const SnackBar(content: Text('Unable to open Google Maps')),
         );
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[TripDetailScreen] Failed to open Google Maps: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Failed to open Google Maps')),
@@ -930,12 +931,12 @@ Widget _cargoBadge({
       ),
     );
   }
-
   Future<_RouteResult?> _loadRouteForTrip(String routeLabel) async {
     try {
       final normalized = routeLabel.replaceAll('->', '→').replaceAll('=>', '→');
       final parts = normalized.split('→');
       final startLabel = parts.isNotEmpty ? parts[0].trim() : '';
+
       final endLabel = parts.length > 1 ? parts[1].trim() : '';
 
       final start = startLabel.isNotEmpty
@@ -956,7 +957,8 @@ Widget _cargoBadge({
 
       final result = _RouteResult(start: start, end: end, routePoints: routePoints);
       return result;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[TripDetailScreen] Route resolution failed: $e');
       return null;
     }
   }
