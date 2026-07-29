@@ -85,7 +85,7 @@ class WebRTCSignalingServer {
 
       // Handle errors to prevent process crash
       ws.on('error', (err) => {
-        logger.warn('WebSocket error for peer %s: %s', peerId, err.message);
+        logger.warn({ peerId, err: err.message }, 'WebSocket error for peer');
       });
 
       // Send connected peers list

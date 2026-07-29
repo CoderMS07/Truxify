@@ -316,7 +316,7 @@ router.put('/wallet', authenticate, userLimiter, validateBody(updateWalletSchema
       try {
         await invalidateCachedSupabaseProfileAll(req.user.id);
       } catch (err) {
-        logger.warn('[profileRoutes] Failed to invalidate profile cache for user %s: %s', req.user.id, err.message);
+        logger.warn({ userId: req.user.id, err: err.message }, 'Failed to invalidate profile cache');
       }
     }
 
@@ -389,7 +389,7 @@ router.put('/', authenticate, userLimiter, validateBody(updateProfileSchema), as
       try {
         await invalidateCachedSupabaseProfileAll(req.user.id);
       } catch (err) {
-        logger.warn('[profileRoutes] Failed to invalidate profile cache for user %s: %s', req.user.id, err.message);
+        logger.warn({ userId: req.user.id, err: err.message }, 'Failed to invalidate profile cache');
       }
     }
 
@@ -460,7 +460,7 @@ router.put('/fcm-token', authenticate, userLimiter, validateBody(updateFcmTokenS
       try {
         await invalidateCachedSupabaseProfileAll(req.user.id);
       } catch (err) {
-        logger.warn('[profileRoutes] Failed to invalidate profile cache for user %s: %s', req.user.id, err.message);
+        logger.warn({ userId: req.user.id, err: err.message }, 'Failed to invalidate profile cache');
       }
     }
 
