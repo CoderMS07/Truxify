@@ -1,5 +1,5 @@
 import express from 'express';
-import { supabase } from '../config/db.js';
+import { supabase, redisClient } from '../config/db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 import { validateParams, validateBody } from '../middleware/validate.js';
@@ -203,6 +203,20 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
     return res.status(400).json({ error: 'Weight must be between 0 and 50 tonnes' });
   }
 
+  const cacheKey = `truck_search:${numPickupLat},${numPickupLng}:${numDropLat},${numDropLng}:${numWeightTonnes}:${parseBoolean(is_fragile)}:${parseBoolean(is_stackable)}`;
+
+  if (redisClient) {
+    try {
+      const cachedResult = await redisClient.get(cacheKey);
+      if (cachedResult) {
+        logger.info({ cacheKey }, 'Serving truck search results from Redis cache');
+        return res.json(JSON.parse(cachedResult));
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, 'Redis cache read error during search');
+    }
+  }
+
   try {
     const routeEstimate = await getRouteEstimate({
       pickupLat: numPickupLat,
@@ -299,6 +313,15 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
         etaMinutes,
       };
     });
+
+    if (redisClient) {
+      try {
+        // Cache the truck search results for 5 minutes (300 seconds)
+        await redisClient.set(cacheKey, JSON.stringify(results), 'EX', 300);
+      } catch (err) {
+        logger.warn({ err: err.message }, 'Redis cache write error during search');
+      }
+    }
 
     res.json(results);
   } catch (err) {
