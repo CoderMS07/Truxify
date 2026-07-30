@@ -8,6 +8,7 @@ import logging
 
 from foundation.model import LogisticsFoundationModel, FoundationModelConfig, FoundationModelTrainer
 from foundation.data import LogisticsDataProcessor, LogisticsDatasetGenerator
+import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/foundation", tags=["Foundation Model"])
@@ -222,6 +223,7 @@ async def get_model_info():
 
 @router.post("/save")
 async def save_model(path: str = "models/foundation_model.pth"):
+    path = os.path.join("models", os.path.basename(path)):
     """Save foundation model"""
     try:
         trainer.save(path)
@@ -237,6 +239,7 @@ async def save_model(path: str = "models/foundation_model.pth"):
 
 @router.post("/load")
 async def load_model(path: str = "models/foundation_model.pth"):
+    path = os.path.join("models", os.path.basename(path)):
     """Load foundation model"""
     try:
         trainer.load(path)

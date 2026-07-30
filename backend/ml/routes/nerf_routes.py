@@ -12,6 +12,7 @@ import logging
 
 from nerf.model import NeRFNetwork, NeRFRenderer, NeRFTrainer
 from nerf.camera import create_spiral_poses, create_orbital_poses
+import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/nerf", tags=["Neural Radiance Fields"])
@@ -161,6 +162,7 @@ async def train_nerf(
 
 @router.post("/save")
 async def save_model(path: str = "models/nerf.pth"):
+    path = os.path.join("models", os.path.basename(path)):
     """Save NeRF model"""
     try:
         trainer.save(path)
@@ -175,6 +177,7 @@ async def save_model(path: str = "models/nerf.pth"):
 
 @router.post("/load")
 async def load_model(path: str = "models/nerf.pth"):
+    path = os.path.join("models", os.path.basename(path)):
     """Load NeRF model"""
     try:
         trainer.load(path)

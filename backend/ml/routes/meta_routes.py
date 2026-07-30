@@ -6,6 +6,7 @@ import numpy as np
 from datetime import datetime
 import logging
 from meta.model import MAML, MAMLModel, FewShotLearner, TaskGenerator
+import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/meta", tags=["Meta-Learning"])
@@ -172,6 +173,7 @@ async def get_model_info():
 
 @router.post("/save")
 async def save_model(path: str = "models/maml_model.pth"):
+    path = os.path.join("models", os.path.basename(path)):
     """Save MAML model"""
     try:
         maml.save(path)
@@ -186,6 +188,7 @@ async def save_model(path: str = "models/maml_model.pth"):
 
 @router.post("/load")
 async def load_model(path: str = "models/maml_model.pth"):
+    path = os.path.join("models", os.path.basename(path)):
     """Load MAML model"""
     try:
         maml.load(path)
