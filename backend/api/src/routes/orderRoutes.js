@@ -153,21 +153,13 @@ import { scanDocument } from '../lib/malwareScanner.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { z } from 'zod';
 import {
-  createOrderSchema,
-  submitBidSchema,
-  submitRatingSchema,
-  paramIdSchema,
-  acceptBidParamsSchema,
-  updateMilestoneSchema,
-  verifyDeliverySchema,
-  predictDemandSchema,
-  changeDropSchema,
-  cancelOrderSchema,
+  createOrderSchema, submitBidSchema, submitRatingSchema, paramIdSchema, acceptBidParamsSchema,
+  updateMilestoneSchema, verifyDeliverySchema, predictDemandSchema, changeDropSchema, cancelOrderSchema, paginationQuerySchema,
 } from '../validation/requestSchemas.js';
 import { awardReputationPoints } from '../services/reputation.js';
 import { expireDeliveryOtps } from '../services/notificationService.js';
 import { DomainError } from '../services/order/domainError.js';
-import { predictDemand, predictPrice } from '../services/ml.js';
+import { predictDemand, predictPrice, matchEnRouteLoads } from '../services/ml.js';
 import { requireIdempotency } from '../middleware/idempotency.js';
 import { acquireLock, releaseLock } from '../lib/redisLock.js';
 import logger from '../middleware/logger.js';
@@ -185,9 +177,9 @@ import {
   confirmEscrowRefund,
   escrowRefund,
 } from '../core/container.js';
+import { getEscrowBookingId } from '../services/escrow.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
 import { computeOrderPricing } from '../lib/pricing.js';
-import { getEscrowBookingId } from '../services/escrow.js';
 
 const router = express.Router();
 router.use(userLimiter);
@@ -377,7 +369,7 @@ router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
 
     res.json(offers);
   } catch (err) {
-    logger.error("[orderRoutes] Failed to fetch load offers:", err.message);
+    logger.error('Fetch load offers exception:', err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -399,27 +391,74 @@ router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
  *         description: En-route offers
  */
 router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) => {
-  const page = Math.max(1, parseInt(req.query.page) || 1);
-  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
-  const cacheKey = `load-offers:en-route:${page}:${limit}`;
+  // Optional driver GPS — used to score loads by detour distance
+  const currentLat = parseFloat(req.query.current_lat);
+  const currentLng = parseFloat(req.query.current_lng);
+  const maxDetourKm = parseFloat(req.query.max_detour_km) || 50;
+
+  const hasGps = Number.isFinite(currentLat) && Number.isFinite(currentLng);
+
+  // Cache key includes GPS bucket (0.1° resolution ≈ 11 km) so nearby drivers
+  // share a cache entry without stale results.
+  const latBucket = hasGps ? (Math.round(currentLat * 10) / 10).toFixed(1) : 'x';
+  const lngBucket = hasGps ? (Math.round(currentLng * 10) / 10).toFixed(1) : 'x';
+  const cacheKey = `load-offers:en-route:${latBucket}:${lngBucket}:${maxDetourKm}`;
+
   try {
     const cachedOffers = await readLoadOfferCache(cacheKey);
     if (cachedOffers) {
       return res.json(cachedOffers);
     }
 
-    const { data: offers, error } = await orderRepository.findLoadOffers(
-      { is_en_route: true },
-      { pagination: { page, limit } }
+    // Fetch ALL available offers (not pre-filtered by is_en_route flag which may
+    // not be populated) so the ML model can rank by detour from the driver.
+    const { data: rawOffers, error } = await orderRepository.findLoadOffers(
+      { status: 'available' },
+      { pagination: { page: 1, limit: 100 } }
     );
 
-    if (error) return res.status(500).json({ error: 'Failed to fetch en-route loads.', details: error.message });
+    if (error) {
+      return res.status(500).json({ error: 'Failed to fetch load offers.', details: error.message });
+    }
 
-    await writeLoadOfferCache(cacheKey, offers);
+    let enriched;
+    let mlUnavailable = false;
 
-    res.json(offers);
+    if (hasGps && rawOffers && rawOffers.length > 0) {
+      try {
+        enriched = await matchEnRouteLoads({
+          currentLat,
+          currentLng,
+          offers: rawOffers,
+          maxDetourKm,
+        });
+      } catch (mlErr) {
+        // matchEnRouteLoads already handles its own fallback internally;
+        // this outer catch is a last-resort safety net.
+        logger.error('[orderRoutes] matchEnRouteLoads threw unexpectedly:', mlErr.message);
+        enriched = rawOffers;
+        mlUnavailable = true;
+      }
+    } else {
+      // No GPS provided — return all available offers unscored
+      enriched = (rawOffers || []).map(o => ({
+        ...o,
+        detour_km: null,
+        extra_earnings: o.freight_value || 0,
+        match_score: null,
+        ml_used: false,
+      }));
+    }
+
+    if (mlUnavailable) {
+      // Still return the data — just tell the client ML was not available
+      res.set('X-ML-Status', 'unavailable');
+    }
+
+    await writeLoadOfferCache(cacheKey, enriched);
+    res.json(enriched);
   } catch (err) {
-    logger.error("[orderRoutes] Failed to fetch en-route loads:", err.message);
+    logger.error('[orderRoutes] Failed to fetch en-route loads:', err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -446,20 +485,15 @@ router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) 
  */
 router.get('/history', authenticate, userLimiter, requirePolicy('order:view-history'), async (req, res) => {
   try {
-    const pageParam = req.query.page ?? '1';
+    const cursor = req.query.cursor;
     const limitParam = req.query.limit ?? '10';
-    const page = typeof pageParam === 'string' ? Number(pageParam) : NaN;
     const limit = typeof limitParam === 'string' ? Number(limitParam) : NaN;
-
-    if (!Number.isInteger(page) || page < 1) {
-      return res.status(400).json({ error: 'page must be greater than or equal to 1' });
-    }
 
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       return res.status(400).json({ error: 'limit must be between 1 and 100' });
     }
 
-    const result = await orderLifecycleService.getOrderHistory(req.user.id, page, limit);
+    const result = await orderLifecycleService.getOrderHistory(req.user.id, cursor, limit);
     res.json(result);
   } catch (err) {
     if (err instanceof DomainError) {
@@ -497,7 +531,6 @@ router.get('/history', authenticate, userLimiter, requirePolicy('order:view-hist
  */
 router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
-
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, '*');
     orderValidationService.assertOrderFound(order);
@@ -554,7 +587,6 @@ router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), asy
  */
 router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
-
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'customer_id, driver_id, order_display_id');
     orderValidationService.assertOrderFound(order);
@@ -887,7 +919,7 @@ router.put('/:id/milestones', authenticate, userLimiter, requirePolicy('mileston
     if (err instanceof DomainError) {
       return res.status(err.status).json(err.payload);
     }
-    logger.error("[orderRoutes] Milestone update error:", err.message);
+    logger.error(err, "[orderRoutes] Milestone update error:");
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -1065,10 +1097,7 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       updated_at: new Date().toISOString(),
     };
 
-    const { data: updatedOrder, error: updateErr } = await orderRepository.updateOrder(order.id, updates);
-    if (updateErr) return res.status(500).json({ error: 'Failed to update order.', details: updateErr.message });
-
-    const { error: offerUpdateErr } = await orderRepository.updateLoadOffer(order.order_display_id, {
+    const offerUpdates = {
       drop_address,
       drop_lat: Number(drop_lat),
       drop_lng: Number(drop_lng),
@@ -1078,10 +1107,18 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       toll_cost: pricing.tollEstimate,
       net_profit: pricing.netProfit,
       extra_distance_km: pricing.distanceKm,
+    };
+
+    const { data: updatedOrder, error: updateErr } = await orderRepository.executeRpc('update_order_and_load_offer', {
+      p_order_id: order.id,
+      p_order_display_id: order.order_display_id,
+      p_order_updates: updates,
+      p_offer_updates: offerUpdates
     });
 
-    if (offerUpdateErr) {
-      logger.error('Load offer update failed for change-drop:', offerUpdateErr.message);
+    if (updateErr) {
+      logger.error('Order and load offer atomic update failed for change-drop:', updateErr.message);
+      return res.status(500).json({ error: 'Failed to update order atomically.', details: updateErr.message });
     }
 
     try {
@@ -1203,13 +1240,13 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
 
     if (result.error) {
       if (result.alreadyFunded) {
-        const { error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
+        const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
           escrow_status: 'funded',
           deposit_tx_hash: result.txHash,
           escrow_deposited_at: new Date().toISOString(),
         }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
 
-        if (!updateErr) {
+        if (!updateErr && updatedData) {
           return res.json({ message: 'Escrow deposit confirmed (recovered).', txHash: result.txHash });
         }
         return res.status(202).json({ message: 'Escrow deposit confirmed on-chain. Database sync pending.', txHash: result.txHash });
@@ -1217,7 +1254,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
       return res.status(422).json({ error: result.error });
     }
 
-    const { error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
+    const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
       escrow_status: 'funded',
       deposit_tx_hash: result.txHash,
       escrow_deposited_at: new Date().toISOString(),
@@ -1226,6 +1263,11 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
     if (updateErr) {
       logger.error('[confirm-deposit] DB update failed:', updateErr.message);
       return res.status(500).json({ error: 'Database update failed after deposit confirmation. Please contact support.' });
+    }
+
+    if (!updatedData) {
+      logger.error('[confirm-deposit] No row updated — escrow_status may not have been "funding"');
+      return res.status(409).json({ error: 'Order was not in funding state. Please refresh and try again.' });
     }
 
     res.json({ message: 'Escrow deposit confirmed', txHash: result.txHash });

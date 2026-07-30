@@ -1,5 +1,6 @@
 import { paisaToMaticWei } from '../escrow.js';
 import { DomainError } from './domainError.js';
+import { sendPushNotification } from '../notificationService.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 
 // Re-export for backward compatibility — prefer importing from domainError.js
@@ -88,7 +89,7 @@ export class BidAcceptanceService {
 
     // Build the escrow deposit transaction
     const amountWei = paisaToMaticWei(bid.bid_amount);
-    const depositTx = await this.buildDepositTxFn(order.order_display_id, driverWallet, amountWei);
+    const depositTx = await this.buildDepositTxFn(order.order_display_id, freshDriverWallet, amountWei);
     const bookingId = depositTx?.bookingId || `escrow:${order.order_display_id}`;
 
     // Guard against silent escrow disable: if buildDepositTx returned
@@ -172,6 +173,14 @@ export class BidAcceptanceService {
         this.logger?.warn?.('[bidAcceptance] Notification dispatcher failed:', notifyErr.message);
       }
     }
+
+    sendPushNotification(
+      bid.driver_id,
+      'Bid Accepted!',
+      `Your bid for order ${order.order_display_id} has been accepted. You are now assigned to this load.`,
+      'bid_accepted',
+      { orderId, orderDisplayId: order.order_display_id }
+    ).catch(err => this.logger?.error?.(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
 
     return {
       status: 200,

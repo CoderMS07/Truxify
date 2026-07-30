@@ -4,8 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:http/http.dart' as http;
+
+import 'package:truxify_shared/truxify_shared.dart';
 
 import 'battery_service.dart';
 
@@ -26,16 +27,15 @@ class LocationService {
     }
   }
 
-  WebSocketChannel? _channel;
+  // Use ResilientWebSocket which handles reconnection, heartbeat, and
+  // exponential backoff automatically.
+  ResilientWebSocket? _resilientWs;
   StreamSubscription<Position>? _positionSubscription;
   StreamSubscription? _socketSubscription;
-  Timer? _reconnectTimer;
-  Timer? _heartbeatTimer;
   Timer? _maxIntervalTimer; // Fallback for max 30 seconds without ping
   bool _isTracking = false;
   String? _activeOrderId;
   String? _activeOrderDisplayId;
-  int _reconnectAttempts = 0;
   int? _lastCloseCode;
   Position? _lastSentPosition;
   DateTime? _lastSentTime;
@@ -204,12 +204,13 @@ class LocationService {
         return false;
       }
 
-      // 2. Ensure WebSocket is connected
-      if (_channel == null) {
+      // 2. Ensure WebSocket is connected (ResilientWebSocket handles
+      //    reconnection and heartbeat automatically).
+      if (_resilientWs == null) {
         await _connectWebSocket();
       }
 
-      if (_channel != null) {
+      if (_resilientWs != null) {
         final batteryInfo = BatteryService.instance.currentInfo;
         final payload = {
           'event': 'location_ping',
@@ -230,7 +231,7 @@ class LocationService {
             'charging_status': batteryInfo.isCharging ? 'charging' : 'discharging',
           }
         };
-        _channel!.sink.add(jsonEncode(payload));
+        _resilientWs!.send(payload);
         debugPrint('[LocationService] Location ping sent: lat=${position.latitude}, lng=${position.longitude}');
         return true;
       }
@@ -298,9 +299,8 @@ class LocationService {
     }
   }
 
-  Future<void> _connectWebSocket() async {
-    if (_channel != null) return;
-
+  /// Builds the WebSocket URI for the tracking endpoint.
+  Uri _buildWsUri() {
     final session = Supabase.instance.client.auth.currentSession;
     final token = session?.accessToken ?? '';
     final driverId = Supabase.instance.client.auth.currentUser?.id ?? '';
@@ -313,7 +313,7 @@ class LocationService {
     }
     wsPath = '$wsPath/ws/tracking';
 
-    final wsUri = Uri(
+    return Uri(
       scheme: wsScheme,
       host: baseUri.host,
       port: baseUri.hasPort ? baseUri.port : null,
@@ -339,7 +339,7 @@ class LocationService {
           try {
             final parsed = jsonDecode(message.toString());
             if (parsed is Map && parsed['code'] != null) {
-              _lastCloseCode = parsed['code'] as int;
+              _lastCloseCode = (parsed['code'] as num?)?.toInt();
             }
           } catch (_) {}
         },
@@ -347,7 +347,7 @@ class LocationService {
           debugPrint('[LocationService] WebSocket closed (code: $_lastCloseCode)');
           if (_lastCloseCode == 4001 || _lastCloseCode == 4003) {
             debugPrint('[LocationService] Auth rejected (code $_lastCloseCode) — not reconnecting');
-            _isTracking = false;
+            stopTracking();
             return;
           }
           _scheduleReconnect();
@@ -363,47 +363,69 @@ class LocationService {
     }
   }
 
-  void _scheduleReconnect() {
-    _closeWebSocket();
-    _channel = null;
-    final socketSubscription = _socketSubscription;
-    _socketSubscription = null;
-    if (socketSubscription != null) {
-      unawaited(socketSubscription.cancel());
-    }
-    _heartbeatTimer?.cancel();
-    _reconnectTimer?.cancel();
+  /// Creates a [ResilientWebSocket] and subscribes to its message stream.
+  ///
+  /// The resilient wrapper handles reconnection with exponential backoff,
+  /// periodic heartbeat pings, and cleanup — replacing the manual
+  /// [_scheduleReconnect] and [_startHeartbeat] that were needed before.
+  Future<void> _connectWebSocket() async {
+    if (_resilientWs != null) return;
 
-    if (!_isTracking) return;
+    final wsUri = _buildWsUri();
+    final redactedUrl = wsUri.toString().replaceAll(RegExp(r'token=[^&]+'), 'token=[REDACTED]');
+    debugPrint('[LocationService] Connecting to WebSocket at: $redactedUrl');
 
-    final delay = Duration(seconds: _reconnectAttempts == 0 ? 2 : 2 * _reconnectAttempts);
-    final capped = delay > const Duration(seconds: 30) ? const Duration(seconds: 30) : delay;
-    _reconnectAttempts++;
+    // urlFactory returns a fresh URI on each reconnect so short-lived auth
+    // tokens are automatically refreshed.
+    _resilientWs = ResilientWebSocket(
+      wsUri.toString(),
+      urlFactory: () => _buildWsUri().toString(),
+      onConnect: () {
+        _lastCloseCode = null;
+        debugPrint('[LocationService] WebSocket connected');
+      },
+    );
 
-    _reconnectTimer = Timer(capped, () async {
-      debugPrint('[LocationService] Attempting to reconnect WebSocket (attempt $_reconnectAttempts)...');
-      await _connectWebSocket();
-    });
-  }
+    _socketSubscription = _resilientWs!.stream.listen(
+      (message) {
+        if (message == 'pong') return;
+        debugPrint('[LocationService] Received WebSocket message: $message');
+        try {
+          final parsed = jsonDecode(message.toString());
+          if (parsed is Map && parsed['code'] != null) {
+            _lastCloseCode = parsed['code'] as int;
+            if (_lastCloseCode == 4001 || _lastCloseCode == 4003) {
+              debugPrint(
+                '[LocationService] Auth rejected (code $_lastCloseCode) — stopping tracking',
+              );
+              _resilientWs?.close();
+              _resilientWs = null;
+              stopTracking();
+              return;
+            }
+          }
+        } catch (_) {}
+      },
+      onDone: () {
+        // Reconnection is handled automatically by ResilientWebSocket.
+        debugPrint('[LocationService] WebSocket stream ended');
+      },
+      onError: (error) {
+        debugPrint('[LocationService] WebSocket error: $error');
+        // If the error is terminal (e.g. max reconnect attempts reached),
+        // clear the instance so the next _sendLocationPing will create
+        // a fresh ResilientWebSocket.
+        _resilientWs = null;
+      },
+    );
 
-  void _startHeartbeat() {
-    _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
-      if (_channel != null) {
-        _channel!.sink.add('ping');
-      }
-    });
+    await _resilientWs!.connect();
   }
 
   void _closeWebSocket() {
-    _heartbeatTimer?.cancel();
-    _reconnectTimer?.cancel();
-    final socketSubscription = _socketSubscription;
+    _socketSubscription?.cancel();
     _socketSubscription = null;
-    if (socketSubscription != null) {
-      unawaited(socketSubscription.cancel());
-    }
-    _channel?.sink.close();
-    _channel = null;
+    _resilientWs?.close();
+    _resilientWs = null;
   }
 }

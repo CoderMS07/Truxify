@@ -51,6 +51,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   ResilientWebSocket? _trackingWebSocket;
   StreamSubscription? _trackingSubscription;
   RealtimeChannel? _supabaseRealtimeChannel;
+  final MapController _mapController = MapController();
 
   // ── Route polyline state ──────────────────────────────────────────────
   Timer? _routeRefreshTimer;
@@ -177,6 +178,13 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
       setState(() {
         _currentPosition = newPosition;
       });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        try {
+          _mapController.move(newPosition, 13.0);
+        } catch (e) {
+          debugPrint('Error moving map: $e');
+        }
+      });
       return;
     }
 
@@ -195,6 +203,17 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
       _currentPosition = newPosition;
     });
     _movementController.forward(from: 0.0);
+
+    try {
+      final zoom = _mapController.camera.zoom;
+      _mapController.move(newPosition, zoom);
+    } catch (_) {
+      try {
+        _mapController.move(newPosition, 13.0);
+      } catch (e) {
+        debugPrint('Error moving map: $e');
+      }
+    }
   }
 
   Future<void> _loadOrder() async {
@@ -643,7 +662,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   Future<void> _showCancel() async {
     bool isLoading = false;
     final rawFee = _order?['cancellation_fee'];
-    final feeInRupees = rawFee != null ? (rawFee as num) / 100 : null;
+    final feeInRupees = rawFee is num ? rawFee / 100 : null;
     String? feeText = feeInRupees != null ? 'Cancellation fee ₹${feeInRupees.toStringAsFixed(2)}' : null;
 
     await showModalBottomSheet<void>(
@@ -677,7 +696,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
                           try {
                             final resp = await _orderService.cancelOrder(orderDisplayId: widget.orderId);
                             final rawFee = resp['cancellation_fee'];
-                            final feeInRupees = rawFee != null ? (rawFee as num) / 100 : 0;
+                            final feeInRupees = rawFee is num ? rawFee / 100 : 0;
                             await _loadOrder();
                             if (!context.mounted) return;
                             Navigator.of(context).pop();
@@ -851,6 +870,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
         children: [
           Positioned.fill(
             child: FlutterMap(
+              mapController: _mapController,
               options: const MapOptions(
                 initialCenter: LatLng(24.25, 74.40),
                 initialZoom: 6.2,

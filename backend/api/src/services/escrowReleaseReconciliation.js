@@ -104,11 +104,12 @@ export async function reconcilePendingEscrowReleases() {
             escrow_released_at: releasedAt,
             escrow_release_attempts: releaseAttempts,
             escrow_release_last_attempt_at: releaseAttemptedAt,
+            reconciled_by: null,
             updated_at: releasedAt,
           })
           .eq('id', order.id)
-      .in('escrow_status', ['release_failed', 'funded'])
-          .is('reconciled_by', null);
+          .in('escrow_status', ['release_failed', 'funded'])
+          .eq('reconciled_by', instanceId);
 
         if (updateError) {
           logger.error(
@@ -128,6 +129,7 @@ export async function reconcilePendingEscrowReleases() {
             escrow_release_attempts: releaseAttempts,
             escrow_release_last_attempt_at: releaseAttemptedAt,
             escrow_release_error: String(err.message || 'Unknown error').slice(0, 1000),
+            reconciled_by: null,
             updated_at: new Date().toISOString(),
           })
           .eq('id', order.id);

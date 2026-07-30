@@ -316,7 +316,7 @@ router.put('/wallet', authenticate, userLimiter, validateBody(updateWalletSchema
       try {
         await invalidateCachedSupabaseProfileAll(req.user.id);
       } catch (err) {
-        logger.warn('[profileRoutes] Failed to invalidate profile cache for user %s: %s', req.user.id, err.message);
+        logger.warn({ userId: req.user.id, err: err.message }, 'Failed to invalidate profile cache');
       }
     }
 
@@ -389,7 +389,7 @@ router.put('/', authenticate, userLimiter, validateBody(updateProfileSchema), as
       try {
         await invalidateCachedSupabaseProfileAll(req.user.id);
       } catch (err) {
-        logger.warn('[profileRoutes] Failed to invalidate profile cache for user %s: %s', req.user.id, err.message);
+        logger.warn({ userId: req.user.id, err: err.message }, 'Failed to invalidate profile cache');
       }
     }
 
@@ -460,7 +460,7 @@ router.put('/fcm-token', authenticate, userLimiter, validateBody(updateFcmTokenS
       try {
         await invalidateCachedSupabaseProfileAll(req.user.id);
       } catch (err) {
-        logger.warn('[profileRoutes] Failed to invalidate profile cache for user %s: %s', req.user.id, err.message);
+        logger.warn({ userId: req.user.id, err: err.message }, 'Failed to invalidate profile cache');
       }
     }
 
@@ -566,11 +566,18 @@ router.get('/driver/statement', authenticate, requirePolicy('profile:view-statem
 
     if (format === 'csv') {
       // Optimize memory: construct CSV string directly using string builder/loop
+      const sanitizeCsvValue = (val) => {
+        const str = String(val);
+  if (/^[=+\-@\t\r]/.test(str)) {
+    str = `'` + str;
+  }
+        return `"${str.replace(/"/g, '""')}"`;
+      };
       const headers = ['ID', 'Order Display ID', 'Pickup Address', 'Drop Address', 'Pickup Date', 'Base Freight', 'Platform Fee', 'Toll Estimate', 'Net Earnings', 'Status'];
-      let csvString = headers.map(val => `"${String(val).replace(/"/g, '""')}"`).join(',') + '\n';
+      let csvString = headers.map(val => sanitizeCsvValue(val)).join(',') + '\n';
       for (const t of tripsList) {
         const row = [t.id, t.order_display_id, t.pickup_address, t.drop_address, t.pickup_date, t.base_freight, t.platform_fee, t.toll_estimate, t.net_earnings, t.status];
-        csvString += row.map(val => `"${String(val).replace(/"/g, '""')}"`).join(',') + '\n';
+        csvString += row.map(val => sanitizeCsvValue(val)).join(',') + '\n';
       }
       res.setHeader('Content-Type', 'text/csv');
       return res.send(csvString.trimEnd());

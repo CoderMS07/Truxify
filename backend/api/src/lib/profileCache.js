@@ -84,6 +84,9 @@ function getRedisClient() {
  * @returns {boolean} True if the cached profile shape is valid, false otherwise.
  */
 export function isValidCachedProfile(firebaseUid, cachedProfile) {
+  if (typeof firebaseUid !== 'string' || !firebaseUid) {
+    return false;
+  }
   if (!cachedProfile || typeof cachedProfile !== 'object' || Array.isArray(cachedProfile)) {
     return false;
   }
