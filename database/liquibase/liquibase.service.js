@@ -75,8 +75,7 @@ class LiquibaseService {
                 `--changeLogFile=${this.liquibasePath}/changelog-master.xml`,
                 `--url=${this.dbUrl}`,
                 `--username=${this.username}`,
-                `rollbackCount`,
-                `${rollbackCount}`,
+                `--rollbackCount=${rollbackCount}`,
             ];
 
             const { stdout, stderr } = await runLiquibase(args, this.password);
