@@ -105,44 +105,85 @@ class TelemetryRingBuffer {
     this.head = 0;
     this.tail = 0;
     this.size = 0;
+    this._lock = false;
+    this._queue = [];
   }
 
-  push(item) {
-    this.buffer[this.tail] = item;
-    this.tail = (this.tail + 1) % this.capacity;
-    if (this.size < this.capacity) {
-      this.size++;
+  async _acquire() {
+    if (!this._lock) {
+      this._lock = true;
+      return;
+    }
+    return new Promise(resolve => {
+      this._queue.push(resolve);
+    });
+  }
+
+  _release() {
+    if (this._queue.length > 0) {
+      const next = this._queue.shift();
+      next();
     } else {
-      this.head = (this.head + 1) % this.capacity;
+      this._lock = false;
     }
   }
 
-  toArray() {
-    if (this.size === 0) return [];
-    const result = new Array(this.size);
-    for (let i = 0; i < this.size; i++) {
-      result[i] = this.buffer[(this.head + i) % this.capacity];
+  async push(item) {
+    await this._acquire();
+    try {
+      this.buffer[this.tail] = item;
+      this.tail = (this.tail + 1) % this.capacity;
+      if (this.size < this.capacity) {
+        this.size++;
+      } else {
+        this.head = (this.head + 1) % this.capacity;
+      }
+    } finally {
+      this._release();
     }
-    return result;
   }
 
-  prepend(items) {
+  async toArray() {
+    await this._acquire();
+    try {
+      if (this.size === 0) return [];
+      const result = new Array(this.size);
+      for (let i = 0; i < this.size; i++) {
+        result[i] = this.buffer[(this.head + i) % this.capacity];
+      }
+      return result;
+    } finally {
+      this._release();
+    }
+  }
+
+  async prepend(items) {
     if (!items || items.length === 0) return 0;
-    const available = this.capacity - this.size;
-    const toInsert = items.length > available ? items.slice(items.length - available) : items;
-    const dropped = items.length > available ? items.length - available : 0;
-    for (let i = toInsert.length - 1; i >= 0; i--) {
-      this.head = (this.head - 1 + this.capacity) % this.capacity;
-      this.buffer[this.head] = toInsert[i];
-      this.size++;
+    await this._acquire();
+    try {
+      const available = this.capacity - this.size;
+      const toInsert = items.length > available ? items.slice(items.length - available) : items;
+      const dropped = items.length > available ? items.length - available : 0;
+      for (let i = toInsert.length - 1; i >= 0; i--) {
+        this.head = (this.head - 1 + this.capacity) % this.capacity;
+        this.buffer[this.head] = toInsert[i];
+        this.size++;
+      }
+      return dropped;
+    } finally {
+      this._release();
     }
-    return dropped;
   }
 
-  clear() {
-    this.head = 0;
-    this.tail = 0;
-    this.size = 0;
+  async clear() {
+    await this._acquire();
+    try {
+      this.head = 0;
+      this.tail = 0;
+      this.size = 0;
+    } finally {
+      this._release();
+    }
   }
 
   get length() {
@@ -689,7 +730,7 @@ export async function handleLocationPing(ws, data, req) {
     telemetryTotalDropped++;
     telemetryOverflowDropped++;
   }
-  telemetryWriteBuffer.push({
+  await telemetryWriteBuffer.push({
     driver_id,
     order_id: orderUUID || null,
     order_display_id: orderDisplayId || null,
@@ -819,10 +860,10 @@ async function flushTelemetryBuffer() {
   // snapshot (instead of aliasing the active buffer as the flush buffer)
   // avoids re-queueing the same array twice on transient failures.
   const recordsToFlush = telemetryFlushBuffer.length > 0
-    ? [...telemetryFlushBuffer, ...telemetryWriteBuffer.toArray()]
-    : telemetryWriteBuffer.toArray();
+    ? [...telemetryFlushBuffer, ...(await telemetryWriteBuffer.toArray())]
+    : await telemetryWriteBuffer.toArray();
   telemetryFlushBuffer = [];
-  telemetryWriteBuffer.clear();
+  await telemetryWriteBuffer.clear();
 
   if (recordsToFlush.length === 0) {
     flushMutex = false;
@@ -854,7 +895,7 @@ async function flushTelemetryBuffer() {
           ? recordsToFlush.filter((_, i) => err.writeErrors.some(e => e.index === i))
           : [];
         if (failed.length > 0) {
-          const overflowDrop = telemetryWriteBuffer.prepend(failed);
+          const overflowDrop = await telemetryWriteBuffer.prepend(failed);
           if (overflowDrop > 0) {
             telemetryTotalDropped += overflowDrop;
             telemetryOverflowDropped += overflowDrop;
@@ -863,7 +904,7 @@ async function flushTelemetryBuffer() {
         }
       } else {
         flushBackoffMs = Math.min(flushBackoffMs * 2, 60000);
-        const overflowDrop = telemetryWriteBuffer.prepend(recordsToFlush);
+        const overflowDrop = await telemetryWriteBuffer.prepend(recordsToFlush);
         if (overflowDrop > 0) {
           telemetryTotalDropped += overflowDrop;
           telemetryOverflowDropped += overflowDrop;
@@ -911,14 +952,14 @@ function scheduleNextFlush() {
   }, Math.max(BUFFER_FLUSH_INTERVAL_MS, flushBackoffMs));
 }
 
-function loadRecoveryFile() {
+async function loadRecoveryFile() {
   try {
     if (fs.existsSync(RECOVERY_FILE_PATH)) {
       const content = fs.readFileSync(RECOVERY_FILE_PATH, 'utf-8').trim();
       if (content) {
         const records = content.split('\n').filter(Boolean).map(line => JSON.parse(line));
         if (records.length > 0) {
-          telemetryWriteBuffer.prepend(records);
+          await telemetryWriteBuffer.prepend(records);
           logger.info(`[TRUXIFY RECOVERY] Loaded ${records.length} telemetry records from recovery file. Buffer size: ${telemetryWriteBuffer.length}`);
         }
       }
@@ -930,8 +971,8 @@ function loadRecoveryFile() {
   }
 }
 
-function initTelemetryScheduler() {
-  loadRecoveryFile();
+async function initTelemetryScheduler() {
+  await loadRecoveryFile();
   isSchedulerActive = true;
   scheduleNextFlush();
   
@@ -970,7 +1011,7 @@ export async function closeWebSocketServer() {
       const dataLoss = telemetryWriteBuffer.length;
       if (dataLoss > 0) {
         try {
-          const lines = telemetryWriteBuffer.toArray().map(r => JSON.stringify(r)).join('\n');
+          const lines = (await telemetryWriteBuffer.toArray()).map(r => JSON.stringify(r)).join('\n');
           fs.writeFileSync(RECOVERY_FILE_PATH, lines + '\n', { encoding: 'utf-8', mode: 0o600 });
           logger.warn(`[TRUXIFY SHUTDOWN] MongoDB not available. Wrote ${dataLoss} telemetry records to recovery file: ${RECOVERY_FILE_PATH}`);
         } catch (fileErr) {
@@ -1237,22 +1278,22 @@ export const __testing = {
   getTelemetryFlushBuffer() {
     return telemetryFlushBuffer;
   },
-  setTelemetryWriteBuffer(records) {
-    telemetryWriteBuffer.clear();
-    if (records) telemetryWriteBuffer.prepend(records);
+  async setTelemetryWriteBuffer(records) {
+    await telemetryWriteBuffer.clear();
+    if (records) await telemetryWriteBuffer.prepend(records);
   },
   setTelemetryFlushBuffer(records) {
     telemetryFlushBuffer = records;
   },
-  pushToTelemetryWriteBuffer(records) {
+  async pushToTelemetryWriteBuffer(records) {
     if (Array.isArray(records)) {
-      for (const r of records) telemetryWriteBuffer.push(r);
+      for (const r of records) await telemetryWriteBuffer.push(r);
     } else {
-      telemetryWriteBuffer.push(records);
+      await telemetryWriteBuffer.push(records);
     }
   },
-  clearTelemetryWriteBuffer() {
-    telemetryWriteBuffer.clear();
+  async clearTelemetryWriteBuffer() {
+    await telemetryWriteBuffer.clear();
   },
   clearTelemetryFlushBuffer() {
     telemetryFlushBuffer = [];
