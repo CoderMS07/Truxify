@@ -138,7 +138,7 @@ export function requireIdempotency(ttlSeconds = 3600) {
           // After waiting, check if the result is now cached
           const cachedAfterWait = getFromMemory(key);
           if (cachedAfterWait) {
-            return res.status(JSON.parse(cachedAfterWait).statusCode).json(JSON.parse(cachedAfterWait).body);
+            return res.status(cachedAfterWait.statusCode).json(cachedAfterWait.body);
           }
           if (retries === 0) {
             return res.status(409).json({ error: 'Duplicate request being processed' });
