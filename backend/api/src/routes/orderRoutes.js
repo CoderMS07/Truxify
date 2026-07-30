@@ -1097,10 +1097,7 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       updated_at: new Date().toISOString(),
     };
 
-    const { data: updatedOrder, error: updateErr } = await orderRepository.updateOrder(order.id, updates);
-    if (updateErr) return res.status(500).json({ error: 'Failed to update order.', details: updateErr.message });
-
-    const { error: offerUpdateErr } = await orderRepository.updateLoadOffer(order.order_display_id, {
+    const offerUpdates = {
       drop_address,
       drop_lat: Number(drop_lat),
       drop_lng: Number(drop_lng),
@@ -1110,10 +1107,18 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       toll_cost: pricing.tollEstimate,
       net_profit: pricing.netProfit,
       extra_distance_km: pricing.distanceKm,
+    };
+
+    const { data: updatedOrder, error: updateErr } = await orderRepository.executeRpc('update_order_and_load_offer', {
+      p_order_id: order.id,
+      p_order_display_id: order.order_display_id,
+      p_order_updates: updates,
+      p_offer_updates: offerUpdates
     });
 
-    if (offerUpdateErr) {
-      logger.error('Load offer update failed for change-drop:', offerUpdateErr.message);
+    if (updateErr) {
+      logger.error('Order and load offer atomic update failed for change-drop:', updateErr.message);
+      return res.status(500).json({ error: 'Failed to update order atomically.', details: updateErr.message });
     }
 
     try {
