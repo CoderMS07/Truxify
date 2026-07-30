@@ -64,7 +64,9 @@ async def build_graph(nodes: List[Node], edges: List[Edge]):
         }
     except Exception as e:
         logger.error(f"Graph building failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}")
+
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/optimize-route")
 async def optimize_route(request: RouteRequest):
@@ -101,7 +103,9 @@ async def optimize_route(request: RouteRequest):
             }
     except Exception as e:
         logger.error(f"Route optimization failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}")
+
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/multi-objective")
 async def multi_objective_optimize(request: RouteRequest):
@@ -128,7 +132,9 @@ async def multi_objective_optimize(request: RouteRequest):
         }
     except Exception as e:
         logger.error(f"Multi-objective optimization failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}")
+
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/train")
 async def train_model(request: TrainRequest):
@@ -150,7 +156,9 @@ async def train_model(request: TrainRequest):
         }
     except Exception as e:
         logger.error(f"Model training failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}")
+
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/update-route")
 async def update_route(route: List[Dict], traffic_data: Dict):
@@ -165,7 +173,9 @@ async def update_route(route: List[Dict], traffic_data: Dict):
         }
     except Exception as e:
         logger.error(f"Route update failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}")
+
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/model/status")
 async def get_model_status():
@@ -182,7 +192,9 @@ async def get_model_status():
         }
     except Exception as e:
         logger.error(f"Model status failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}")
+
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/model/save")
 async def save_model(path: str = "models/gnn_route.pth"):
@@ -197,7 +209,9 @@ async def save_model(path: str = "models/gnn_route.pth"):
         }
     except Exception as e:
         logger.error(f"Model save failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}")
+
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/model/load")
 async def load_model(path: str = "models/gnn_route.pth"):
@@ -212,4 +226,6 @@ async def load_model(path: str = "models/gnn_route.pth"):
         }
     except Exception as e:
         logger.error(f"Model load failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}")
+
+        raise HTTPException(status_code=500, detail="Internal server error")
