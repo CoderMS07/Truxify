@@ -211,6 +211,12 @@ class WebRTCSignalingServer {
       return;
     }
 
+    const peer = this.peers.get(peerId);
+    if (!peer) {
+      logger.warn(`[WebRTC] GPS data from unknown peer ${peerId}`);
+      return;
+    }
+
     const normalizedData = {
       ...data,
       location: this.normalizeLocation(data.location)
@@ -383,7 +389,11 @@ class WebRTCSignalingServer {
     return Boolean(peer && peer.userId === user?.id);
   }
 
-  async getOfflineGPSData(peerId, since) {
+  async getOfflineGPSData(peerId, since, requestingUser) {
+    if (!requestingUser || !this.canUserAccessPeer(peerId, requestingUser)) {
+      logger.warn(`[WebRTC] Unauthorized offline GPS data access attempt for peer ${peerId}`);
+      return [];
+    }
     const { data } = await supabase
       .from('gps_offline_data')
       .select('*')
@@ -394,7 +404,11 @@ class WebRTCSignalingServer {
     return data || [];
   }
 
-  async syncOfflineData(peerId) {
+  async syncOfflineData(peerId, requestingUser) {
+    if (!requestingUser || !this.canUserAccessPeer(peerId, requestingUser)) {
+      logger.warn(`[WebRTC] Unauthorized sync offline data attempt for peer ${peerId}`);
+      return;
+    }
     // Mark data as synced for this peer
     await supabase
       .from('gps_offline_data')

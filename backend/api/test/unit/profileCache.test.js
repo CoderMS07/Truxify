@@ -516,17 +516,20 @@ describe('profileCache utility', () => {
     });
 
     it('handles simulated redis timeout errors gracefully', async () => {
+      const redisClientMock = {
+        get: vi.fn().mockImplementationOnce(() =>
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Redis timeout')), 100))
+        ),
+      };
+      vi.doMock('../../src/config/db.js', () => ({
+        redisClient: redisClientMock,
+      }));
+
       const { getCachedProfile } = await import('../../src/lib/profileCache.js');
-      // Simulated mock implementation where Redis times out
-      redisClient.get.mockImplementationOnce(() => {
-        return new Promise((resolve, reject) => {
-          setTimeout(() => reject(new Error('Redis timeout')), 100);
-        });
-      });
-      
       const profile = await getCachedProfile('timeout-uid');
       expect(profile).toBeNull();
-      expect(logger.warn).toHaveBeenCalled();
+      const logger = (await import('../../src/middleware/logger.js')).default;
+      expect(logger.error).toHaveBeenCalled();
     });
   });
 });

@@ -931,7 +931,10 @@ router.post('/wallet/withdraw', authenticate, userLimiter, requirePolicy('driver
       .eq('user_id', req.user.id)
       .maybeSingle();
 
-    if (detailsErr || !details) {
+    if (detailsErr) {
+      return res.status(500).json({ error: 'Failed to fetch driver details.', details: detailsErr.message });
+    }
+    if (!details) {
       return res.status(404).json({ error: 'Driver profile details not found.' });
     }
 

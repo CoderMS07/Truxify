@@ -30,8 +30,8 @@ vi.mock('../../../../src/tracing/tracing.js', () => ({
   },
 }));
 
-import { SPAN_NAMES, STANDARD_ATTRIBUTES } from '../../../../src/core/telemetry/SpanFactory.js';
-import { SpanFactory } from '../../../../src/core/telemetry/SpanFactory.js';
+import { SPAN_NAMES, STANDARD_ATTRIBUTES, SpanFactory } from '../../../../src/core/telemetry/SpanFactory.js';
+
 import { TraceContext } from '../../../../src/core/telemetry/TraceContext.js';
 import { ContextPropagator } from '../../../../src/core/telemetry/ContextPropagator.js';
 import { WorkerTracer } from '../../../../src/core/telemetry/WorkerTracer.js';

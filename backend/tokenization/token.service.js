@@ -63,7 +63,7 @@ class TokenizationService {
         }
     }
 
-    async purchaseFraction(assetId, amount, userAddress) {
+    async purchaseFraction(assetId, amount, userAddress, signer) {
         try {
             const asset = await this.getAsset(assetId);
             if (!asset) {
@@ -71,7 +71,8 @@ class TokenizationService {
             }
             const totalCost = parseFloat(asset.tokenPrice) * amount;
 
-            const tx = await this.token.purchaseFraction(
+            const userContract = new ethers.Contract(this.tokenAddress, this.tokenABI, signer);
+            const tx = await userContract.purchaseFraction(
                 assetId,
                 ethers.parseEther(amount.toString()),
                 {

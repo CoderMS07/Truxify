@@ -91,6 +91,18 @@ router.post('/trace/verify', async (req, res) => {
     }
 });
 
+// Get product trace
+router.get('/trace/product/trace/:productId', async (req, res) => {
+    try {
+        const { productId } = req.params;
+        const trace = await traceService.getProductTrace(productId);
+        res.json({ success: true, data: trace });
+    } catch (error) {
+        logger.error('Product trace error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 // Get product
 router.get('/trace/product/:productId', async (req, res) => {
     try {
@@ -111,18 +123,6 @@ router.get('/trace/shipment/:shipmentId', async (req, res) => {
         res.json({ success: true, data: shipment });
     } catch (error) {
         logger.error('Shipment fetch error:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// Get product trace
-router.get('/trace/product/trace/:productId', async (req, res) => {
-    try {
-        const { productId } = req.params;
-        const trace = await traceService.getProductTrace(productId);
-        res.json({ success: true, data: trace });
-    } catch (error) {
-        logger.error('Product trace error:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });

@@ -23,9 +23,7 @@ function verifyWebhookSignature(req, res, next) {
     return res.status(401).json({ error: 'Missing X-Webhook-Signature header' });
   }
 
-  const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
-  // TODO: Register the webhook route with express.raw({ type: '*/*' }) middleware
-  // to receive raw body for HMAC verification instead of relying on JSON.stringify
+  const rawBody = req.rawBody;
   const expectedSignature = crypto
     .createHmac('sha256', WEBHOOK_SECRET)
     .update(rawBody)

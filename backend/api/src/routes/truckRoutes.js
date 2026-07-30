@@ -478,6 +478,20 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
     return res.status(400).json({ error: 'min_capacity must be less than or equal to max_capacity' });
   }
 
+  const cacheKey = `truck_search:${numPickupLat},${numPickupLng}:${numDropLat},${numDropLng}:${numWeightTonnes}:${parseBoolean(is_fragile)}:${parseBoolean(is_stackable)}`;
+
+  if (redisClient) {
+    try {
+      const cachedResult = await redisClient.get(cacheKey);
+      if (cachedResult) {
+        logger.info({ cacheKey }, 'Serving truck search results from Redis cache');
+        return res.json(JSON.parse(cachedResult));
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, 'Redis cache read error during search');
+    }
+  }
+
   try {
     const routeEstimate = await getRouteEstimate({
       pickupLat: numPickupLat,

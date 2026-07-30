@@ -103,7 +103,6 @@ import logger from './middleware/logger.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { setupSwagger } from './config/swagger.js'
 import { correlationIdMiddleware } from './middleware/correlationId.js'
-import { requestIdMiddleware, requestLogger } from './middleware/requestId.js'
 import { requestCacheMiddleware } from './middleware/requestCacheMiddleware.js'
 import { requireJsonContent } from './middleware/contentType.js'
 import { initSentry, flushSentry, sentryErrorHandler } from './middleware/sentry.js'
@@ -185,6 +184,11 @@ if (!process.env.CHAINLINK_ENABLED && !process.env.BACKUP_ORACLE_ENABLED) {
 if (!process.env.SHARD_NORTH_HOST || !process.env.SHARD_SOUTH_HOST || 
     !process.env.SHARD_EAST_HOST || !process.env.SHARD_WEST_HOST) {
   logger.warn('⚠️ Shard hosts not fully configured. Using localhost defaults.')
+}
+
+if (!process.env.SHARD_NORTH_PASSWORD || !process.env.SHARD_SOUTH_PASSWORD || 
+    !process.env.SHARD_EAST_PASSWORD || !process.env.SHARD_WEST_PASSWORD) {
+  logger.warn('⚠️ Shard passwords not fully configured. Ensure all SHARD_*_PASSWORD env vars are set.')
 }
 
 
@@ -325,7 +329,6 @@ if (process.env.NODE_ENV === 'production') {
 // Payload parsers
 const jsonBodyLimit =
   process.env.JSON_BODY_LIMIT || '1mb';
-
 const urlEncodedBodyLimit =
   process.env.URLENCODED_BODY_LIMIT || '1mb';
 
@@ -333,6 +336,9 @@ app.use(
   express.json({
     limit: jsonBodyLimit,
     strict: true,
+    verify: (req, _res, buf) => {
+      req.rawBody = buf.toString('utf8');
+    },
   })
 );
 
@@ -584,6 +590,9 @@ app.use(errorHandler)
 await waitForMongoDb()
 initWebSocketServer(server, orderRepository)
 initLocationServer(server)
+
+// Expose WebSocket state for health aggregation
+globalThis.__truxify_wsState = wsTesting.getShutdownState()
 
 // ============================================================================
 // 🆕 WEBRTC SIGNALING SERVER INIT

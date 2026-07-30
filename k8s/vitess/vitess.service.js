@@ -1,5 +1,5 @@
 import mysql from 'mysql2/promise';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../../backend/api/src/middleware/logger.js';
 
 class VitessService {
     constructor() {
@@ -8,7 +8,7 @@ class VitessService {
         this.keyspace = process.env.VITESS_KEYSPACE || 'truxify_main';
 
         this.pool = null;
-        this.shardCount = parseInt(process.env.VITESS_SHARD_COUNT) || 4;
+        this.shardCount = parseInt(process.env.VITESS_SHARD_COUNT, 10) || 4;
         this.shardPools = [];
         
         // Read/Write splitting
