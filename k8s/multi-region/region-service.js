@@ -249,7 +249,7 @@ class RegionService {
         
         for (const region of this.regions) {
             const count = await this.redis.get(`routing:${region.name}:count`);
-            routingStats[region.name] = parseInt(count) || 0;
+            routingStats[region.name] = parseInt(count, 10) || 0;
         }
         
         const health = await this.redis.get('regions:health');
@@ -273,7 +273,7 @@ class RegionService {
             
             const lastSync = await this.redis.get(`replication:${region.name}:last_sync`);
             if (lastSync) {
-                lag[region.name] = Date.now() - parseInt(lastSync);
+                lag[region.name] = Date.now() - parseInt(lastSync, 10);
             }
         }
         return lag;

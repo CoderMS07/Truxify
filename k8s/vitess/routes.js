@@ -32,7 +32,7 @@ router.get('/vitess/orders/customer/:customerId', async (req, res) => {
     try {
         const { customerId } = req.params;
         const { limit } = req.query;
-        const result = await vitessService.getOrdersByCustomer(customerId, parseInt(limit) || 100);
+        const result = await vitessService.getOrdersByCustomer(customerId, parseInt(limit, 10) || 100);
         res.json({ success: true, data: result });
     } catch (error) {
         logger.error('Get orders error:', error);
