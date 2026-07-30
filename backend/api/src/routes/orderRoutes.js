@@ -493,7 +493,7 @@ router.get('/history', authenticate, userLimiter, requirePolicy('order:view-hist
       return res.status(400).json({ error: 'limit must be between 1 and 100' });
     }
 
-    const result = await orderLifecycleService.getOrderHistory(req.user.id, page, limit);
+    const result = await orderLifecycleService.getOrderHistory(req.user.id, cursor, limit);
     res.json(result);
   } catch (err) {
     if (err instanceof DomainError) {

@@ -102,7 +102,6 @@ import logger from './middleware/logger.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { setupSwagger } from './config/swagger.js'
 import { correlationIdMiddleware } from './middleware/correlationId.js'
-import { requestIdMiddleware, requestLogger } from './middleware/requestId.js'
 import { requestCacheMiddleware } from './middleware/requestCacheMiddleware.js'
 import { requireJsonContent } from './middleware/contentType.js'
 import { initSentry, flushSentry, sentryErrorHandler } from './middleware/sentry.js'
@@ -584,18 +583,13 @@ await waitForMongoDb()
 initWebSocketServer(server, orderRepository)
 initLocationServer(server)
 
-<<<<<<< HEAD
 // Expose WebSocket state for health aggregation
 globalThis.__truxify_wsState = wsTesting.getShutdownState()
 
-// =====================================================================// 🆕 WEBRTC SIGNALING SERVER INIT
-// =====================================================================initWebRTCSignaling(server)
-=======
 // ============================================================================
 // 🆕 WEBRTC SIGNALING SERVER INIT
 // ============================================================================
 initWebRTCSignaling(server)
->>>>>>> 9d336921 (fix : resolve remaining pre-existing ESLint errors in source files)
 logger.info('🆕 WebRTC Signaling Server initialized at /webrtc')
 
 // ============================================================================
