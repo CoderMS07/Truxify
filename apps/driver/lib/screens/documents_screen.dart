@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:truxify_driver/core/driver_session.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
 
@@ -259,20 +260,61 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       ),
     );
 
+    // Open DigiLocker authorization page
+    final authUri = Uri.parse('$_apiBaseUrl/api/documents/digilocker-auth-url');
     try {
-      final session = Supabase.instance.client.auth.currentSession;
-      final token = session?.accessToken ?? '';
-      
-      final response = await http.post(
-        Uri.parse('$_apiBaseUrl/api/documents/verify-digilocker'),
-        headers: {
-          'Content-Type': 'application/json',
-          if (token.isNotEmpty) 'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode({
-          'code': 'mock_digilocker_auth_code_98765',
-        }),
-      );
+      await launchUrl(authUri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open DigiLocker. Please try again.')),
+        );
+      }
+      return;
+    }
+
+    // Ask user to paste the authorization code from DigiLocker redirect
+    final codeController = TextEditingController();
+    final code = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Enter DigiLocker Code'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('After authorising, paste the code from the browser redirect URL here.'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: codeController,
+              decoration: const InputDecoration(
+                hintText: 'Authorization code',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, codeController.text.trim()),
+            child: const Text('Submit'),
+          ),
+        ],
+      ),
+    );
+    if (code == null || code.isEmpty) return;
+
+    final session = Supabase.instance.client.auth.currentSession;
+    final token = session?.accessToken ?? '';
+
+    final response = await http.post(
+      Uri.parse('$_apiBaseUrl/api/documents/verify-digilocker'),
+      headers: {
+        'Content-Type': 'application/json',
+        if (token.isNotEmpty) 'Authorization': 'Bearer $token',
+      },
+      body: jsonEncode({'code': code}),
+    );
 
       if (response.statusCode == 200) {
         if (context.mounted) {
