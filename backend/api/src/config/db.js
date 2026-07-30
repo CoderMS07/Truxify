@@ -228,7 +228,11 @@ if (serviceAccountRaw) {
   logger.warn('Firebase not configured. Skipping initialization.');
 }
 
+let _closeDbInProgress = false;
+
 export async function closeDbConnections() {
+  if (_closeDbInProgress) return;
+  _closeDbInProgress = true;
   if (supabase) {
     try {
       await supabase.removeAllChannels();
@@ -318,16 +322,4 @@ export function validateConfig() {
   logger.info('Config validation passed');
 }
 
-// Resolves #2050: Handle SIGINT and SIGTERM for graceful DB shutdown
-
-async function shutdown(signal) {
-  logger.info({ signal }, 'Received signal, starting graceful shutdown...');
-  await closeDbConnections();
-  logger.info('Graceful shutdown complete. Exiting...');
-  // Allow the event loop to drain so other shutdown handlers (WebSocket tracker,
-  // reconciliation timers, FraudDetectionService cleanup) can finish their work.
-  // unref'd timers will not prevent exit; the process will exit naturally.
-}
-
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+// Signal handlers are registered in index.js only to ensure coordinated shutdown.
