@@ -1,5 +1,5 @@
 import mysql from 'mysql2/promise';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../../backend/api/src/middleware/logger.js';
 
 class VitessService {
     constructor() {

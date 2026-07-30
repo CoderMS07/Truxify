@@ -1,5 +1,5 @@
 import axios from 'axios';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../../backend/api/src/middleware/logger.js';
 
 function sanitizePromQL(input) {
     if (typeof input !== 'string') return '';
