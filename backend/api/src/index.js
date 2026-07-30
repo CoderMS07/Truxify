@@ -332,6 +332,9 @@ app.use(
   express.json({
     limit: jsonBodyLimit,
     strict: true,
+    verify: (req, _res, buf) => {
+      req.rawBody = buf.toString('utf8');
+    },
   })
 );
 
