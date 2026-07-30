@@ -1,5 +1,5 @@
 import mysql from 'mysql2/promise';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../../backend/api/src/middleware/logger.js';
 
 class VitessService {
     constructor() {
@@ -9,6 +9,7 @@ class VitessService {
 
         this.pool = null;
         this.shardCount = parseInt(process.env.VITESS_SHARD_COUNT) || 4;
+        this.shardPools = [];
         
         // Read/Write splitting
         this.readPool = null;
@@ -45,6 +46,16 @@ class VitessService {
             connectionLimit: 10,
             connectTimeout: 5000
         });
+
+        // Per-shard pools for actual shard routing
+        for (let i = 0; i < this.shardCount; i++) {
+            const shardDb = `${this.keyspace}_shard_${String(i).padStart(2, '0')}`;
+            this.shardPools[i] = mysql.createPool({
+                ...config,
+                database: shardDb,
+                connectionLimit: 5,
+            });
+        }
 
         logger.info('✅ Vitess connection pools initialized');
     }
@@ -108,7 +119,9 @@ class VitessService {
     }
 
     async getShardConnection(shard) {
-        // In production: return connection to specific shard
+        if (shard >= 0 && shard < this.shardPools.length) {
+            return this.shardPools[shard];
+        }
         return this.pool;
     }
 
@@ -308,6 +321,9 @@ class VitessService {
         await this.pool.end();
         await this.readPool.end();
         await this.writePool.end();
+        for (const sp of this.shardPools) {
+            await sp.end();
+        }
         logger.info('✅ Vitess connections closed');
     }
 }

@@ -26,7 +26,6 @@ import {
   suspiciousRequests,
   responseSanitizer,
 } from "./middleware/index.js";
-
 // Load REST routes
 import orderRoutes from './routes/orderRoutes.js'
 import driverRoutes from './routes/driverRoutes.js'
@@ -39,51 +38,66 @@ import authRoutes from './routes/authRoutes.js'
 import healthRoutes from './routes/healthRoutes.js'
 import adminRoutes from './routes/adminRoutes.js'
 import lookupRoutes from './routes/lookupRoutes.js'
+import { getRoot, notFound } from './controllers/rootController.js'
 import webhookRoutes from './routes/webhookRoutes.js'
 import auditRoutes from './routes/auditRoutes.js'
 import voiceRoutes from './routes/voiceRoutes.js'
 
-// =====================================================================// 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
-// =====================================================================import verificationRoutes from './routes/verificationRoutes.js'
+// ============================================================================
+// 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
+// ============================================================================
+import verificationRoutes from './routes/verificationRoutes.js'
 import oracleRoutes from './routes/oracleRoutes.js'
 
-// =====================================================================// 🆕 GEOGRAPHIC SHARDING ROUTES
-// =====================================================================import trackingRoutes from './routes/trackingRoutes.js'
+// ============================================================================
+// 🆕 GEOGRAPHIC SHARDING ROUTES
+// ============================================================================
+import trackingRoutes from './routes/trackingRoutes.js'
 import publicTrackingRoutes from './routes/publicTrackingRoutes.js'
 import shardRoutes from './routes/shardRoutes.js'
 import shardManager from './services/sharding/ShardManager.js'
 
 
-// =====================================================================// 🆕 WEBRTC P2P MESH NETWORK ROUTES
-// =====================================================================import webrtcRoutes from './routes/webrtcRoutes.js'
+// ============================================================================
+// 🆕 WEBRTC P2P MESH NETWORK ROUTES
+// ============================================================================
+import webrtcRoutes from './routes/webrtcRoutes.js'
 
-// =====================================================================// 🆕 ROOT SUBSYSTEM ROUTES (eBPF, WASI, WASM, Snyk, Liquibase)
-// =====================================================================import ebpfRoutes from '../../ebpf/routes.js'
+// ============================================================================
+// 🆕 ROOT SUBSYSTEM ROUTES (eBPF, WASI, WASM, Snyk, Liquibase)
+// ============================================================================
+import ebpfRoutes from '../../ebpf/routes.js'
 import wasiRoutes from '../../wasi/routes.js'
 import wasmRoutes from '../../wasm/routes.js'
 import snykRoutes from '../../snyk/routes.js'
 import liquibaseRoutes from '../../database/liquibase/routes.js'
 import { initWebRTCSignaling, closeWebRTCSignaling } from './sockets/webrtc.js'
 
-// =====================================================================// 🆕 FRAUD DETECTION ROUTES
-// =====================================================================import fraudRoutes from './routes/fraudRoutes.js'
+// ============================================================================
+// 🆕 FRAUD DETECTION ROUTES
+// ============================================================================
+import fraudRoutes from './routes/fraudRoutes.js'
 import { fraudDetectionMiddleware, networkAnalysisMiddleware } from './middleware/fraudMiddleware.js'
 import fraudDetection from './services/fraud/FraudDetectionService.js'
 import headerSizeMonitor from './middleware/headerSizeMonitor.js';
 
-// =====================================================================// 🆕 ZK-PROOFS FOR DRIVER KYC
-// =====================================================================import zkpRoutes from './routes/zkp.routes.js'
+// ============================================================================
+// 🆕 ZK-PROOFS FOR DRIVER KYC
+// ============================================================================
+import zkpRoutes from './routes/zkp.routes.js'
 
 
-// =====================================================================// 🆕 MULTI-CLOUD DISASTER RECOVERY
-// =====================================================================import drRoutes from '../../dr/routes.js'
+// ============================================================================
+// 🆕 MULTI-CLOUD DISASTER RECOVERY
+// ============================================================================
+import drRoutes from '../../dr/routes.js'
 import multiCloudService from '../../dr/multi-cloud.service.js'
 
-// =====================================================================// 🆕 OPENTELEMETRY DISTRIBUTED TRACING
-// =====================================================================import tracing from './tracing/tracing.js'
+// ============================================================================
+// 🆕 OPENTELEMETRY DISTRIBUTED TRACING
+// ============================================================================
+import tracing from './tracing/tracing.js'
 import { tracingMiddleware } from './middleware/tracingMiddleware.js'
-
-
 import logger from './middleware/logger.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { setupSwagger } from './config/swagger.js'
@@ -112,8 +126,10 @@ import './subscribers/reputationSubscriber.js'
 
 // Configuration load from root folder is handled in db.js
 
-// =====================================================================// 🆕 INITIALIZE OPENTELEMETRY TRACING
-// =====================================================================tracing.initialize('truxify-api')
+// ============================================================================
+// 🆕 INITIALIZE OPENTELEMETRY TRACING
+// ============================================================================
+tracing.initialize('truxify-api')
 
 initSentry()
 
@@ -125,8 +141,10 @@ try {
   process.exit(1)
 }
 
-// =====================================================================// STARTUP VALIDATION — crash fast, not at request time
-// =====================================================================if (process.env.BYPASS_AUTH === 'true' && process.env.NODE_ENV !== 'development') {
+// ============================================================================
+// STARTUP VALIDATION — crash fast, not at request time
+// ============================================================================
+if (process.env.BYPASS_AUTH === 'true' && process.env.NODE_ENV !== 'development') {
   logger.fatal('BYPASS_AUTH is enabled outside development. This is a severe security misconfiguration. Set BYPASS_AUTH=false (or unset it), and set NODE_ENV=development if you need local testing.')
   process.exit(1)
 }
@@ -142,33 +160,43 @@ if (!process.env.DRIVER_LOGIN_OTP) {
   logger.warn('DRIVER_LOGIN_OTP is not set. Driver OTP login will be disabled until it is configured in production.')
 }
 
-// =====================================================================// 🆕 OTEL VALIDATION
-// =====================================================================if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+// ============================================================================
+// 🆕 OTEL VALIDATION
+// ============================================================================
+if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
   logger.warn('⚠️ OTEL_EXPORTER_OTLP_ENDPOINT not set. Using default: http://localhost:4317')
 }
 
-// =====================================================================// 🆕 ORACLE VALIDATION
-// =====================================================================if (!process.env.ORACLE_CONSENSUS_THRESHOLD) {
+// ============================================================================
+// 🆕 ORACLE VALIDATION
+// ============================================================================
+if (!process.env.ORACLE_CONSENSUS_THRESHOLD) {
   logger.warn('ORACLE_CONSENSUS_THRESHOLD not set, using default: 2')
 }
 if (!process.env.CHAINLINK_ENABLED && !process.env.BACKUP_ORACLE_ENABLED) {
   logger.warn('No oracle providers enabled. Set CHAINLINK_ENABLED=true or BACKUP_ORACLE_ENABLED=true')
 }
 
-// =====================================================================// 🆕 SHARDING VALIDATION
-// =====================================================================if (!process.env.SHARD_NORTH_HOST || !process.env.SHARD_SOUTH_HOST || 
+// ============================================================================
+// 🆕 SHARDING VALIDATION
+// ============================================================================
+if (!process.env.SHARD_NORTH_HOST || !process.env.SHARD_SOUTH_HOST || 
     !process.env.SHARD_EAST_HOST || !process.env.SHARD_WEST_HOST) {
   logger.warn('⚠️ Shard hosts not fully configured. Using localhost defaults.')
 }
 
 
-// =====================================================================// 🆕 WEBRTC VALIDATION
-// =====================================================================if (!process.env.WEBRTC_ENABLED) {
+// ============================================================================
+// 🆕 WEBRTC VALIDATION
+// ============================================================================
+if (!process.env.WEBRTC_ENABLED) {
   logger.info('WebRTC signaling server will start by default')
 }
 
-// =====================================================================// 🆕 FRAUD DETECTION VALIDATION
-// =====================================================================if (!process.env.FRAUD_THRESHOLD) {
+// ============================================================================
+// 🆕 FRAUD DETECTION VALIDATION
+// ============================================================================
+if (!process.env.FRAUD_THRESHOLD) {
   logger.warn('FRAUD_THRESHOLD not set, using default: 0.7')
 }
 if (!process.env.BEHAVIORAL_ANALYTICS_ENABLED) {
@@ -176,8 +204,10 @@ if (!process.env.BEHAVIORAL_ANALYTICS_ENABLED) {
 }
 
 
-// =====================================================================// 🆕 ZK-PROOFS VALIDATION
-// =====================================================================if (!process.env.KYC_VERIFIER_CONTRACT) {
+// ============================================================================
+// 🆕 ZK-PROOFS VALIDATION
+// ============================================================================
+if (!process.env.KYC_VERIFIER_CONTRACT) {
   logger.warn('⚠️ KYC_VERIFIER_CONTRACT not set. ZK proof verification will not work.')
 }
 if (!process.env.PRIVATE_KEY) {
@@ -186,8 +216,10 @@ if (!process.env.PRIVATE_KEY) {
 
 
 
-// =====================================================================// 🆕 MULTI-CLOUD DR VALIDATION
-// =====================================================================if (!process.env.AWS_ACCESS_KEY || !process.env.AWS_SECRET_KEY) {
+// ============================================================================
+// 🆕 MULTI-CLOUD DR VALIDATION
+// ============================================================================
+if (!process.env.AWS_ACCESS_KEY || !process.env.AWS_SECRET_KEY) {
   logger.warn('⚠️ AWS credentials not set. Multi-cloud DR may not work.')
 }
 if (!process.env.AZURE_CONNECTION_STRING) {
@@ -226,9 +258,11 @@ app.use(headerSizeMonitor);
 const trustProxy = process.env.TRUST_PROXY !== undefined ? Number(process.env.TRUST_PROXY) : 1
 app.set('trust proxy', trustProxy)
 
-// =====================================================================// 🔒 ADVANCED SECURITY HEADERS (HELMET CONFIGURATION)
+// ============================================================================
+// 🔒 ADVANCED SECURITY HEADERS (HELMET CONFIGURATION)
 // Resolves missing security headers from Issues #361 and #944
-// =====================================================================app.use(securityHeaderDuplicates);
+// ============================================================================
+app.use(securityHeaderDuplicates);
 app.use(helmet({
   // Content Security Policy (CSP) - Prevents XSS and data injection
   contentSecurityPolicy: {
@@ -287,6 +321,9 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 // Payload parsers
+const jsonBodyLimit =
+  process.env.JSON_BODY_LIMIT || '1mb';
+
 const urlEncodedBodyLimit =
   process.env.URLENCODED_BODY_LIMIT || '1mb';
 
@@ -304,8 +341,10 @@ app.use(
   })
 );
 
-// =====================================================================// 🆕 OPENTELEMETRY TRACING MIDDLEWARE
-// =====================================================================app.use(tracingMiddleware)
+// ============================================================================
+// 🆕 OPENTELEMETRY TRACING MIDDLEWARE
+// ============================================================================
+app.use(tracingMiddleware)
 
 // Track request start time
 app.use((req, res, next) => {
@@ -313,14 +352,16 @@ app.use((req, res, next) => {
   next()
 })
 
-// =====================================================================// CORRELATION ID + REQUEST ID + REQUEST LOGGER
+// ============================================================================
+// CORRELATION ID + REQUEST ID + REQUEST LOGGER
 // Registered before all routes and rate limiters so that every incoming
 // request (including rate-limited or 404) is logged with a correlation ID.
 // 1. correlationIdMiddleware — sets up AsyncLocalStorage so all downstream
 //    log calls automatically include the correlationId (via logger Proxy).
 // 2. requestIdMiddleware   — adds X-Request-Id header & req.requestId.
 // 3. requestLogger         — logs request start / finish metadata.
-// =====================================================================app.use(correlationIdMiddleware)
+// ============================================================================
+app.use(correlationIdMiddleware)
 app.use(requestIdMiddleware)
 app.use(requestLogger)
 
@@ -332,24 +373,32 @@ app.use(suspiciousRequests)
 // allowed types match the parsers registered above.
 app.use(requireJsonContent)
 
-// =====================================================================// 🆕 FRAUD DETECTION MIDDLEWARE (Global)
-// =====================================================================app.use(fraudDetectionMiddleware)
+// ============================================================================
+// 🆕 FRAUD DETECTION MIDDLEWARE (Global)
+// ============================================================================
+app.use(fraudDetectionMiddleware)
 app.use(networkAnalysisMiddleware)
 
-// =====================================================================// RATE LIMITING
-// =====================================================================app.use('/api/health', healthLimiter)
+// ============================================================================
+// RATE LIMITING
+// ============================================================================
+app.use('/api/health', healthLimiter)
 app.use('/api/health', healthRoutes)
 app.use('/api/v1/health', healthLimiter)
 app.use('/api/v1/health', healthRoutes)
 app.use('/api/', globalLimiter)
 app.use('/api/v1/trips', tripRoutes)
 
-// =====================================================================// REQUEST-SCOPED CACHE — created per-request, destroyed after response.
+// ============================================================================
+// REQUEST-SCOPED CACHE — created per-request, destroyed after response.
 // Registers before all routes so every request handler benefits.
-// =====================================================================app.use('/api', requestCacheMiddleware)
+// ============================================================================
+app.use('/api', requestCacheMiddleware)
 
-// =====================================================================// REST API ROUTING
-// =====================================================================app.use('/api/orders', orderRoutes)
+// ============================================================================
+// REST API ROUTING
+// ============================================================================
+app.use('/api/orders', orderRoutes)
 app.use('/api/driver', deadheadRoutes)
 app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
@@ -358,7 +407,6 @@ app.use('/api/support', supportRoutes)
 app.use('/api/profile', profileRoutes)
 app.use('/api/devices', deviceRoutes)
 app.use('/api/driver/documents', documentRoutes)
-app.use('/api/documents', documentRoutes)
 app.use('/api/maintenance', maintenancePhotoRoutes)
 app.use('/api/trucks', truckRoutes)
 app.use('/api/v1', lookupRoutes)
@@ -368,8 +416,10 @@ app.use('/api/v1/admin', adminRoutes)
 app.use('/api/v1/admin/audit-logs', auditRoutes)
 app.use('/api/voice', voiceRoutes)
 
-// =====================================================================// 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
-// =====================================================================app.use('/api/verify', verificationRoutes)
+// ============================================================================
+// 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
+// ============================================================================
+app.use('/api/verify', verificationRoutes)
 app.use('/api/oracle', oracleRoutes)
 
 // 🆕 Oracle Health Check Endpoint
@@ -388,8 +438,10 @@ app.get('/api/oracle/health', (req, res) => {
   })
 })
 
-// =====================================================================// 🆕 GEOGRAPHIC SHARDING ROUTES
-// =====================================================================app.use('/api', shardRoutes)
+// ============================================================================
+// 🆕 GEOGRAPHIC SHARDING ROUTES
+// ============================================================================
+app.use('/api', shardRoutes)
 
 // 🆕 Shard Health Check Endpoint
 app.get('/api/shard/health', async (req, res) => {
@@ -409,11 +461,15 @@ app.get('/api/shard/health', async (req, res) => {
 })
 
 
-// =====================================================================// 🆕 WEBRTC P2P MESH NETWORK ROUTES
-// =====================================================================app.use('/api', webrtcRoutes)
+// ============================================================================
+// 🆕 WEBRTC P2P MESH NETWORK ROUTES
+// ============================================================================
+app.use('/api', webrtcRoutes)
 
-// =====================================================================// 🆕 ROOT SUBSYSTEM ROUTES (eBPF, WASI, WASM, Snyk, Liquibase)
-// =====================================================================app.use('/api', ebpfRoutes)
+// ============================================================================
+// 🆕 ROOT SUBSYSTEM ROUTES (eBPF, WASI, WASM, Snyk, Liquibase)
+// ============================================================================
+app.use('/api', ebpfRoutes)
 app.use('/api', wasiRoutes)
 app.use('/api', wasmRoutes)
 app.use('/api', snykRoutes)
@@ -430,8 +486,10 @@ app.get('/api/webrtc/status', (req, res) => {
   })
 })
 
-// =====================================================================// 🆕 FRAUD DETECTION ROUTES
-// =====================================================================app.use('/api', fraudRoutes)
+// ============================================================================
+// 🆕 FRAUD DETECTION ROUTES
+// ============================================================================
+app.use('/api', fraudRoutes)
 
 // 🆕 Fraud Health Check Endpoint
 app.get('/api/fraud/health', (req, res) => {
@@ -446,8 +504,10 @@ app.get('/api/fraud/health', (req, res) => {
 })
 
 
-// =====================================================================// 🆕 ZK-PROOFS FOR DRIVER KYC ROUTES
-// =====================================================================app.use('/api', zkpRoutes)
+// ============================================================================
+// 🆕 ZK-PROOFS FOR DRIVER KYC ROUTES
+// ============================================================================
+app.use('/api', zkpRoutes)
 
 // 🆕 ZK-Proof Health Check Endpoint
 app.get('/api/zkp/health', (req, res) => {
@@ -462,8 +522,10 @@ app.get('/api/zkp/health', (req, res) => {
 
 
 
-// =====================================================================// 🆕 MULTI-CLOUD DISASTER RECOVERY ROUTES
-// =====================================================================app.use('/api', drRoutes)
+// ============================================================================
+// 🆕 MULTI-CLOUD DISASTER RECOVERY ROUTES
+// ============================================================================
+app.use('/api', drRoutes)
 
 // 🆕 DR Health Check Endpoint
 app.get('/api/dr/health', async (req, res) => {
@@ -483,8 +545,10 @@ app.get('/api/dr/health', async (req, res) => {
   }
 })
 
-// =====================================================================// 🆕 OPENTELEMETRY HEALTH CHECK
-// =====================================================================app.get('/api/tracing/health', (req, res) => {
+// ============================================================================
+// 🆕 OPENTELEMETRY HEALTH CHECK
+// ============================================================================
+app.get('/api/tracing/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'opentelemetry',
@@ -499,19 +563,12 @@ app.get('/api/dr/health', async (req, res) => {
 setupSwagger(app)
 
 // Root route
-app.get('/', (req, res) => {
-  const wsHost = req.hostname || 'localhost'
-  const wsPort = process.env.PORT || 5000
-  res.send(`<h1>Truxify Backend API is running.</h1><p>Use WebSockets at <code>ws://${wsHost}:${wsPort}/ws/tracking</code></p>`)
-})
+app.get('/', getRoot)
 
 app.use(responseSanitizer)
 
 // Handling 404 Route Not Found
-app.use((req, res) => {
-  res.status(404).json({ error: 'Endpoint resource not found.' })
-})
-
+app.use(notFound)
 // Sentry error handler must come before the generic error handler;
 // it captures the exception automatically so we don't call captureException here.
 app.use(sentryErrorHandler())
@@ -519,20 +576,26 @@ app.use(sentryErrorHandler())
 // Error handling middleware
 app.use(errorHandler)
 
-// =====================================================================// WEBSOCKET SERVER INIT (wait for MongoDB before accepting WebSocket connections)
-// =====================================================================await waitForMongoDb()
+// ============================================================================
+// WEBSOCKET SERVER INIT (wait for MongoDB before accepting WebSocket connections)
+// ============================================================================
+await waitForMongoDb()
 initWebSocketServer(server, orderRepository)
 initLocationServer(server)
 
 // Expose WebSocket state for health aggregation
 globalThis.__truxify_wsState = wsTesting.getShutdownState()
 
-// =====================================================================// 🆕 WEBRTC SIGNALING SERVER INIT
-// =====================================================================initWebRTCSignaling(server)
+// ============================================================================
+// 🆕 WEBRTC SIGNALING SERVER INIT
+// ============================================================================
+initWebRTCSignaling(server)
 logger.info('🆕 WebRTC Signaling Server initialized at /webrtc')
 
-// =====================================================================// START SERVER
-// =====================================================================const PORT = process.env.PORT || 5000
+// ============================================================================
+// START SERVER
+// ============================================================================
+const PORT = process.env.PORT || 5000
 
 server.listen(PORT, () => {
   logger.info(`Truxify API listening on port ${PORT}`)
@@ -563,8 +626,10 @@ server.listen(PORT, () => {
   }
 })
 
-// =====================================================================// GRACEFUL SHUTDOWN
-// =====================================================================const SHUTDOWN_TIMEOUT_MS = 10_000
+// ============================================================================
+// GRACEFUL SHUTDOWN
+// ============================================================================
+const SHUTDOWN_TIMEOUT_MS = 10_000
 
 /** @type {boolean} */
 let shuttingDown = false

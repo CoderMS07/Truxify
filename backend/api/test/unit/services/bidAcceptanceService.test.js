@@ -34,6 +34,7 @@ describe('BidAcceptanceService', () => {
 
     service = new BidAcceptanceService({
       orderRepository,
+      supabase: supabaseMock.supabase,
       escrowDepositFn: escrowDeposit,
       escrowRefundFn: escrowRefund,
       logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -210,6 +211,7 @@ describe('BidAcceptanceService', () => {
     const orderRepository = new OrderRepository(supabaseMock.supabase);
     const serviceWithBrokenNotifications = new BidAcceptanceService({
       orderRepository,
+      supabase: supabaseMock.supabase,
       escrowDepositFn: escrowDeposit,
       escrowRefundFn: escrowRefund,
       logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },

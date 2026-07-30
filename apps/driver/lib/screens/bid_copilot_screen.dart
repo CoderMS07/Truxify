@@ -33,19 +33,27 @@ class _BidCopilotScreenState extends State<BidCopilotScreen> {
   }
 
   Future<void> _fetchPricingInsight() async {
-    final result = await _pricingEngine.analyzeLoadPricing(
-      loadId: widget.loadId,
-      origin: widget.origin,
-      destination: widget.destination,
-      totalMiles: widget.totalMiles,
-    );
+    try {
+      final result = await _pricingEngine.analyzeLoadPricing(
+        loadId: widget.loadId,
+        origin: widget.origin,
+        destination: widget.destination,
+        totalMiles: widget.totalMiles,
+      );
 
-    if (mounted) {
-      setState(() {
-        _insight = result;
-        _isLoading = false;
-        _userBid = result.suggestedBid;
-      });
+      if (mounted) {
+        setState(() {
+          _insight = result;
+          _isLoading = false;
+          _userBid = result.suggestedBid;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 

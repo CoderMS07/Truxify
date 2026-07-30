@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { WASI } from 'wasi';
 import { createRequire } from 'module';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../backend/api/src/middleware/logger.js';
 
 const require = createRequire(import.meta.url);
 
@@ -25,7 +25,11 @@ class EdgeRuntime {
                 const wasmBytes = fs.readFileSync(wasmPath);
                 const wasi = new WASI({
                     args: [],
-                    env: process.env,
+                    env: Object.fromEntries(
+                        Object.entries(process.env).filter(([k]) =>
+                            /^(PATH|HOME|TMP|USER|LANG|LC_|RUST_|WASM_)/.test(k)
+                        )
+                    ),
                     preopens: { '/': './' }
                 });
                 const importObject = { wasi_snapshot_preview1: wasi.wasiImport };
@@ -64,31 +68,24 @@ class EdgeRuntime {
                 throw new Error('WASM module not loaded');
             }
             
-            // Execute function with timeout
-            const result = await this.executeWithTimeout(
-                () => {
-                    const func = wasm.exports[functionName];
-                    if (!func) {
-                        throw new Error(`Function ${functionName} not found`);
-                    }
-                    return func(...params);
-                },
-                this.timeoutLimit
-            );
+            // Execute function - sync WASM cannot be aborted by timeout
+            // Use Promise.race for async functions; sync calls will block
+            const func = wasm.exports[functionName];
+            if (!func) {
+                throw new Error(`Function ${functionName} not found`);
+            }
+            
+            const result = func(...params);
             
             return {
                 success: true,
-                result,
-                executionTime: Date.now(),
-                functionName
+                data: result
             };
-            
         } catch (error) {
-            logger.error(`Edge function execution failed: ${error}`);
+            logger.error(`Edge function execution error: ${error.message}`);
             return {
                 success: false,
-                error: error.message,
-                functionName
+                error: error.message
             };
         }
     }

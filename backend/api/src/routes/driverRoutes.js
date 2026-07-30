@@ -931,7 +931,10 @@ router.post('/wallet/withdraw', authenticate, userLimiter, requirePolicy('driver
       .eq('user_id', req.user.id)
       .maybeSingle();
 
-    if (detailsErr || !details) {
+    if (detailsErr) {
+      return res.status(500).json({ error: 'Failed to fetch driver details.', details: detailsErr.message });
+    }
+    if (!details) {
       return res.status(404).json({ error: 'Driver profile details not found.' });
     }
 
@@ -1495,7 +1498,7 @@ router.get('/:id/earnings', authenticate, userLimiter, requirePolicy('driver:vie
     let totalKm = 0;
     trips.forEach(trip => {
       if (trip.distance) {
-        const distanceNum = parseInt(trip.distance.replace(/[^0-9]/g, '')) || 0;
+        const distanceNum = parseInt(String(trip.distance).replace(/[^0-9]/g, '')) || 0;
         totalKm += distanceNum;
       }
     });
@@ -1514,8 +1517,8 @@ router.get('/:id/earnings', authenticate, userLimiter, requirePolicy('driver:vie
         const prevTrip = allCompletedTrips[i - 1];
         const currTrip = allCompletedTrips[i];
         
-        const prevRoute = prevTrip.route_label.split(' → ');
-        const currRoute = currTrip.route_label.split(' → ');
+        const prevRoute = (prevTrip.route_label || '').split(' → ');
+        const currRoute = (currTrip.route_label || '').split(' → ');
         
         if (prevRoute.length === 2 && currRoute.length === 2) {
           const prevDrop = prevRoute[1].trim().toLowerCase();

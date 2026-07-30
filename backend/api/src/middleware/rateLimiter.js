@@ -178,6 +178,7 @@ const BID_MAX_REQUESTS = Number(process.env.BID_RATE_LIMIT_MAX_REQUESTS) || 30;
 const DEVICE_WINDOW_MS = Number(process.env.DEVICE_RATE_LIMIT_WINDOW_MS) || 10 * 60 * 1000;
 const DEVICE_MAX_REQUESTS = Number(process.env.DEVICE_RATE_LIMIT_MAX_REQUESTS) || 10;
 
+
 export const globalLimiter = rateLimit({
   windowMs: GLOBAL_WINDOW_MS,
   max: GLOBAL_MAX_REQUESTS,

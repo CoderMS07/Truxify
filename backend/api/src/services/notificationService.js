@@ -270,7 +270,7 @@ export async function sendPushNotification(userId, title, body, notifType, metad
   }
 
   let fcmResult;
-  try { fcmResult = await sendFcmNotification(userId, { title, body }, { notifType, ...metadata }); } catch (err) { logger.error('[NotificationService] Unexpected sendFcmNotification error: %s', err?.message ?? err); }
+  try { fcmResult = await sendFcmNotification(userId, { title, body }, { notifType, ...metadata }); } catch (err) { logger.error({ err: err?.message ?? String(err) }, 'Unexpected sendFcmNotification error'); }
   return { success: fcmResult?.success, fcm: fcmResult };
   });
 }

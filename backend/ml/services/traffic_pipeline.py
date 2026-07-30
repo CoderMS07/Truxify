@@ -51,6 +51,38 @@ class TrafficPipeline:
         self.model = self._load_or_create_model()
         self.gmaps_api_key = os.getenv('GOOGLE_MAPS_API_KEY', '')
         self.osrm_url = os.getenv('OSRM_URL', 'http://localhost:5000')
+        self._closed = False
+
+    def close(self):
+        """Dispose DB connection pool and close Redis connection.
+
+        Safe to call multiple times.
+        """
+        if self._closed:
+            return
+        try:
+            self.engine.dispose()
+        except Exception as e:
+            logger.error(f"Error disposing SQLAlchemy engine: {e}")
+        try:
+            self.redis.close()
+        except Exception as e:
+            logger.error(f"Error closing Redis connection: {e}")
+        self._closed = True
+        logger.info("TrafficPipeline resources released")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def __del__(self):
+        try:
+            if not getattr(self, '_closed', True):
+                self.close()
+        except Exception:
+            pass
         
     def _load_or_create_model(self):
         """Load existing LSTM model or create new"""
@@ -237,6 +269,7 @@ class TrafficPipeline:
         )
         
         # Save model
+        os.makedirs(os.path.dirname('models/eta_lstm.h5'), exist_ok=True)
         self.model.save('models/eta_lstm.h5')
         logger.info("Model trained and saved")
     

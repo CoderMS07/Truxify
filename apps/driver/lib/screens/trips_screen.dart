@@ -1552,10 +1552,11 @@ class _TripsScreenState extends State<TripsScreen> {
       );
     }).toList();
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: FlutterMap(
-        options: MapOptions(
+    return RepaintBoundary(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: FlutterMap(
+          options: MapOptions(
           initialCenter: points.first,
           initialZoom: 6.0,
           interactionOptions: const InteractionOptions(
@@ -1620,7 +1621,7 @@ class _TripsScreenState extends State<TripsScreen> {
           ),
         ],
       ),
-    );
+    ));
   }
 }
 

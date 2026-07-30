@@ -108,6 +108,7 @@ class _VoiceAiScreenState extends State<VoiceAiScreen> with SingleTickerProvider
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
+        if (!mounted) return;
         setState(() {
           _transcript = data['transcript']?.toString();
           _responseText = data['response_text']?.toString();
@@ -122,6 +123,7 @@ class _VoiceAiScreenState extends State<VoiceAiScreen> with SingleTickerProvider
         throw Exception('Server returned status: ${response.statusCode}');
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _isProcessing = false;
         _responseText = 'Failed to process voice query: $e';
