@@ -195,6 +195,54 @@ router.get('/', authenticate, userLimiter, requireRole(['driver']), async (req, 
 });
 
 // ============================================================================
+// 1.5 CREATE NEW LOAD OFFER (CUSTOMER)
+// POST /api/loads
+// ============================================================================
+router.post('/', authenticate, userLimiter, requireRole(['customer']), async (req, res) => {
+  try {
+    const { origin, destination, weight_tons, truck_type_required, expected_price, material_type } = req.body;
+
+    if (!origin || !origin.lat || !origin.lng) {
+      return res.status(400).json({ error: 'Origin with lat/lng is required' });
+    }
+    if (!destination || !destination.lat || !destination.lng) {
+      return res.status(400).json({ error: 'Destination with lat/lng is required' });
+    }
+
+    // Convert to PostGIS Geography POINT format
+    const pickupGeom = `POINT(${origin.lng} ${origin.lat})`;
+    const dropGeom = `POINT(${destination.lng} ${destination.lat})`;
+
+    const { data, error } = await supabase
+      .from('load_offers')
+      .insert({
+        customer_id: req.user.id,
+        pickup_address: origin.address || 'Unknown Origin',
+        drop_address: destination.address || 'Unknown Destination',
+        pickup_geom: pickupGeom,
+        drop_geom: dropGeom,
+        weight_tons: parseFloat(weight_tons),
+        truck_type_required: truck_type_required,
+        freight_value: Math.round(parseFloat(expected_price) * 100), // Assuming paisa representation
+        goods_type: material_type || 'General',
+        status: 'available'
+      })
+      .select()
+      .single();
+
+    if (error) {
+      logger.error('Failed to create load offer:', error);
+      return res.status(500).json({ error: 'Failed to create load offer', details: error.message });
+    }
+
+    res.status(201).json({ message: 'Load posted successfully', load: data });
+  } catch (err) {
+    logger.error('Internal Server Error in POST /api/loads:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
 // 2. GET SINGLE LOAD OFFER BY ID (DRIVER)
 // GET /api/loads/:id
 // ============================================================================
