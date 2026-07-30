@@ -186,10 +186,8 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
         // ── INTERACTIONS: Add to pending withdrawal instead of direct transfer ──
         pendingWithdrawals[driver] += paymentAmount;
 
-        uint256 newDeadline = block.timestamp + WITHDRAWAL_TIMEOUT;
-        if (releaseTimestamps[driver] == 0 || newDeadline < releaseTimestamps[driver]) {
-            releaseTimestamps[driver] = newDeadline;
-        }
+        // Always extend the timeout to protect newly released funds
+        releaseTimestamps[driver] = block.timestamp + WITHDRAWAL_TIMEOUT;
 
         emit WithdrawalReady(bookingId, driver, paymentAmount);
         emit PaymentReleased(bookingId, driver, paymentAmount);
@@ -231,10 +229,8 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
         // ── INTERACTIONS: Add to pending withdrawal instead of direct transfer ──
         pendingWithdrawals[customer] += refundAmount;
 
-        uint256 newDeadline = block.timestamp + WITHDRAWAL_TIMEOUT;
-        if (releaseTimestamps[customer] == 0 || newDeadline < releaseTimestamps[customer]) {
-            releaseTimestamps[customer] = newDeadline;
-        }
+        // Always extend the timeout to protect newly refunded funds
+        releaseTimestamps[customer] = block.timestamp + WITHDRAWAL_TIMEOUT;
 
         emit WithdrawalReady(bookingId, customer, refundAmount);
         emit BookingCancelled(bookingId, customer, refundAmount);
