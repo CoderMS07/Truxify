@@ -189,13 +189,14 @@ function parseCapacityFilter(value, field) {
  */
 router.post('/', authenticate, requirePolicy('truck:register'), userLimiter, validateBody(registerTruckSchema), async (req, res) => {
   const { name, number_plate, max_capacity_tons } = req.body;
+  const normalizedNumberPlate = sanitizeNumberPlate(number_plate);
 
   try {
     // Check for duplicate number plate
     const { data: existing, error: checkErr } = await supabase
       .from('trucks')
       .select('id')
-      .eq('number_plate', number_plate)
+      .eq('number_plate', normalizedNumberPlate)
       .maybeSingle();
 
     if (checkErr) {
@@ -208,7 +209,7 @@ router.post('/', authenticate, requirePolicy('truck:register'), userLimiter, val
 
     const { data: truck, error: insertErr } = await supabase
       .from('trucks')
-      .insert({ name, number_plate, max_capacity_tons, owner_id: req.user.id })
+      .insert({ name, number_plate: normalizedNumberPlate, max_capacity_tons, owner_id: req.user.id })
       .select('id, name, number_plate, max_capacity_tons, created_at')
       .single();
 
@@ -475,6 +476,20 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
 
   if (minCapFilter.value !== undefined && maxCapFilter.value !== undefined && minCapFilter.value > maxCapFilter.value) {
     return res.status(400).json({ error: 'min_capacity must be less than or equal to max_capacity' });
+  }
+
+  const cacheKey = `truck_search:${numPickupLat},${numPickupLng}:${numDropLat},${numDropLng}:${numWeightTonnes}:${parseBoolean(is_fragile)}:${parseBoolean(is_stackable)}`;
+
+  if (redisClient) {
+    try {
+      const cachedResult = await redisClient.get(cacheKey);
+      if (cachedResult) {
+        logger.info({ cacheKey }, 'Serving truck search results from Redis cache');
+        return res.json(JSON.parse(cachedResult));
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, 'Redis cache read error during search');
+    }
   }
 
   try {

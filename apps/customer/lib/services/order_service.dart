@@ -246,7 +246,9 @@ class OrderService {
         throw StateError('Unexpected truck search response type');
       }
       final listBody = body;
-      return listBody.cast<Map<String, dynamic>>();
+      return listBody
+          .map((e) => e is Map ? Map<String, dynamic>.from(e) : <String, dynamic>{})
+          .toList(growable: false);
     } on ApiException catch (e) {
       throw StateError(e.message);
     } catch (e) {

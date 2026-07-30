@@ -18,6 +18,7 @@ function createMockSupabase(store = {}) {
           order() { return this; },
           limit(n) { this._limit = n; return this; },
           single() { this._single = true; return this; },
+          maybeSingle() { this._maybeSingle = true; return this; },
           select(cols) { this._select = cols; return this; },
           insert(data) {
             this._mode = 'insert';

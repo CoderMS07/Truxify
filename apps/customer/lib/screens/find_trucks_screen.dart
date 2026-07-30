@@ -256,6 +256,7 @@ class _FindTrucksScreenState extends State<FindTrucksScreen> {
       return;
     }
 
+    if (!mounted) return;
     setState(() {
       _selectedDate = DateUtils.dateOnly(pickedDate);
       _dateController.text = _formatDateLabel(_selectedDate!);
@@ -275,6 +276,7 @@ class _FindTrucksScreenState extends State<FindTrucksScreen> {
       return;
     }
 
+    if (!mounted) return;
     setState(() {
       _selectedTime = pickedTime;
       _timeController.text = _formatTimeLabel(pickedTime);

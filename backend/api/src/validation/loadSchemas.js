@@ -33,3 +33,10 @@ export const loadFilterQuerySchema = z.object({
     });
   }
 });
+
+export const createLoadSchema = z.object({
+  pickup_location: z.string().min(5).max(255),
+  drop_location: z.string().min(5).max(255),
+  weight_tons: z.number().positive().max(50),
+  goods_type: z.string().min(2).max(100)
+});

@@ -111,7 +111,9 @@ class WeighStationService {
         stationId: response['stationId'] ?? stationKey,
       );
 
-      _eventController.add(event);
+      if (!_eventController.isClosed) {
+        _eventController.add(event);
+      }
     } catch (e) {
       debugPrint('[WeighStationService] Error checking bypass status: $e');
     }

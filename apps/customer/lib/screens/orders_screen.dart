@@ -324,6 +324,7 @@ class _OrdersScreenState extends State<OrdersScreen>
           ),
           callback: (payload) {
             debugPrint('Realtime customer orders list update: ${payload.newRecord}');
+            if (!mounted) return;
             _loadOrders();
           },
         )

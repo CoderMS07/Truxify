@@ -209,7 +209,7 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  void _verifyOtp() async {
+  Future<void> _verifyOtp() async {
     final otp = _otpControllers.map((controller) => controller.text).join();
 
     if (otp.length != 6 || !RegExp(r'^\d{6}$').hasMatch(otp)) {
