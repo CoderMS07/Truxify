@@ -201,6 +201,7 @@ contract AtomicSwap is Ownable, ReentrancyGuard, Pausable {
         });
 
         usedHashLocks[hashLock] = true;
+        userSwaps[msg.sender].push(swapId);
 
         emit CrossChainSwapCreated(swapId, block.chainid, destChainId);
         return swapId;
