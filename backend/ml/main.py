@@ -474,6 +474,11 @@ async def predict_eta_endpoint(input: ETAPredictInput, _auth=Depends(verify_api_
 
 @app.post("/match/bilateral", response_model=BilateralMatchOutput)
 async def bilateral_match_endpoint(input: BilateralMatchInput, _auth=Depends(verify_api_key)):
+    """
+    Two-Sided Bilateral Matcher endpoint.
+    Accepts a list of AvailableLoads and Drivers to find the most optimal matches.
+    Related Issue: #5552
+    """
     try:
         loads = [load.model_dump() for load in input.loads]
         drivers = [driver.model_dump() for driver in input.drivers]
