@@ -20,6 +20,10 @@ class FraudDetectionService {
     this._cleanupInterval = setInterval(() => this._evictStale(), 300_000); // every 5 min
     this._cleanupInterval.unref?.();
     
+    this.pendingUpserts = new Map();
+    this._flushInterval = setInterval(() => this._flushPendingUpserts(), 5000); // flush every 5 seconds
+    this._flushInterval.unref?.();
+    
     // Initialize ML models (in production, load from FastAPI)
     this.models = {
       behavioral: null,
@@ -62,20 +66,14 @@ class FraudDetectionService {
         this.behavioralProfiles.set(userId, profile);
       }
 
-      // Persist to Supabase to prevent data loss across Redis expirations
-      const { error: dbErr } = await supabase
-        .from('behavioral_profiles')
-        .upsert({
-          user_id: userId,
-          events: profile.events,
-          patterns: profile.patterns,
-          last_activity: new Date(profile.lastActivity).toISOString(),
-          updated_at: new Date().toISOString()
-        }, { onConflict: 'user_id' });
-
-      if (dbErr) {
-        logger.error('[FraudDetection] Failed to persist behavioral profile to DB:', dbErr.message);
-      }
+      // Queue for batch upsert instead of awaiting individual upsert to prevent event loop blocking
+      this.pendingUpserts.set(userId, {
+        user_id: userId,
+        events: profile.events,
+        patterns: profile.patterns,
+        last_activity: new Date(profile.lastActivity).toISOString(),
+        updated_at: new Date().toISOString()
+      });
 
       // Calculate risk score
       const riskScore = await this.calculateBehavioralRisk(profile);
@@ -140,6 +138,26 @@ class FraudDetectionService {
       lastActivity: Date.now(),
       createdAt: Date.now()
     };
+  }
+
+  async _flushPendingUpserts() {
+    if (this.pendingUpserts.size === 0 || !supabase) return;
+    
+    // Extract records and clear the map for the next batch
+    const records = Array.from(this.pendingUpserts.values());
+    this.pendingUpserts.clear();
+
+    try {
+      const { error: dbErr } = await supabase
+        .from('behavioral_profiles')
+        .upsert(records, { onConflict: 'user_id' });
+
+      if (dbErr) {
+        logger.error('[FraudDetection] Failed to batch persist behavioral profiles to DB:', dbErr.message);
+      }
+    } catch (error) {
+      logger.error('[FraudDetection] Batch upsert error:', error);
+    }
   }
 
   updateBehavioralPatterns(profile, eventData) {
