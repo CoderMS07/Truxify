@@ -143,7 +143,7 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to create booking')),
+        SnackBar(content: Text('Failed to create booking: $e')),
       );
     } finally {
       if (mounted) {
