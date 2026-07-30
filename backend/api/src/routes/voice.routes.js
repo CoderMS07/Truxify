@@ -2,7 +2,6 @@ import express from 'express';
 import multer from 'multer';
 import voiceAiService from '../services/voice/VoiceAiService.js';
 import logger from '../middleware/logger.js';
-// Assuming you have an auth middleware, we'll import it, or just leave it open for now
 import { authenticate } from '../middleware/auth.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 
