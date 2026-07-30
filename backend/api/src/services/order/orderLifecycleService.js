@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { DomainError } from './domainError.js';
 import { DeliveryVerificationService } from './deliveryVerificationService.js';
-import { expireDeliveryOtps } from '../notificationService.js';
+import { expireDeliveryOtps, sendPushNotification } from '../notificationService.js';
 import { acquireLock, releaseLock } from '../../lib/redisLock.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 import {
@@ -15,7 +15,7 @@ import { getRouteEstimate } from '../osrm.js';
 import { optimizeWaypoints } from '../routingService.js';
 import { predictPrice } from '../ml.js';
 import { getLiveTrafficMultiplier } from '../trafficService.js';
-import { eventBus } from '../../core/events.js';
+import { eventBus } from '../../core/events/index.js';
 import logger from '../../middleware/logger.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -33,7 +33,7 @@ export class OrderLifecycleService {
     this.orderRepository = orderRepository;
     this.orderTimelineService = orderTimelineService;
     this.bidAcceptanceService = bidAcceptanceService;
-    this.deliveryVerification = new DeliveryVerificationService(orderRepository);
+    this.deliveryVerification = deliveryVerificationService || new DeliveryVerificationService(orderRepository);
   }
 
   async createOrder(customerId, customerName, body) {
@@ -282,33 +282,49 @@ export class OrderLifecycleService {
 
   async submitBid(loadOfferId, driverId, bidAmount) {
     return measureExecution('OrderLifecycleService.submitBid', async () => {
-    const { data: offer, error: offerErr } = await this.orderRepository.findLoadOfferById(loadOfferId, 'id, status, customer_id');
-    if (offerErr || !offer) throw new DomainError(404, { error: 'Load offer not found.' });
-    if (offer.status !== 'available') throw new DomainError(410, { error: 'Load is no longer available for bidding.' });
-    if (offer.customer_id === driverId) throw new DomainError(403, { error: 'You cannot bid on your own load offer' });
+    const lockKey = `lock:submitBid:${driverId}:${loadOfferId}`;
+    const acquired = await acquireLock(lockKey, 5000);
+    if (!acquired) throw new DomainError(409, { error: 'Duplicate bid submission in progress.' });
 
-    const { data: driverDetails, error: driverDetailsErr } = await this.orderRepository.findDriverDetailMinimal(driverId);
-    if (driverDetailsErr) throw new DomainError(500, { error: 'Failed to verify driver profile.', details: driverDetailsErr.message });
-    if (!driverDetails?.truck_id) throw new DomainError(400, { error: 'You must assign a valid truck to your profile before bidding on loads' });
+    try {
+      const { data: offer, error: offerErr } = await this.orderRepository.findLoadOfferById(loadOfferId, 'id, status, customer_id');
+      if (offerErr || !offer) throw new DomainError(404, { error: 'Load offer not found.' });
+      if (offer.status !== 'available') throw new DomainError(410, { error: 'Load is no longer available for bidding.' });
+      if (offer.customer_id === driverId) throw new DomainError(403, { error: 'You cannot bid on your own load offer' });
 
-    const { data: truck, error: truckErr } = await this.orderRepository.findTruckById(driverDetails.truck_id);
-    if (truckErr) throw new DomainError(500, { error: 'Failed to verify assigned truck.', details: truckErr.message });
-    if (!truck) throw new DomainError(400, { error: 'Assigned truck record could not be found' });
+      const { data: driverDetails, error: driverDetailsErr } = await this.orderRepository.findDriverDetailMinimal(driverId);
+      if (driverDetailsErr) throw new DomainError(500, { error: 'Failed to verify driver profile.', details: driverDetailsErr.message });
+      if (!driverDetails?.truck_id) throw new DomainError(400, { error: 'You must assign a valid truck to your profile before bidding on loads' });
 
-    const { data: existingBid, error: existingBidErr } = await this.orderRepository.findExistingBid(loadOfferId, driverId, 'pending');
-    if (existingBidErr) throw new DomainError(500, { error: 'Failed to verify existing bids.', details: existingBidErr.message });
-    if (existingBid) throw new DomainError(409, { error: 'You already have a pending bid for this load.' });
+      const { data: truck, error: truckErr } = await this.orderRepository.findTruckById(driverDetails.truck_id);
+      if (truckErr) throw new DomainError(500, { error: 'Failed to verify assigned truck.', details: truckErr.message });
+      if (!truck) throw new DomainError(400, { error: 'Assigned truck record could not be found' });
 
-    const { data: bid, error: bidErr } = await this.orderRepository.createBid({
-      load_id: loadOfferId,
-      driver_id: driverId,
-      bid_amount: bidAmount,
-      status: 'pending',
-    });
+      const { data: existingBid, error: existingBidErr } = await this.orderRepository.findExistingBid(loadOfferId, driverId, 'pending');
+      if (existingBidErr) throw new DomainError(500, { error: 'Failed to verify existing bids.', details: existingBidErr.message });
+      if (existingBid) throw new DomainError(409, { error: 'You already have a pending bid for this load.' });
 
-    if (bidErr) throw new DomainError(500, { error: 'Failed to record bid.', details: bidErr.message });
+      const { data: bid, error: bidErr } = await this.orderRepository.createBid({
+        load_id: loadOfferId,
+        driver_id: driverId,
+        bid_amount: bidAmount,
+        status: 'pending',
+      });
 
-    return { message: 'Bid submitted successfully.', bid };
+      if (bidErr) throw new DomainError(500, { error: 'Failed to record bid.', details: bidErr.message });
+
+      sendPushNotification(
+        offer.customer_id,
+        'New Bid Received',
+        `A driver has submitted a bid of ₹${bidAmount} for your order.`,
+        'new_bid',
+        { loadOfferId, bidId: bid.id }
+      ).catch(err => logger.error(`[FCM] Failed to notify customer of new bid: ${err.message}`));
+
+      return { message: 'Bid submitted successfully.', bid };
+    } finally {
+      await releaseLock(lockKey);
+    }
     });
   }
 
@@ -438,6 +454,14 @@ export class OrderLifecycleService {
       });
     }
 
+    sendPushNotification(
+      order.customer_id,
+      'Order Update',
+      `Order ${order.order_display_id} is now: ${milestone}`,
+      'order_update',
+      { orderId, orderDisplayId: order.order_display_id, milestone }
+    ).catch(err => logger.error(`[FCM] Failed to notify customer of order update: ${err.message}`));
+
     return { order: updatedOrder, milestone, status };
     });
   }
@@ -445,7 +469,7 @@ export class OrderLifecycleService {
   async verifyDeliveryFn(orderId, driverId, otp) {
     return measureExecution('OrderLifecycleService.verifyDeliveryFn', async () => {
       const lockKey = `escrow_lock:${orderId}`;
-      const lockValue = await acquireLock(lockKey, 30000);
+      const lockValue = await acquireLock(lockKey, 120000);
       if (!lockValue) {
         throw new DomainError(409, { error: 'Delivery verification is currently being processed. Please try again later.' });
       }
@@ -540,10 +564,7 @@ export class OrderLifecycleService {
         updated_at: new Date().toISOString(),
       };
 
-      const { data: updatedOrder, error: updateErr } = await this.orderRepository.updateOrder(order.id, updates);
-      if (updateErr) throw new DomainError(500, { error: 'Failed to update order.', details: updateErr.message });
-
-      const { error: offerUpdateErr } = await this.orderRepository.updateLoadOffer(order.order_display_id, {
+      const offerUpdates = {
         drop_address,
         drop_lat: Number(drop_lat),
         drop_lng: Number(drop_lng),
@@ -553,12 +574,19 @@ export class OrderLifecycleService {
         toll_cost: pricing.tollEstimate,
         net_profit: pricing.netProfit,
         extra_distance_km: pricing.distanceKm,
+      };
+
+      const { data: updatedOrder, error: updateErr } = await this.orderRepository.executeRpc('update_order_and_load_offer', {
+        p_order_id: order.id,
+        p_order_display_id: order.order_display_id,
+        p_order_updates: updates,
+        p_offer_updates: offerUpdates
       });
 
-      if (offerUpdateErr) {
+      if (updateErr) {
         throw new DomainError(500, {
-          error: 'Failed to update load offer after drop change.',
-          details: offerUpdateErr.message,
+          error: 'Failed to update order and load offer atomically after drop change.',
+          details: updateErr.message,
         });
       }
 
@@ -610,18 +638,19 @@ export class OrderLifecycleService {
         throw new DomainError(409, { error: 'Cannot cancel: delivery OTP has already been verified.' });
       }
 
-      if (currentOrder.status === 'cancelled' && currentOrder.escrow_status === 'refunded') {
+      const requiresRefund = ['funded', 'refund_pending', 'refund_failed'].includes(currentOrder.escrow_status);
+
+      if (currentOrder.status === 'cancelled' && (!requiresRefund || currentOrder.escrow_status === 'refunded')) {
         return {
           status: 200,
           body: {
-            message: 'Order was already cancelled and refunded.',
+            message: currentOrder.escrow_status === 'refunded' ? 'Order was already cancelled and refunded.' : 'Order was already cancelled.',
             cancellation_fee: currentOrder.cancellation_fee ?? 0,
             order: currentOrder,
           },
         };
       }
 
-      const requiresRefund = ['funded', 'refund_pending', 'refund_failed'].includes(currentOrder.escrow_status);
       let workingOrder = currentOrder;
 
       if (requiresRefund && (currentOrder.status !== 'cancelled' || currentOrder.escrow_status !== 'refund_pending')) {
@@ -661,14 +690,14 @@ export class OrderLifecycleService {
           if (refundTxHash) {
             receipt = await confirmEscrowRefund(refundTxHash);
           } else {
-            const submitted = await submitEscrowRefund(order.order_display_id);
+            const submitted = await submitEscrowRefund(workingOrder.order_display_id);
             refundTxHash = submitted.txHash;
             if (!refundTxHash || !submitted.waitForConfirmation) {
               throw new Error('Escrow refund transaction was not submitted.');
             }
 
             const submittedAt = new Date().toISOString();
-            await this.orderRepository.updateOrder(order.id, {
+            await this.orderRepository.updateOrder(currentOrder.id, {
               refund_tx_hash: refundTxHash,
               escrow_refund_submitted_at: submittedAt,
               updated_at: submittedAt,
@@ -679,7 +708,7 @@ export class OrderLifecycleService {
 
           const refundedAt = new Date().toISOString();
           const { data: updatedOrder, error: updateErr } = await this.orderRepository.updateOrderWithFilter(
-            order.id,
+            currentOrder.id,
             {
               status: 'cancelled',
               cancellation_reason: reason ?? workingOrder.cancellation_reason,
@@ -706,8 +735,8 @@ export class OrderLifecycleService {
             };
           }
 
-          await this.orderTimelineService.insertCancelEvent(order.order_display_id);
-          await expireDeliveryOtps(order.id);
+          await this.orderTimelineService.insertCancelEvent(currentOrder.order_display_id);
+          await expireDeliveryOtps(currentOrder.id);
 
           return {
             status: 200,
@@ -721,7 +750,7 @@ export class OrderLifecycleService {
           logger.error('[escrow] Refund failed for order', orderId, ':', refundErr.message);
           const failedAt = new Date().toISOString();
           const nextEscrowStatus = refundTxHash ? 'refund_pending' : 'refund_failed';
-          await this.orderRepository.updateOrder(order.id, {
+          await this.orderRepository.updateOrder(currentOrder.id, {
             status: 'cancelled',
             escrow_status: nextEscrowStatus,
             refund_tx_hash: refundTxHash,
@@ -740,8 +769,8 @@ export class OrderLifecycleService {
             },
           };
         }
-      } else if (order.escrow_booking_id) {
-        logger.info(`[escrow] Escrow not funded (status: ${order.escrow_status}) - skipping on-chain refund.`);
+      } else if (currentOrder.escrow_booking_id) {
+        logger.info(`[escrow] Escrow not funded (status: ${currentOrder.escrow_status}) - skipping on-chain refund.`);
       }
 
       const updatePayload = {
@@ -751,7 +780,7 @@ export class OrderLifecycleService {
       };
 
       const { data: updatedOrder, error: updateErr } = await this.orderRepository.updateOrderGuardStatus(
-        order.id,
+        currentOrder.id,
         updatePayload,
         ['delivered', 'payment_released', 'cancelled']
       );
@@ -765,8 +794,8 @@ export class OrderLifecycleService {
 
       const cancellationFee = updatedOrder?.cancellation_fee ?? 0;
 
-      await this.orderTimelineService.insertCancelEvent(order.order_display_id);
-      await expireDeliveryOtps(order.id);
+      await this.orderTimelineService.insertCancelEvent(currentOrder.order_display_id);
+      await expireDeliveryOtps(currentOrder.id);
 
       return {
         status: 200,

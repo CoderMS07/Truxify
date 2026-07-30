@@ -103,9 +103,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
         if (data is Map<String, dynamic>) {
           setState(() {
-            _platformRating = data['supabaseRating'] != null
-                ? (data['supabaseRating'] as num).toDouble()
-                : null;
+            _platformRating = (data['supabaseRating'] as num?)?.toDouble() ?? 0.0;
             _onChainScore = data['onChainScore'] != null
                 ? (data['onChainScore'] as num).toInt()
                 : null;
@@ -1012,9 +1010,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                   subtitle: Text(
-                    _walletAddress.isNotEmpty
+                    _walletAddress.length >= 16
                         ? '${_walletAddress.substring(0, 10)}...${_walletAddress.substring(_walletAddress.length - 6)}'
-                        : AppLocalizations.of(context)!.notSet,
+                        : _walletAddress.isNotEmpty
+                            ? _walletAddress
+                            : AppLocalizations.of(context)!.notSet,
                     style: GoogleFonts.dmSans(
                       fontSize: 12,
                       color: TruxifyColors.adaptiveSecondaryText(context),

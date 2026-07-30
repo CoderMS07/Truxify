@@ -168,11 +168,6 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
         ownership.tokenId = assetId;
         ownership.amount += amount;
         ownership.purchasedAt = block.timestamp;
-        bool isNewHolder = fractionalOwnership[assetId][msg.sender].amount == 0;
-        fractionalOwnership[assetId][msg.sender].owner = msg.sender;
-        fractionalOwnership[assetId][msg.sender].tokenId = assetId;
-        fractionalOwnership[assetId][msg.sender].amount += amount;
-        fractionalOwnership[assetId][msg.sender].purchasedAt = block.timestamp;
 
         // Mint tokens
         _mint(msg.sender, amount);
@@ -181,10 +176,6 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
         if (msg.value > totalCost) {
             (bool refunded, ) = payable(msg.sender).call{value: msg.value - totalCost}("");
             require(refunded, "Refund failed");
-        }
-
-        if (isNewHolder) {
-            userAssets[msg.sender].push(assetId);
         }
 
         emit FractionalPurchase(assetId, msg.sender, amount);

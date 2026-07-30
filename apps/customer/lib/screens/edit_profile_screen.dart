@@ -54,6 +54,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       } else if (mounted) {
         setState(() {
           _isLoading = false;
+          _loadError = AppLocalizations.of(context)!.failedToLoadProfile;
           _loadError = 'Profile not found';
         });
       }

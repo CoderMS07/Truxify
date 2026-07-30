@@ -22,6 +22,7 @@ except ImportError:
 import redis
 import os
 import logging
+from functools import partial
 
 logger = logging.getLogger(__name__)
 Base = declarative_base()
@@ -48,9 +49,42 @@ class TrafficPipeline:
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
         self.redis = redis.Redis.from_url(redis_url)
+        self._loop = asyncio.get_event_loop()
         self.model = self._load_or_create_model()
         self.gmaps_api_key = os.getenv('GOOGLE_MAPS_API_KEY', '')
         self.osrm_url = os.getenv('OSRM_URL', 'http://localhost:5000')
+        self._closed = False
+
+    def close(self):
+        """Dispose DB connection pool and close Redis connection.
+
+        Safe to call multiple times.
+        """
+        if self._closed:
+            return
+        try:
+            self.engine.dispose()
+        except Exception as e:
+            logger.error(f"Error disposing SQLAlchemy engine: {e}")
+        try:
+            self.redis.close()
+        except Exception as e:
+            logger.error(f"Error closing Redis connection: {e}")
+        self._closed = True
+        logger.info("TrafficPipeline resources released")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def __del__(self):
+        try:
+            if not getattr(self, '_closed', True):
+                self.close()
+        except Exception:
+            pass
         
     def _load_or_create_model(self):
         """Load existing LSTM model or create new"""
@@ -61,6 +95,11 @@ class TrafficPipeline:
         else:
             logger.info("Creating new LSTM model")
             return self._create_lstm_model()
+
+    def close(self):
+        """Dispose database connections and close Redis connection."""
+        self.engine.dispose()
+        self.redis.close()
     
     def _create_lstm_model(self):
         """Create LSTM model for ETA prediction"""
@@ -116,14 +155,16 @@ class TrafficPipeline:
                 session.close()
             
             # Cache in Redis
-            self.redis.setex(
-                f"traffic:{route_id}",
-                300,  # 5 minutes
-                json.dumps({
-                    'speed': traffic_entry.traffic_speed,
-                    'congestion': traffic_entry.congestion_level,
-                    'timestamp': traffic_entry.timestamp.isoformat()
-                })
+            await self._loop.run_in_executor(
+                None, partial(self.redis.setex,
+                    f"traffic:{route_id}",
+                    300,
+                    json.dumps({
+                        'speed': traffic_entry.traffic_speed,
+                        'congestion': traffic_entry.congestion_level,
+                        'timestamp': traffic_entry.timestamp.isoformat()
+                    })
+                )
             )
             
             logger.info(f"Traffic data ingested for route {route_id}")
@@ -181,7 +222,7 @@ class TrafficPipeline:
     
     async def get_real_time_traffic(self, route_id: str):
         """Get real-time traffic data for a route"""
-        cached = self.redis.get(f"traffic:{route_id}")
+        cached = await self._loop.run_in_executor(None, partial(self.redis.get, f"traffic:{route_id}"))
         if cached:
             return json.loads(cached)
         return None
@@ -204,8 +245,10 @@ class TrafficPipeline:
     def train_model(self, epochs=50, batch_size=32):
         """Train LSTM model on historical data"""
         session = self.Session()
-        data = session.query(TrafficData).all()
-        session.close()
+        try:
+            data = session.query(TrafficData).all()
+        finally:
+            session.close()
         
         if len(data) < 100:
             logger.warning("Not enough data for training")
@@ -235,6 +278,7 @@ class TrafficPipeline:
         )
         
         # Save model
+        os.makedirs(os.path.dirname('models/eta_lstm.h5'), exist_ok=True)
         self.model.save('models/eta_lstm.h5')
         logger.info("Model trained and saved")
     
@@ -269,22 +313,24 @@ class TrafficPipeline:
                 # Predict ETA
                 eta_seconds = self.predict_eta(features)
                 
-                if eta_seconds:
+                if eta_seconds is not None:
                     eta_minutes = eta_seconds / 60
                     eta_string = str(timedelta(seconds=int(eta_seconds)))
                     
                     # Update Redis
-                    self.redis.setex(
-                        f"eta:order:{order_id}",
-                        300,  # 5 minutes
-                        json.dumps({
-                            'eta_seconds': eta_seconds,
-                            'eta_minutes': eta_minutes,
-                            'eta_string': eta_string,
-                            'timestamp': datetime.now().isoformat(),
-                            'traffic_speed': traffic_data.traffic_speed,
-                            'congestion_level': traffic_data.congestion_level
-                        })
+                    await self._loop.run_in_executor(
+                        None, partial(self.redis.setex,
+                            f"eta:order:{order_id}",
+                            300,
+                            json.dumps({
+                                'eta_seconds': eta_seconds,
+                                'eta_minutes': eta_minutes,
+                                'eta_string': eta_string,
+                                'timestamp': datetime.now().isoformat(),
+                                'traffic_speed': traffic_data.traffic_speed,
+                                'congestion_level': traffic_data.congestion_level
+                            })
+                        )
                     )
                     
                     logger.info(f"ETA updated for order {order_id}: {eta_string}")
@@ -313,10 +359,12 @@ class TrafficPipeline:
         """Get traffic forecast for next N hours"""
         # Get historical data for this route
         session = self.Session()
-        data = session.query(TrafficData).filter(
-            TrafficData.route_id == route_id
-        ).order_by(TrafficData.timestamp.desc()).limit(24).all()
-        session.close()
+        try:
+            data = session.query(TrafficData).filter(
+                TrafficData.route_id == route_id
+            ).order_by(TrafficData.timestamp.desc()).limit(24).all()
+        finally:
+            session.close()
         
         if len(data) < 10:
             return {'forecast': None, 'confidence': 'low'}
