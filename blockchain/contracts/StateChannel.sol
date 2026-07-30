@@ -265,13 +265,29 @@ contract StateChannel is Ownable, ReentrancyGuard, Pausable {
         require(!dispute.resolved, "Already resolved");
         require(block.timestamp >= dispute.startedAt + SETTLEMENT_PERIOD, "Settlement period not elapsed");
 
-        // Verify proof and resolve
-        // In production: verify state proof
+        Channel storage channel = channels[channelId];
+
+        // Decode proof: (balanceA, balanceB, signatureA, signatureB)
+        (uint256 proofBalanceA, uint256 proofBalanceB, bytes memory sigA, bytes memory sigB) =
+            abi.decode(proof, (uint256, uint256, bytes, bytes));
+
+        // Verify that balances sum to the channel's total
+        uint256 totalBalance = channel.balanceA + channel.balanceB;
+        require(proofBalanceA + proofBalanceB == totalBalance, "Invalid proof balances");
+
+        // Verify that the proof is signed by the challenger (the party who raised the dispute)
+        bytes32 stateHash = keccak256(abi.encodePacked(
+            channelId, proofBalanceA, proofBalanceB, dispute.challenger
+        ));
+        require(_verifySignature(stateHash, sigA, dispute.challenger), "Invalid challenger signature");
+
         dispute.resolved = true;
 
-        // Reopen channel with disputed state
-        Channel storage channel = channels[channelId];
-        channel.isOpen = true;
+        // Update to disputed state and settle
+        channel.balanceA = proofBalanceA;
+        channel.balanceB = proofBalanceB;
+
+        _settleChannel(channelId);
 
         emit DisputeResolved(channelId, true);
     }
