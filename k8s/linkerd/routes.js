@@ -32,7 +32,7 @@ router.get('/linkerd/endpoints', async (req, res) => {
 router.get('/linkerd/top-routes', async (req, res) => {
     try {
         const { namespace, limit } = req.query;
-        const routes = await linkerdService.getTopRoutes(namespace, parseInt(limit) || 10);
+        const routes = await linkerdService.getTopRoutes(namespace, parseInt(limit, 10) || 10);
         res.json({ success: true, data: routes });
     } catch (error) {
         logger.error('Top routes error:', error);
