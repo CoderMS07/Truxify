@@ -315,13 +315,24 @@ class FraudDetectionService {
     }
   }
 
+  sanitizeUserId(userId) {
+    if (typeof userId !== 'string') return '';
+    if (/[,)(\‘\"\s]/.test(userId)) {
+      logger.warn(`[FraudDetection] Rejected userId with invalid characters: ${userId}`);
+      return '';
+    }
+    return userId;
+  }
+
   async getUserConnections(userId) {
     if (!supabase) return [];
+    const safeUserId = this.sanitizeUserId(userId);
+    if (!safeUserId) return [];
     // Get all connections (orders, trips, shared routes)
     const { data: orders, error } = await supabase
       .from('orders')
       .select('customer_id, driver_id')
-      .or(`customer_id.eq.${userId},driver_id.eq.${userId}`);
+      .or(`customer_id.eq.${safeUserId},driver_id.eq.${safeUserId}`);
 
     if (error) {
       logger.error('Failed to load user fraud connections:', error);
@@ -347,10 +358,13 @@ class FraudDetectionService {
   async getBatchUserConnections(userIds) {
     if (userIds.length === 0) return {};
 
+    const safeIds = userIds.map(id => this.sanitizeUserId(id)).filter(Boolean);
+    if (safeIds.length === 0) return {};
+
     const { data: orders, error } = await supabase
       .from('orders')
       .select('customer_id, driver_id')
-      .or(userIds.map(id => `customer_id.eq.${id}`).join(',') + ',' + userIds.map(id => `driver_id.eq.${id}`).join(','));
+      .or(safeIds.map(id => `customer_id.eq.${id}`).join(',') + ',' + safeIds.map(id => `driver_id.eq.${id}`).join(','));
 
     if (error) {
       logger.error('Failed to load batch user fraud connections:', error);
