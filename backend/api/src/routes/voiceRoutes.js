@@ -38,12 +38,12 @@ router.post('/query', authenticate, userLimiter, upload.single('file'), async (r
 });
 
 router.get('/audio/:id', authenticate, userLimiter, (req, res) => {
-  const buffer = audioCache.get(req.params.id);
-  if (!buffer) {
+  const entry = audioCache.get(req.params.id);
+  if (!entry) {
     return res.status(404).json({ error: 'Audio not found' });
   }
   res.set('Content-Type', 'audio/mpeg');
-  res.send(buffer);
+  res.send(entry.buffer);
 });
 
 export default router;
