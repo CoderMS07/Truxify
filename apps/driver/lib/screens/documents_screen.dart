@@ -97,7 +97,8 @@ class DriverDocument {
       return '${dt.day.toString().padLeft(2, '0')}/'
           '${dt.month.toString().padLeft(2, '0')}/'
           '${dt.year}';
-    } catch (_) {
+    } catch (e) {
+      debugPrint('DocumentsScreen: failed to parse date "$raw": $e');
       return raw;
     }
   }
