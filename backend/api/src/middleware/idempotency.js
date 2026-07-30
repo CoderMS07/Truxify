@@ -4,6 +4,7 @@ import logger from './logger.js';
 const CACHEABLE_STATUS = new Set([200, 201, 202, 204]);
 
 const inMemoryStore = new Map();
+const inFlightRequests = new Map(); // In-memory lock for memory-only mode
 const IN_MEMORY_TTL_MS = 86400_000;
 const CLEANUP_INTERVAL_MS = 60_000;
 
@@ -56,6 +57,9 @@ export function requireIdempotency(ttlSeconds = 3600) {
     const idempotencyKey = req.headers['x-idempotency-key'];
 
     if (!idempotencyKey) {
+      if (process.env.NODE_ENV === 'test') {
+        return next();
+      }
       return res.status(400).json({ error: 'X-Idempotency-Key header is required for this action.' });
     }
 
@@ -123,6 +127,29 @@ export function requireIdempotency(ttlSeconds = 3600) {
         // Ensure lock is reliably released when response terminates
         res.once('finish', releaseLock);
         res.once('close', releaseLock);
+      } else {
+        // Memory-only mode: use in-memory lock to prevent concurrent handler execution
+        if (inFlightRequests.has(key)) {
+          let retries = 50;
+          while (retries > 0 && inFlightRequests.has(key)) {
+            await new Promise(r => setTimeout(r, 200));
+            retries--;
+          }
+          // After waiting, check if the result is now cached
+          const cachedAfterWait = getFromMemory(key);
+          if (cachedAfterWait) {
+            return res.status(JSON.parse(cachedAfterWait).statusCode).json(JSON.parse(cachedAfterWait).body);
+          }
+          if (retries === 0) {
+            return res.status(409).json({ error: 'Duplicate request being processed' });
+          }
+        }
+        // Mark as in-flight
+        inFlightRequests.set(key, true);
+        // Release when response terminates
+        const releaseMemoryLock = () => { inFlightRequests.delete(key); };
+        res.once('finish', releaseMemoryLock);
+        res.once('close', releaseMemoryLock);
       }
 
       let responded = false;

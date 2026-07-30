@@ -132,6 +132,29 @@ export function userKeyGenerator(req) {
   return safeIpKeyGenerator(req);
 }
 
+/**
+ * Returns a rate-limit handler that logs to Sentry and responds with 429.
+ */
+function sentryAlertHandler(limiterName) {
+  return (req, res) => {
+    logger.warn(
+      {
+        requestId: req.requestId,
+        ip: safeIpKeyGenerator(req),
+        path: req.originalUrl,
+        method: req.method,
+        userAgent: req.get('user-agent'),
+      },
+      `Rate limit exceeded (${limiterName})`
+    );
+    Sentry.captureMessage(`Rate limit exceeded: ${limiterName}`, 'warning');
+    res.status(429).json({
+      error: 'Rate limit exceeded',
+      retryAfter: 60,
+    });
+  };
+}
+
 // Coarse, pre-auth IP limiter. It runs before authentication, so it can only
 // key by IP; kept generous so that legitimate users sharing a NAT'd IP are not
 // throttled by each other. Per-user fairness is enforced by userLimiter once
@@ -154,6 +177,21 @@ const BID_MAX_REQUESTS = Number(process.env.BID_RATE_LIMIT_MAX_REQUESTS) || 30;
 
 const DEVICE_WINDOW_MS = Number(process.env.DEVICE_RATE_LIMIT_WINDOW_MS) || 10 * 60 * 1000;
 const DEVICE_MAX_REQUESTS = Number(process.env.DEVICE_RATE_LIMIT_MAX_REQUESTS) || 10;
+
+const sentryAlertHandler = (limiterName) => (req, res, next, options) => {
+  logger.warn({ ip: req.ip, path: req.originalUrl, limiter: limiterName }, 'Rate limit exceeded');
+
+  Sentry.withScope((scope) => {
+    scope.setTag('event_type', 'rate_limit_exceeded');
+    scope.setTag('limiter', limiterName);
+    scope.setExtra('ip', req.ip);
+    scope.setExtra('path', req.originalUrl);
+    scope.setExtra('headers', req.headers);
+    Sentry.captureMessage(`IP ${req.ip} exceeded rate limit on ${req.originalUrl} (${limiterName})`, 'warning');
+  });
+
+  return res.status(options.statusCode).json(options.message);
+};
 
 export const globalLimiter = rateLimit({
   windowMs: GLOBAL_WINDOW_MS,

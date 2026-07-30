@@ -20,13 +20,12 @@ import { escrowRelease as defaultEscrowRelease } from '../escrow.js';
 import logger from '../../middleware/logger.js';
 import { OrderTimelineService } from './orderTimelineService.js';
 
-const orderTimelineService = new OrderTimelineService(supabase);
-
 const DELIVERY_OTP_READY_STATUSES = new Set(['arriving']);
 
 export class DeliveryVerificationService {
   constructor(orderRepository, deps = {}) {
     this.orderRepository = orderRepository;
+    this.orderTimelineService = deps.orderTimelineService || new OrderTimelineService(supabase);
     this.notificationService = deps.notificationService || {
       sendDeliveryOtpNotification,
       storeDeliveryOtp,
@@ -212,7 +211,7 @@ export class DeliveryVerificationService {
     // 2. Execute Postgres RPC to complete the trip AFTER blockchain success
     const isRetryForStuckEscrow = order.status === 'payment_released' && ['funded', 'release_failed'].includes(order.escrow_status);
 
-    let verifiedOrder = order;
+    let verifiedOrder;
     let tripData = null;
 
     if (!isRetryForStuckEscrow) {

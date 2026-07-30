@@ -213,7 +213,7 @@ contract DAO is Ownable, ReentrancyGuard, Pausable {
         emit VoteCast(proposalId, msg.sender, support, votingPower);
     }
 
-    function executeProposal(uint256 proposalId) external nonReentrant {
+    function executeProposal(uint256 proposalId) external onlyOwner nonReentrant {
         Proposal storage proposal = proposals[proposalId];
         require(block.timestamp >= proposal.endTime, "Voting not ended");
         require(!proposal.executed, "Already executed");

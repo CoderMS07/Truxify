@@ -2,6 +2,8 @@ import cron from 'node-cron';
 import logger from '../middleware/logger.js';
 import { supabase } from '../config/db.js';
 import { sendPushNotification } from '../services/notificationService.js';
+import { WorkerTracer } from '../core/telemetry/WorkerTracer.js';
+import spanFactory from '../core/telemetry/SpanFactory.js';
 
 let staleOrderWorkerTask = null;
 
@@ -11,8 +13,7 @@ export const startStaleOrderWorker = () => {
     return staleOrderWorkerTask;
   }
 
-  // Run every hour at minute 0
-  staleOrderWorkerTask = cron.schedule('0 * * * *', async () => {
+  const tracedHandler = WorkerTracer.wrapCronJob('stale-order-worker', async () => {
     logger.info('[StaleOrderWorker] Starting cleanup of stale pending orders...');
     try {
       const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -35,6 +36,10 @@ export const startStaleOrderWorker = () => {
       }
 
       logger.info(`[StaleOrderWorker] Found ${staleOrders.length} stale pending orders. Cancelling...`);
+
+      spanFactory.getActiveSpan()?.setAttributes({
+        'stale_orders.count': staleOrders.length,
+      });
 
       for (const order of staleOrders) {
         // Update status to cancelled
@@ -76,7 +81,10 @@ export const startStaleOrderWorker = () => {
     } catch (err) {
       logger.error(`[StaleOrderWorker] Unexpected error during cleanup: ${err.message}`);
     }
-  });
+  }, { schedule: '0 * * * *' });
+
+  // Run every hour at minute 0
+  staleOrderWorkerTask = cron.schedule('0 * * * *', tracedHandler);
 
   logger.info('[StaleOrderWorker] Stale order cleanup cron job scheduled (runs every hour).');
   return staleOrderWorkerTask;

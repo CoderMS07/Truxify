@@ -381,14 +381,14 @@ describe('Support Routes', () => {
 
     it('returns 400 when attempting to update a closed ticket', async () => {
       m.store.support_tickets.push({
-        id: 'ticke33333333-3333-4333-8333-333333333333',
+        id: '33333333-3333-4333-8333-333333333333',
         user_id: 'customer-1',
         subject: 'My ticket',
         status: 'closed',
       });
 
       const res = await request(buildApp())
-        .patch('/api/support/tickets/ticke33333333-3333-4333-8333-333333333333')
+        .patch('/api/support/tickets/33333333-3333-4333-8333-333333333333')
         .set(CUSTOMER_HEADERS)
         .send({ subject: 'New subject' });
 
