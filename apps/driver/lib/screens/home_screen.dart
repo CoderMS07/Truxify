@@ -293,6 +293,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _batteryService.removeListener(_onBatteryChanged);
     _connectivitySubscription?.cancel();
     _loadSubscription?.cancel();
+    _tripSubscription?.cancel();
     _autoHideTimer?.cancel();
     _mapController.dispose();
     _searchController.dispose();
