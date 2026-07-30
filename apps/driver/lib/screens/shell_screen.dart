@@ -196,6 +196,8 @@ class _ShellScreenState extends State<ShellScreen> {
   @override
   void dispose() {
     _weighStationSub?.cancel();
+    FcmService.clearForegroundCallback();
+    FcmService.clearTapCallback();
     ForegroundNotificationHandler.dispose();
     _currentIndex.dispose();
     super.dispose();
