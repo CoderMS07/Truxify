@@ -37,7 +37,7 @@ router.post('/query', authenticate, userLimiter, upload.single('file'), async (r
   }
 });
 
-router.get('/audio/:id', (req, res) => {
+router.get('/audio/:id', authenticate, userLimiter, (req, res) => {
   const buffer = audioCache.get(req.params.id);
   if (!buffer) {
     return res.status(404).json({ error: 'Audio not found' });
