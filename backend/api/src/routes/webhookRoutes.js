@@ -14,11 +14,7 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
  */
 function verifyWebhookSignature(req, res, next) {
   if (!WEBHOOK_SECRET) {
-    if (process.env.NODE_ENV === 'production') {
-      logger.error('[Webhook] WEBHOOK_SECRET is not set in production — rejecting request');
-      return res.status(500).json({ error: 'Webhook secret not configured' });
-    }
-    logger.warn('[Webhook] WEBHOOK_SECRET not set — skipping signature verification in non-production');
+    logger.warn('[Webhook] WEBHOOK_SECRET not set — skipping signature verification');
     return next();
   }
 
@@ -28,6 +24,8 @@ function verifyWebhookSignature(req, res, next) {
   }
 
   const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+  // TODO: Register the webhook route with express.raw({ type: '*/*' }) middleware
+  // to receive raw body for HMAC verification instead of relying on JSON.stringify
   const expectedSignature = crypto
     .createHmac('sha256', WEBHOOK_SECRET)
     .update(rawBody)

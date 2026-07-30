@@ -323,6 +323,44 @@ class LocationService {
         'driver_id': driverId,
       },
     );
+
+    try {
+      debugPrint('[LocationService] Connecting to WebSocket at: ${wsUri.toString()}');
+      _channel = WebSocketChannel.connect(wsUri);
+      _reconnectAttempts = 0;
+      _lastCloseCode = null;
+      
+      _startHeartbeat();
+
+      _socketSubscription = _channel!.stream.listen(
+        (message) {
+          if (message == 'pong') return;
+          debugPrint('[LocationService] Received WebSocket message: $message');
+          try {
+            final parsed = jsonDecode(message.toString());
+            if (parsed is Map && parsed['code'] != null) {
+              _lastCloseCode = (parsed['code'] as num?)?.toInt();
+            }
+          } catch (_) {}
+        },
+        onDone: () {
+          debugPrint('[LocationService] WebSocket closed (code: $_lastCloseCode)');
+          if (_lastCloseCode == 4001 || _lastCloseCode == 4003) {
+            debugPrint('[LocationService] Auth rejected (code $_lastCloseCode) — not reconnecting');
+            stopTracking();
+            return;
+          }
+          _scheduleReconnect();
+        },
+        onError: (error) {
+          debugPrint('[LocationService] WebSocket error: $error');
+          _scheduleReconnect();
+        },
+      );
+    } catch (e) {
+      debugPrint('[LocationService] Error connecting to WebSocket: $e');
+      _scheduleReconnect();
+    }
   }
 
   /// Creates a [ResilientWebSocket] and subscribes to its message stream.

@@ -38,6 +38,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
         BookingStatus status;       // Current booking lifecycle status
         bool paid;                  // True after payment has been released
         uint256 createdAt;          // Block timestamp at booking creation
+        uint256 disputedAt;         // Block timestamp when dispute was raised
     }
 
     // ─── State ───────────────────────────────────────────────────────────────
@@ -47,6 +48,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
     mapping(address => uint256) public pendingWithdrawals;
     mapping(address => uint256) public releaseTimestamps;
     uint256 public constant WITHDRAWAL_TIMEOUT = 30 days;
+    uint256 public constant DISPUTE_TIMEOUT = 7 days;
 
     // ─── Events ──────────────────────────────────────────────────────────────
 
@@ -129,7 +131,8 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
             amount:    msg.value,
             status:    BookingStatus.Active,
             paid:      false,
-            createdAt: block.timestamp
+            createdAt: block.timestamp,
+            disputedAt: 0
         });
 
         bookingCount++;
@@ -255,8 +258,43 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
         );
 
         booking.status = BookingStatus.Disputed;
+        booking.disputedAt = block.timestamp;
 
         emit BookingDisputed(bookingId, msg.sender);
+    }
+
+    /**
+     * @dev Resolve a stale dispute that has been inactive for DISPUTE_TIMEOUT.
+     *      Defaults to refunding the customer in full to prevent locked funds.
+     * @param bookingId The booking to resolve
+     */
+    function resolveDisputeTimeout(uint256 bookingId) external nonReentrant whenNotPaused {
+        Booking storage booking = bookings[bookingId];
+
+        require(
+            booking.status == BookingStatus.Disputed,
+            "TruxifyEscrow: Booking not disputed"
+        );
+        require(
+            block.timestamp > booking.disputedAt + DISPUTE_TIMEOUT,
+            "TruxifyEscrow: Dispute timeout not reached"
+        );
+        require(!booking.paid, "TruxifyEscrow: Already paid");
+
+        // ── EFFECTS: Default to refunding customer ──────────────────────────
+        uint256 refundAmount = booking.amount;
+        address payable customer = booking.customer;
+
+        booking.amount = 0;
+        booking.paid = true;
+        booking.status = BookingStatus.Cancelled;
+
+        // ── INTERACTIONS ──────────────────────────────────────────────────
+        pendingWithdrawals[customer] += refundAmount;
+        releaseTimestamps[customer] = block.timestamp + WITHDRAWAL_TIMEOUT;
+
+        emit WithdrawalReady(bookingId, customer, refundAmount);
+        emit BookingCancelled(bookingId, customer, refundAmount);
     }
 
     /**

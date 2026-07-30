@@ -4,7 +4,8 @@ import 'package:truxify/theme/app_theme.dart';
 import '../models/app_models.dart';
 import '../services/order_service.dart';
 import '../widgets/truck_card.dart';
-import 'package:truxify_shared/shimmer_widget.dart';
+import '../widgets/common_widgets.dart';
+import 'package:shimmer/shimmer.dart';
 
 class TruckResultsScreen extends StatefulWidget {
   const TruckResultsScreen({super.key, required this.draft});
@@ -185,8 +186,8 @@ class _TruckResultsScreenState extends State<TruckResultsScreen> {
         ),
         body: ListView.builder(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-          itemCount: 5,
-          itemBuilder: (_, __) => const ShimmerListItem(height: 140),
+          itemCount: 4,
+          itemBuilder: (_, __) => const TruckResultSkeleton(),
         ),
       );
     }
@@ -391,3 +392,79 @@ class _TruckResultsScreenState extends State<TruckResultsScreen> {
     );
   }
 }
+
+class TruckResultSkeleton extends StatelessWidget {
+  const TruckResultSkeleton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: InfoCard(
+        child: Shimmer.fromColors(
+          baseColor: Theme.of(context).brightness == Brightness.dark
+              ? Colors.grey[800]!
+              : Colors.grey[300]!,
+          highlightColor: Theme.of(context).brightness == Brightness.dark
+              ? Colors.grey[700]!
+              : Colors.grey[100]!,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Container(width: 150, height: 20, color: Colors.white),
+                  Container(
+                      width: 80,
+                      height: 24,
+                      decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12))),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Container(width: 200, height: 16, color: Colors.white),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Container(width: 100, height: 14, color: Colors.white),
+                  Container(width: 50, height: 14, color: Colors.white),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Container(
+                  width: double.infinity,
+                  height: 10,
+                  decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(999))),
+              const SizedBox(height: 14),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(width: 80, height: 24, color: Colors.white),
+                      const SizedBox(height: 4),
+                      Container(width: 120, height: 14, color: Colors.white),
+                    ],
+                  ),
+                  Container(
+                      width: 120,
+                      height: 40,
+                      decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20))),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+

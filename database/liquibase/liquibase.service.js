@@ -34,9 +34,13 @@ function runLiquibase(args, password) {
 class LiquibaseService {
     constructor() {
         this.liquibasePath = path.join(__dirname, '../../database/liquibase');
-        this.dbUrl = process.env.DATABASE_URL || 'jdbc:postgresql://localhost:5432/truxify';
-        this.username = process.env.DB_USERNAME || 'postgres';
-        this.password = process.env.DB_PASSWORD || 'password';
+        this.dbUrl = process.env.DATABASE_URL;
+        this.username = process.env.DB_USERNAME;
+        this.password = process.env.DB_PASSWORD;
+
+        if (!this.dbUrl || !this.username || !this.password) {
+            throw new Error('DATABASE_URL, DB_USERNAME, and DB_PASSWORD environment variables are required');
+        }
         
         logger.info('✅ Liquibase Service initialized');
     }

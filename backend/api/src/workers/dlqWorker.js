@@ -1,6 +1,7 @@
 import { dlqService } from '../services/webhook/dlqService.js';
 import logger from '../middleware/logger.js';
 import { processEscrowWebhookEvent } from '../services/webhook/escrowWebhookProcessor.js';
+import { WorkerTracer } from '../core/telemetry/WorkerTracer.js';
 
 const processFnMap = {
   escrow: processEscrowWebhookEvent,
@@ -13,9 +14,13 @@ export const startDlqWorker = () => {
 
   const INTERVAL_MS = 60 * 1000; // Poll every 1 minute
 
+  const tracedHandler = WorkerTracer.wrapIntervalWorker('dlq-worker', async () => {
+    await dlqService.processQueue(processFnMap);
+  }, { intervalMs: INTERVAL_MS });
+
   intervalId = setInterval(async () => {
     try {
-      await dlqService.processQueue(processFnMap);
+      await tracedHandler();
     } catch (err) {
       logger.error(`[DLQ Worker] Error in polling loop: ${err.message}`);
     }

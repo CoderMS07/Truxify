@@ -237,6 +237,7 @@ class TrafficPipeline:
         )
         
         # Save model
+        os.makedirs(os.path.dirname('models/eta_lstm.h5'), exist_ok=True)
         self.model.save('models/eta_lstm.h5')
         logger.info("Model trained and saved")
     

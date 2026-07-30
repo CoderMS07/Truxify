@@ -32,12 +32,10 @@ ML_ROUTE_MODULES: list[tuple[str, str]] = [
     ("safety_routes", "Driver Safety Monitoring"),
     ("ssl_routes", "Self-Supervised Learning"),
     ("transformer_routes", "Time Series Transformers"),
+    ("eta_routes", "Real-Time Traffic ETA"),
 ]
 
-# Intentionally excluded:
-# - "eta_routes": Duplicate of the /eta/* endpoints already defined inline
-#   in main.py (predict_traffic_eta, update_eta_realtime, get_traffic_data,
-#   get_traffic_forecast, train_traffic_model).
+
 
 
 def register_ml_routers(app: "FastAPI") -> list[str]:

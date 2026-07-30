@@ -34,6 +34,7 @@ describe('BidAcceptanceService', () => {
 
     service = new BidAcceptanceService({
       orderRepository,
+      supabase: supabaseMock.supabase,
       escrowDepositFn: escrowDeposit,
       escrowRefundFn: escrowRefund,
       logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -49,6 +50,7 @@ describe('BidAcceptanceService', () => {
       driver_id: null,
       vehicle_id: null,
       status: 'pending',
+      version: 1,
     }];
     supabaseMock.store.load_bids = [{
       id: 'bid-1',
@@ -166,6 +168,7 @@ describe('BidAcceptanceService', () => {
       driver_id: null,
       vehicle_id: null,
       status: 'pending',
+      version: 1,
     }];
     supabaseMock.store.load_bids = [{
       id: 'bid-1',
@@ -208,6 +211,7 @@ describe('BidAcceptanceService', () => {
     const orderRepository = new OrderRepository(supabaseMock.supabase);
     const serviceWithBrokenNotifications = new BidAcceptanceService({
       orderRepository,
+      supabase: supabaseMock.supabase,
       escrowDepositFn: escrowDeposit,
       escrowRefundFn: escrowRefund,
       logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -232,6 +236,7 @@ describe('BidAcceptanceService', () => {
       driver_id: null,
       vehicle_id: null,
       status: 'pending',
+      version: 1,
     }];
     supabaseMock.store.load_bids = [{
       id: 'bid-1',

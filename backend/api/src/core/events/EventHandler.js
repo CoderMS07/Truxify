@@ -1,4 +1,7 @@
 import logger from '../../middleware/logger.js';
+import { ContextPropagator } from '../telemetry/ContextPropagator.js';
+import spanFactory from '../telemetry/SpanFactory.js';
+import { context, trace, SpanStatusCode } from '@opentelemetry/api';
 
 export class EventHandler {
   constructor(handler, options = {}) {
@@ -17,17 +20,35 @@ export class EventHandler {
   }
 
   async handle(event) {
+    const parentCtx = event?.metadata?.traceContext
+      ? ContextPropagator.extractFromEventPayload(event)
+      : undefined;
+
+    const span = spanFactory.startEventHandlerSpan(
+      event?.metadata?.eventType || event?.eventType || 'unknown',
+      this._name,
+    );
+
     try {
-      const result = await Promise.race([
-        this._handler(event),
-        this._timeout > 0
-          ? new Promise((_, reject) =>
-              setTimeout(() => reject(new Error(`Handler "${this._name}" timed out after ${this._timeout}ms`)), this._timeout)
-            )
-          : Promise.resolve(),
-      ]);
+      const runCtx = parentCtx || context.active();
+      const result = await context.with(trace.setSpan(runCtx, span), async () => {
+        return await Promise.race([
+          this._handler(event),
+          this._timeout > 0
+            ? new Promise((_, reject) =>
+                setTimeout(() => reject(new Error(`Handler "${this._name}" timed out after ${this._timeout}ms`)), this._timeout)
+              )
+            : Promise.resolve(),
+        ]);
+      });
+
+      span.setStatus({ code: SpanStatusCode.OK });
+      span.end();
       return result;
     } catch (err) {
+      spanFactory.recordError(span, err);
+      span.end();
+
       if (this._onError) {
         return this._onError(err, event);
       }

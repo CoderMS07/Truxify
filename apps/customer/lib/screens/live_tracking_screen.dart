@@ -662,7 +662,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   Future<void> _showCancel() async {
     bool isLoading = false;
     final rawFee = _order?['cancellation_fee'];
-    final feeInRupees = rawFee != null ? (rawFee as num) / 100 : null;
+    final feeInRupees = rawFee is num ? rawFee / 100 : null;
     String? feeText = feeInRupees != null ? 'Cancellation fee ₹${feeInRupees.toStringAsFixed(2)}' : null;
 
     await showModalBottomSheet<void>(
@@ -696,7 +696,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
                           try {
                             final resp = await _orderService.cancelOrder(orderDisplayId: widget.orderId);
                             final rawFee = resp['cancellation_fee'];
-                            final feeInRupees = rawFee != null ? (rawFee as num) / 100 : 0;
+                            final feeInRupees = rawFee is num ? rawFee / 100 : 0;
                             await _loadOrder();
                             if (!context.mounted) return;
                             Navigator.of(context).pop();
