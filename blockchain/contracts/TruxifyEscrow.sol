@@ -187,7 +187,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
         pendingWithdrawals[driver] += paymentAmount;
 
         uint256 newDeadline = block.timestamp + WITHDRAWAL_TIMEOUT;
-        if (releaseTimestamps[driver] == 0 || newDeadline < releaseTimestamps[driver]) {
+        if (releaseTimestamps[driver] == 0 || newDeadline > releaseTimestamps[driver]) {
             releaseTimestamps[driver] = newDeadline;
         }
 
@@ -232,7 +232,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
         pendingWithdrawals[customer] += refundAmount;
 
         uint256 newDeadline = block.timestamp + WITHDRAWAL_TIMEOUT;
-        if (releaseTimestamps[customer] == 0 || newDeadline < releaseTimestamps[customer]) {
+        if (releaseTimestamps[customer] == 0 || newDeadline > releaseTimestamps[customer]) {
             releaseTimestamps[customer] = newDeadline;
         }
 
