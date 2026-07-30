@@ -1,20 +1,22 @@
 import pkg from 'pg';
 const { Pool } = pkg;
-import Redis from 'ioredis';
 import logger from '../../middleware/logger.js';
+import { redisClient } from '../../config/db.js';
 
 class ShardManager {
   constructor() {
     this.shards = new Map();
-    this.redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
-    this.redis.quit = this.redis.quit.bind(this.redis);
-    process.on('SIGINT', () => this.closeAllConnections().catch(() => {}));
-    process.on('SIGTERM', () => this.closeAllConnections().catch(() => {}));
+    this.redis = redisClient;
+    this._isClosed = false;
     this.initializeShards();
   }
 
   initializeShards() {
+    const missingPasswords = [];
+
     // North Zone - Delhi, UP, Punjab, Haryana, Rajasthan
+    const northPassword = process.env.SHARD_NORTH_PASSWORD;
+    if (!northPassword) missingPasswords.push('SHARD_NORTH_PASSWORD');
     this.shards.set('north', {
       name: 'north',
       states: ['delhi', 'up', 'punjab', 'haryana', 'rajasthan', 'j&k', 'himachal', 'uttarakhand'],
@@ -22,11 +24,13 @@ class ShardManager {
       port: process.env.SHARD_NORTH_PORT || 5432,
       database: process.env.SHARD_NORTH_DB || 'truxify_north',
       user: process.env.SHARD_NORTH_USER || 'postgres',
-      password: process.env.SHARD_NORTH_PASSWORD || 'password',
+      password: northPassword || null,
       pool: null
     });
 
     // South Zone - Tamil Nadu, Karnataka, Kerala, AP, Telangana
+    const southPassword = process.env.SHARD_SOUTH_PASSWORD;
+    if (!southPassword) missingPasswords.push('SHARD_SOUTH_PASSWORD');
     this.shards.set('south', {
       name: 'south',
       states: ['tamilnadu', 'karnataka', 'kerala', 'andhra', 'telangana', 'pondicherry'],
@@ -34,11 +38,13 @@ class ShardManager {
       port: process.env.SHARD_SOUTH_PORT || 5433,
       database: process.env.SHARD_SOUTH_DB || 'truxify_south',
       user: process.env.SHARD_SOUTH_USER || 'postgres',
-      password: process.env.SHARD_SOUTH_PASSWORD || 'password',
+      password: southPassword || null,
       pool: null
     });
 
     // East Zone - WB, Bihar, Odisha, Jharkhand, NE States
+    const eastPassword = process.env.SHARD_EAST_PASSWORD;
+    if (!eastPassword) missingPasswords.push('SHARD_EAST_PASSWORD');
     this.shards.set('east', {
       name: 'east',
       states: ['westbengal', 'bihar', 'odisha', 'jharkhand', 'assam', 'sikkim', 'nagaland', 'manipur', 'meghalaya', 'mizoram', 'arunachal', 'tripura'],
@@ -46,11 +52,13 @@ class ShardManager {
       port: process.env.SHARD_EAST_PORT || 5434,
       database: process.env.SHARD_EAST_DB || 'truxify_east',
       user: process.env.SHARD_EAST_USER || 'postgres',
-      password: process.env.SHARD_EAST_PASSWORD || 'password',
+      password: eastPassword || null,
       pool: null
     });
 
     // West Zone - Maharashtra, Gujarat, MP, Goa
+    const westPassword = process.env.SHARD_WEST_PASSWORD;
+    if (!westPassword) missingPasswords.push('SHARD_WEST_PASSWORD');
     this.shards.set('west', {
       name: 'west',
       states: ['maharashtra', 'gujarat', 'madhyapradesh', 'goa', 'chhattisgarh'],
@@ -58,9 +66,13 @@ class ShardManager {
       port: process.env.SHARD_WEST_PORT || 5435,
       database: process.env.SHARD_WEST_DB || 'truxify_west',
       user: process.env.SHARD_WEST_USER || 'postgres',
-      password: process.env.SHARD_WEST_PASSWORD || 'password',
+      password: westPassword || null,
       pool: null
     });
+
+    if (missingPasswords.length > 0) {
+      throw new Error(`Missing required shard password env vars: ${missingPasswords.join(', ')}`);
+    }
 
     // Initialize connection pools
     this.initializePools();
@@ -205,13 +217,14 @@ class ShardManager {
   }
 
   async closeAllConnections() {
+    if (this._isClosed) return;
+    this._isClosed = true;
     for (const [name, shard] of this.shards) {
       if (shard.pool) {
         await shard.pool.end();
         logger.info(`Closed shard ${name} connections`);
       }
     }
-    await this.redis.quit();
   }
 }
 
