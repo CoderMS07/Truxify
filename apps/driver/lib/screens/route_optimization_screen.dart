@@ -37,6 +37,7 @@ class _RouteOptimizationScreenState extends State<RouteOptimizationScreen> {
     // Simulate current driver GPS location
     final optimized = await _optimizationService.optimizeRoute(_stops, 34.00, -118.15);
 
+    if (!mounted) return;
     setState(() {
       _stops = optimized;
       _isOptimizing = false;
