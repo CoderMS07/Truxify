@@ -46,6 +46,7 @@ import { getRoot, notFound } from './controllers/rootController.js'
 import webhookRoutes from './routes/webhookRoutes.js'
 import auditRoutes from './routes/auditRoutes.js'
 import voiceRoutes from './routes/voiceRoutes.js'
+import demandRoutes from './routes/demandRoutes.js'
 
 // ============================================================================
 // 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
@@ -431,6 +432,7 @@ app.use('/api/auth', authLimiter, authRoutes)
 app.use('/api/v1/admin', adminRoutes)
 app.use('/api/v1/admin/audit-logs', auditRoutes)
 app.use('/api/voice', voiceRoutes)
+app.use('/api/demand-heatmap', demandRoutes)
 
 // ============================================================================
 // WEBHOOK ROUTES
