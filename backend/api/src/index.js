@@ -19,6 +19,7 @@ import { initLocationServer, closeLocationServer } from './sockets/locationServe
 import { startEscrowReleaseReconciliation, stopEscrowReleaseReconciliation } from './services/escrowReleaseReconciliation.js'
 import { validateEscrowSetup } from './services/escrow.js'
 
+
 import {
   requestIdMiddleware,
   requestLogger,
@@ -422,6 +423,11 @@ app.use('/api/auth', authLimiter, authRoutes)
 app.use('/api/v1/admin', adminRoutes)
 app.use('/api/v1/admin/audit-logs', auditRoutes)
 app.use('/api/voice', voiceRoutes)
+
+// ============================================================================
+// WEBHOOK ROUTES
+// ============================================================================
+app.use('/api/webhooks', webhookRoutes)
 
 // ============================================================================
 // 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
