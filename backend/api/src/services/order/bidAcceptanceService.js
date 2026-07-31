@@ -88,7 +88,16 @@ export class BidAcceptanceService {
     }
 
     // Build the escrow deposit transaction
-    const amountWei = paisaToMaticWei(bid.bid_amount);
+    let amountWei;
+    try {
+      amountWei = paisaToMaticWei(bid.bid_amount);
+    } catch (err) {
+      throw new DomainError(422, {
+        error: 'Deposit amount exceeds the escrow safety cap.',
+        details: err.message,
+        recovery: 'Configure ESCROW_MATIC_PER_PAISA / MAX_ESCROW_MATIC or contact support for a larger escrow limit.',
+      });
+    }
     const depositTx = await this.buildDepositTxFn(order.order_display_id, freshDriverWallet, amountWei);
     const bookingId = depositTx?.bookingId || `escrow:${order.order_display_id}`;
 
