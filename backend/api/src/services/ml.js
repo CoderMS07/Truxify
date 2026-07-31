@@ -559,7 +559,7 @@ export async function matchEnRouteLoads({
       width_m: Number(o.width_m || 1),
       height_m: Number(o.height_m || 1),
       pickup_deadline: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
-      payment_inr: Number(o.payment_inr || o.freight_value || 0),
+      payment_inr: Number(o.payment_inr || (o.freight_value ? o.freight_value / 100 : 0)),
     }));
 
   const specs = truckSpecs || {
@@ -599,7 +599,7 @@ export async function matchEnRouteLoads({
           detour_km: dtKm,
           distance_to_pickup_km: dtKm,
           match_score: Math.max(0, 1 - dtKm / maxDetourKm),
-          estimated_earnings: Number(o.payment_inr || o.freight_value || 0),
+          estimated_earnings: Number(o.payment_inr || (o.freight_value ? o.freight_value / 100 : 0)),
           _fallback: true,
         };
       })
