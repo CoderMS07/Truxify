@@ -754,6 +754,31 @@ describe('Bid Routes', () => {
       expect(mockRecordDepositTx).toHaveBeenCalledWith('escrow:OD1', '0x' + '1'.repeat(64), null);
     });
 
+    it('POST /:id/confirm-deposit hashes the order display id when escrow_booking_id is missing', async () => {
+      m.store.orders.push({
+        id: 'order-1',
+        customer_id: 'customer-1',
+        order_display_id: 'OD1',
+        escrow_booking_id: null,
+        escrow_status: 'funding',
+      });
+
+      const { getEscrowBookingId } = await import('../../src/services/escrow.js');
+
+      mockRecordDepositTx.mockResolvedValue({ txHash: '0x' + '1'.repeat(64), bookingId: 'x' });
+
+      const app = buildApp();
+      const res = await request(app)
+        .post('/api/orders/order-1/confirm-deposit')
+        .set(CUSTOMER)
+        .send({ txHash: '0x' + '1'.repeat(64) });
+
+      expect(res.status).toBe(200);
+      // The fallback must be the deterministic hash, NOT a raw `escrow:OD1` string
+      expect(mockRecordDepositTx).toHaveBeenCalledWith(getEscrowBookingId('OD1'), '0x' + '1'.repeat(64), null);
+      expect(mockRecordDepositTx.mock.calls[0][0]).not.toBe('escrow:OD1');
+    });
+
     it('POST /:id/confirm-deposit succeeds and marks order as funded', async () => {
       m.store.orders.push({
         id: 'order-1',
