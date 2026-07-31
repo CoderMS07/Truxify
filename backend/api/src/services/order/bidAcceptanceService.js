@@ -103,8 +103,13 @@ export class BidAcceptanceService {
       });
     }
 
-    // Update order with escrow booking info
-    const { error: escrowUpdateErr } = await this.orderRepository.updateEscrowBooking(orderId, bookingId, 'funding');
+    // Update order with escrow booking info, persisting the expected escrow
+    // amount and assigned driver wallet so deposit confirmation can verify
+    // the on-chain booking matches them.
+    const { error: escrowUpdateErr } = await this.orderRepository.updateEscrowBooking(orderId, bookingId, 'funding', {
+      escrow_amount_wei: amountWei.toString(),
+      escrow_driver_wallet: freshDriverWallet,
+    });
     if (escrowUpdateErr) {
       throw new DomainError(500, { error: 'Failed to store escrow booking reference.', details: escrowUpdateErr.message });
     }

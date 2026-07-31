@@ -1227,7 +1227,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
   }
 
   try {
-    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status');
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet');
     orderValidationService.assertOrderFound(order);
     orderValidationService.assertCustomerOwnership(order, req.user.id);
     orderValidationService.assertEscrowState(order, ['funding'], 'Order is not in funding state');
@@ -1236,21 +1236,28 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
     const { data: customerProfile } = await orderRepository.findCustomerWallet(req.user.id);
     const customerWallet = customerProfile?.polygon_wallet_address ?? null;
     const bookingId = order.escrow_booking_id || (order.order_display_id ? `escrow:${order.order_display_id}` : orderId);
-    const result = await recordDepositTx(bookingId, txHash, customerWallet);
+    const result = await recordDepositTx(
+      bookingId,
+      txHash,
+      customerWallet,
+      order.escrow_driver_wallet ?? null,
+      order.escrow_amount_wei ?? null
+    );
+
+    if (result.alreadyFunded) {
+      const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
+        escrow_status: 'funded',
+        deposit_tx_hash: result.txHash,
+        escrow_deposited_at: new Date().toISOString(),
+      }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
+
+      if (!updateErr && updatedData) {
+        return res.json({ message: 'Escrow deposit confirmed (recovered).', txHash: result.txHash });
+      }
+      return res.status(202).json({ message: 'Escrow deposit confirmed on-chain. Database sync pending.', txHash: result.txHash });
+    }
 
     if (result.error) {
-      if (result.alreadyFunded) {
-        const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
-          escrow_status: 'funded',
-          deposit_tx_hash: result.txHash,
-          escrow_deposited_at: new Date().toISOString(),
-        }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
-
-        if (!updateErr && updatedData) {
-          return res.json({ message: 'Escrow deposit confirmed (recovered).', txHash: result.txHash });
-        }
-        return res.status(202).json({ message: 'Escrow deposit confirmed on-chain. Database sync pending.', txHash: result.txHash });
-      }
       return res.status(422).json({ error: result.error });
     }
 
