@@ -1,5 +1,5 @@
 import { WebSocketServer } from 'ws';
-import jwt from 'jsonwebtoken';
+import { verifyAuthToken } from '../../middleware/auth.js';
 import logger from '../../middleware/logger.js';
 import { supabase, redisClient } from '../../config/db.js';
 
@@ -32,9 +32,9 @@ class WebRTCSignalingServer {
 
       let decoded;
       try {
-        decoded = jwt.verify(token, process.env.JWT_SECRET);
+        decoded = await verifyAuthToken(token);
       } catch (err) {
-        logger.warn(`WebRTC connection rejected: invalid token — ${err.message}`);
+        logger.warn(`WebRTC connection rejected: ${err.message}`);
         ws.close(4001, 'Invalid token');
         return;
       }
@@ -45,7 +45,7 @@ class WebRTCSignalingServer {
       // Store peer with authenticated user info
       this.peers.set(peerId, {
         ws,
-        userId: decoded.sub,
+        userId: decoded.id,
         role: decoded.role,
         location: null,
         meshId,
