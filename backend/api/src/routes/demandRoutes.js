@@ -31,7 +31,10 @@ router.get('/', authenticate, userLimiter, requireRole(['driver', 'admin']), asy
       mlPrediction = await predictDemand({
         hour: new Date().getHours(),
         day_of_week: new Date().getDay(),
-        historical_volume: loads?.length || 0
+        temperature: 25.0,
+        precipitation: 0,
+        historical_volume: loads?.length || 0,
+        nearby_drivers: 0,
       });
     } catch (mlErr) {
       logger.warn('[DemandHeatmap] ML engine prediction failed, falling back to basic data:', mlErr.message);
