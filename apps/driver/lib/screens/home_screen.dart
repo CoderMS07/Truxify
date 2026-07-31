@@ -144,6 +144,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _locationError;
   late final MarketplaceRepository _marketplaceRepo;
   StreamSubscription? _tripSubscription;
+  StreamSubscription? _loadSubscription;
 
   String _hosStatus = 'off_duty';
   int _hosDrivingMinutes = 0;
