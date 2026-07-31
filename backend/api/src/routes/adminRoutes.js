@@ -77,7 +77,7 @@ router.get('/dashboard', authenticate, userLimiter, requirePolicy('admin:view-da
       .from('orders')
       .select('total_amount')
       .gte('created_at', today.toISOString())
-      .in('status', ['delivered', 'payment_released', 'active', 'in_transit']);
+      .in('status', ['delivered', 'payment_released']);
       
     if (revErr) {
       logger.error('Error fetching revenue:', revErr.message);
