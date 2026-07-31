@@ -954,9 +954,9 @@ class _FuelAnalyticsTabState extends State<_FuelAnalyticsTab> {
           // Summary Cards
           Row(
             children: [
-              Expanded(child: _StatCard(title: 'Total Payout', value: '\$${totalPayout.toStringAsFixed(2)}')),
+              Expanded(child: _StatCard(title: 'Total Payout', value: '₹${totalPayout.toStringAsFixed(2)}')),
               const SizedBox(width: 12),
-              Expanded(child: _StatCard(title: 'Est. Fuel', value: '\$${estFuel.toStringAsFixed(2)}')),
+              Expanded(child: _StatCard(title: 'Est. Fuel', value: '₹${estFuel.toStringAsFixed(2)}')),
             ],
           ),
           const SizedBox(height: 12),
