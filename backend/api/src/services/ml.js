@@ -107,7 +107,7 @@ export async function predictPrice({
 } = {}) {
   guardMlApiKey();
   
-  const cacheKey = JSON.stringify({ distanceKm, cargoWeightKg, truckType, routeOrigin, routeDestination });
+  const cacheKey = JSON.stringify({ distanceKm, cargoWeightKg, truckType, routeOrigin, routeDestination, trafficMultiplier });
   const cached = priceCache.get(cacheKey);
   if (cached !== undefined) return cached;
 
@@ -148,8 +148,8 @@ export async function predictPrice({
 
   const result = {
       ...validated.validated,
-      estimatedPricePaisa: convertToPaisa(validated.validated.estimated_price),
-      estimatedPriceInr: validated.validated.estimated_price,
+      estimatedPricePaisa: convertToPaisa(validated.validated.estimated_price * trafficMultiplier),
+      estimatedPriceInr: validated.validated.estimated_price * trafficMultiplier,
   };
   priceCache.set(cacheKey, result);
   return result;
