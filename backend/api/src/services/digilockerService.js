@@ -37,6 +37,9 @@ class DigilockerService {
     let isMock = false;
 
     if (!this.clientId || !this.clientSecret || !code) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error('DigiLocker credentials or OAuth code are missing. This is a server misconfiguration in production.');
+      }
       logger.warn('Digilocker credentials or code missing. Running in high-fidelity mock mode.');
       isMock = true;
       tokenData = {
@@ -139,10 +142,8 @@ class DigilockerService {
           txHash = receipt.hash;
         } catch (err) {
           logger.error(`On-chain registration failed for ${doc.type}:`, err.message);
-          txHash = '0x' + crypto.randomBytes(32).toString('hex');
+          throw new Error(`On-chain registration failed for ${doc.type}: ${err.message}`);
         }
-      } else {
-        txHash = '0x' + crypto.randomBytes(32).toString('hex');
       }
 
       // Upload mock/received document file representation to Supabase storage
