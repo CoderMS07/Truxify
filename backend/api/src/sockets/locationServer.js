@@ -24,6 +24,8 @@ let io = null;
  *  Server broadcasts "driver_location" to booking:{id} room →
  *  Customer receives update → Leaflet marker moves
  *
+ * Related Issue: #5553 - feat(backend): set up WebSocket server for real-time live tracking updates
+ *
  * @param {import("http").Server} httpServer - Existing HTTP server instance
  */
 export function initLocationServer(httpServer) {
