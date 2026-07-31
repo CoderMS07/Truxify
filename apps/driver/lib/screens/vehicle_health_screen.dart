@@ -33,23 +33,23 @@ class _VehicleHealthScreenState extends State<VehicleHealthScreen> {
           }
 
           final data = snapshot.data!;
-          final isHealthy = data.predictiveHealthScore > 80;
+          final isHealthy = (data.predictiveHealthScore ?? 0) > 80;
 
           return Padding(
             padding: const EdgeInsets.all(16.0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildHealthScoreCard(data.predictiveHealthScore, isHealthy),
+                _buildHealthScoreCard(data.predictiveHealthScore ?? 0, isHealthy),
                 const SizedBox(height: 20),
                 const Text(
                   'Live OBD-II Telemetry',
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 10),
-                _buildTelemetryRow('Engine Temp', '${data.engineTemperature.toStringAsFixed(1)} °F', data.engineTemperature > 205 ? Colors.red : Colors.green),
-                _buildTelemetryRow('Oil Level', '${data.oilLevel.toStringAsFixed(1)} %', Colors.blue),
-                _buildTelemetryRow('Tire Pressure', '${data.tirePressureAvg.toStringAsFixed(1)} PSI', Colors.green),
+                _buildTelemetryRow('Engine Temp', data.engineTemperature != null ? '${data.engineTemperature!.toStringAsFixed(1)} °F' : 'N/A', (data.engineTemperature ?? 0) > 205 ? Colors.red : Colors.green),
+                _buildTelemetryRow('Oil Level', data.oilLevel != null ? '${data.oilLevel!.toStringAsFixed(1)} %' : 'N/A', Colors.blue),
+                _buildTelemetryRow('Tire Pressure', data.tirePressureAvg != null ? '${data.tirePressureAvg!.toStringAsFixed(1)} PSI' : 'N/A', Colors.green),
                 const SizedBox(height: 20),
                 if (data.warnings.isNotEmpty) ...[
                   const Text(
