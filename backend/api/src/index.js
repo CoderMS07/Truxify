@@ -12,8 +12,10 @@ import documentRoutes from './routes/documentRoutes.js'
 import securityHeaderDuplicates from './middleware/securityHeaderDuplicates.js';
 import maintenancePhotoRoutes from './routes/maintenancePhotoRoutes.js'
 
-import { closeDbConnections, waitForMongoDb, validateConfig } from './config/db.js'
+import { closeDbConnections, waitForMongoDb, validateConfig, redisClient } from './config/db.js'
 import { orderRepository } from './core/container.js'
+import { CacheManager } from './cache/CacheManager.js'
+import { closeWebSocketServer, initWebSocketServer } from './sockets/tracker.js'
 import { closeWebSocketServer, initWebSocketServer, __testing as wsTesting } from './sockets/tracker.js'
 import { initLocationServer, closeLocationServer } from './sockets/locationServer.js'
 import { startEscrowReleaseReconciliation, stopEscrowReleaseReconciliation } from './services/escrowReleaseReconciliation.js'
@@ -141,6 +143,11 @@ try {
   logger.fatal(err.message)
   process.exit(1)
 }
+
+// ============================================================================
+// INITIALIZE DISTRIBUTED CACHE MANAGER
+// ============================================================================
+CacheManager.init(redisClient)
 
 // ============================================================================
 // STARTUP VALIDATION — crash fast, not at request time
@@ -665,6 +672,7 @@ async function shutdown (signal) {
   stopDlqWorker()
   stopDocumentExpiryWorker()
   fraudDetection.destroy()
+  CacheManager.shutdown()
 
   const forceExit = setTimeout(() => {
     logger.error('[shutdown] Timeout exceeded — forcing exit.')
