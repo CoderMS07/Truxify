@@ -230,12 +230,13 @@ class TrafficPipeline:
     def predict_eta(self, route_data: np.ndarray) -> float:
         """Predict ETA using LSTM model"""
         try:
-            # Reshape for LSTM input: (batch, timesteps, features)
-            if len(route_data.shape) == 2:
-                route_data = route_data.reshape(1, *route_data.shape)
-            elif len(route_data.shape) == 1:
-                route_data = route_data.reshape(1, 1, -1)
-                
+            # Model expects (batch, 60, 5) — trained on 60-step sequences.
+            # Repeat a single feature row to fill the 60-timestep window.
+            if route_data.ndim == 1:
+                route_data = route_data.reshape(1, -1)
+            if route_data.shape[1] == 5:
+                route_data = np.tile(route_data, (1, 60, 1))
+
             prediction = self.model.predict(route_data, verbose=0)
             return float(prediction[0][0])
         except Exception as e:
