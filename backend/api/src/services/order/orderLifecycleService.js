@@ -817,7 +817,7 @@ export class OrderLifecycleService {
 
     try {
       const { data: order, error: fetchErr } = await this.orderRepository.findOrderById(
-        orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status'
+        orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet'
       );
 
       if (fetchErr || !order) throw new DomainError(404, { error: 'Order not found' });
@@ -832,7 +832,13 @@ export class OrderLifecycleService {
       const customerWallet = customerProfile?.polygon_wallet_address ?? null;
 
       const bookingId = order.escrow_booking_id || `escrow:${order.order_display_id}`;
-      const result = await recordDepositTx(bookingId, txHash, customerWallet);
+      const result = await recordDepositTx(
+        bookingId,
+        txHash,
+        customerWallet,
+        order.escrow_driver_wallet ?? null,
+        order.escrow_amount_wei ?? null
+      );
 
       if (result.error) throw new DomainError(422, { error: result.error });
 
