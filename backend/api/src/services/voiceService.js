@@ -29,21 +29,7 @@ async function getBookingContext(bookingId) {
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const isUuid = uuidRegex.test(bookingId);
 
-  // Try bookings table first
-  try {
-    let query = supabase.from('bookings').select('*');
-    if (isUuid) {
-      query = query.eq('id', bookingId);
-    } else {
-      query = query.eq('booking_display_id', bookingId);
-    }
-    const { data: booking } = await query.maybeSingle();
-    if (booking) return booking;
-  } catch (err) {
-    logger.warn('Bookings table check failed in voiceService:', err.message);
-  }
-
-  // Fallback to orders table
+  // Orders table is the real order model (there is no bookings table).
   try {
     let orderQuery = supabase.from('orders').select('*');
     if (isUuid) {
