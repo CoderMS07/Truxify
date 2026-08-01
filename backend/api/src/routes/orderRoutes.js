@@ -1562,6 +1562,8 @@ router.post('/:id/pod', authenticate, requireRole(['driver']), podUpload.fields(
     let photoHash = order.pod_photo_hash || null;
     const files = req.files || {};
 
+    let uploadedAny = false;
+
     if (files.signature && files.signature[0]) {
       const file = files.signature[0];
       try {
@@ -1580,6 +1582,7 @@ router.post('/:id/pod', authenticate, requireRole(['driver']), podUpload.fields(
       }
       signatureUrl = storagePath;
       signatureHash = computeFileHash(file.buffer);
+      uploadedAny = true;
     }
 
     if (files.photo && files.photo[0]) {
@@ -1600,6 +1603,11 @@ router.post('/:id/pod', authenticate, requireRole(['driver']), podUpload.fields(
       }
       photoUrl = storagePath;
       photoHash = computeFileHash(file.buffer);
+      uploadedAny = true;
+    }
+
+    if (!uploadedAny) {
+      return res.status(400).json({ error: 'At least one valid proof file (signature or photo) is required' });
     }
 
     const updates = {
