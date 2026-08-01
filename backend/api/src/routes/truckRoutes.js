@@ -188,7 +188,7 @@ function parseCapacityFilter(value, field) {
  *         description: Number plate already registered
  */
 router.post('/', authenticate, requirePolicy('truck:register'), userLimiter, validateBody(registerTruckSchema), async (req, res) => {
-  const { name, number_plate, max_capacity_tons } = req.body;
+  const { name, truck_type, number_plate, max_capacity_tons } = req.body;
   const normalizedNumberPlate = sanitizeNumberPlate(number_plate);
 
   try {
@@ -209,8 +209,8 @@ router.post('/', authenticate, requirePolicy('truck:register'), userLimiter, val
 
     const { data: truck, error: insertErr } = await supabase
       .from('trucks')
-      .insert({ name, number_plate: normalizedNumberPlate, max_capacity_tons, driver_id: req.user.id })
-      .select('id, name, number_plate, max_capacity_tons, created_at')
+      .insert({ name, truck_type, number_plate: normalizedNumberPlate, max_capacity_tons, driver_id: req.user.id })
+      .select('id, name, truck_type, number_plate, max_capacity_tons, created_at')
       .single();
 
     if (insertErr) {
@@ -587,7 +587,7 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
     const driverIds = drivers.map(d => d.user_id);
 
     const [trucksRes, profilesRes] = await Promise.all([
-      supabase.from('trucks').select('id, name, number_plate, max_capacity_tons').in('id', truckIds),
+      supabase.from('trucks').select('id, name, number_plate, max_capacity_tons, truck_type').in('id', truckIds),
       supabase.from('profiles').select('id, full_name, avatar_url').in('id', driverIds),
     ]);
 
@@ -619,6 +619,7 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
         truckNumber: truck.number_plate || '',
         capacity: truck.max_capacity_tons ? `${truck.max_capacity_tons} tonnes` : '',
         capacityTons: truck.max_capacity_tons || 0,
+        truckType: truck.truck_type || '',
         price: finalTotalAmount,
         baseFreight: finalBaseFreight,
         tollEstimate: finalTollEstimate,
@@ -636,16 +637,14 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
         return false;
       }
       if (truck_type && truck_type !== '') {
-        const truckNameLower = (truck.truck || '').toLowerCase();
-        const typeLower = truck_type.toLowerCase();
-        if (!truckNameLower.includes(typeLower)) {
+        if (truck.truckType !== truck_type) {
           return false;
         }
       }
       return true;
     });
 
-    const responseResults = filteredResults.map(({ capacityTons, ...rest }) => rest);
+    const responseResults = filteredResults.map(({ capacityTons, truckType, ...rest }) => rest);
 
     res.json(responseResults);
   } catch (err) {
