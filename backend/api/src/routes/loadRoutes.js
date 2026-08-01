@@ -310,7 +310,7 @@ router.get('/', authenticate, userLimiter, requirePolicy('load-offer:browse'), a
 // ============================================================================
 router.post('/', authenticate, userLimiter, requireRole(['customer']), async (req, res) => {
   try {
-    const { origin, destination, weight_tons, truck_type_required, expected_price, material_type } = req.body;
+    const { origin, destination, weight_tons, expected_price, material_type } = req.body;
 
     if (!origin || !origin.lat || !origin.lng) {
       return res.status(400).json({ error: 'Origin with lat/lng is required' });
@@ -319,20 +319,30 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), async (re
       return res.status(400).json({ error: 'Destination with lat/lng is required' });
     }
 
-    // Convert to PostGIS Geography POINT format
-    const pickupGeom = `POINT(${origin.lng} ${origin.lat})`;
-    const dropGeom = `POINT(${destination.lng} ${destination.lat})`;
+    if (weight_tons === undefined || weight_tons === null || Number.isNaN(Number(weight_tons))) {
+      return res.status(400).json({ error: 'Valid weight_tons is required' });
+    }
+    if (expected_price === undefined || expected_price === null || Number.isNaN(Number(expected_price))) {
+      return res.status(400).json({ error: 'Valid expected_price is required' });
+    }
+
+    const pickupAddress = origin.address || 'Unknown Origin';
+    const dropAddress = destination.address || 'Unknown Destination';
+    const routeLabel = `${pickupAddress.split(',')[0]} \u2192 ${dropAddress.split(',')[0]}`;
 
     const { data, error } = await supabase
       .from('load_offers')
       .insert({
         customer_id: req.user.id,
-        pickup_address: origin.address || 'Unknown Origin',
-        drop_address: destination.address || 'Unknown Destination',
-        pickup_geom: pickupGeom,
-        drop_geom: dropGeom,
-        weight_tons: parseFloat(weight_tons),
-        truck_type_required: truck_type_required,
+        customer_name: req.user.fullName || 'Customer',
+        pickup_address: pickupAddress,
+        drop_address: dropAddress,
+        pickup_lat: origin.lat,
+        pickup_lng: origin.lng,
+        drop_lat: destination.lat,
+        drop_lng: destination.lng,
+        route_label: routeLabel,
+        weight: `${weight_tons} tonnes`,
         freight_value: Math.round(parseFloat(expected_price) * 100), // Assuming paisa representation
         goods_type: material_type || 'General',
         status: 'available'
