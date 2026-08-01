@@ -40,27 +40,31 @@ class _LoadPostingScreenState extends State<LoadPostingScreen> {
   }
 
   void _submitLoad() {
-    // Collect the data from controllers and submit to API
-    final data = {
-      'pickup': _pickupController.text,
-      'dropoff': _dropoffController.text,
-      'truckType': _selectedTruckType,
-      'weight': _weightController.text,
-      'material': _materialController.text,
-      'budget': _budgetController.text,
-    };
+    final missingFields = <String>[
+      if (_pickupController.text.trim().isEmpty) 'pick-up location',
+      if (_dropoffController.text.trim().isEmpty) 'drop-off location',
+      if (_selectedTruckType == null) 'truck type',
+      if (_weightController.text.trim().isEmpty) 'weight',
+      if (_materialController.text.trim().isEmpty) 'material',
+      if (_budgetController.text.trim().isEmpty) 'budget',
+    ];
 
-    // TODO: Send data to the backend
+    if (missingFields.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Please enter ${missingFields.join(', ')}.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Load posted successfully!'),
-        backgroundColor: Colors.green,
+        content: Text('Load posting is not connected yet. Please try again after backend submission is enabled.'),
+        backgroundColor: Colors.red,
       ),
     );
-
-    // Optional: pop the screen after posting
-    // Navigator.of(context).pop();
   }
 
   @override
