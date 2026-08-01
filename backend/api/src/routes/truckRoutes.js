@@ -209,7 +209,7 @@ router.post('/', authenticate, requirePolicy('truck:register'), userLimiter, val
 
     const { data: truck, error: insertErr } = await supabase
       .from('trucks')
-      .insert({ name, number_plate: normalizedNumberPlate, max_capacity_tons, owner_id: req.user.id })
+      .insert({ name, number_plate: normalizedNumberPlate, max_capacity_tons, driver_id: req.user.id })
       .select('id, name, number_plate, max_capacity_tons, created_at')
       .single();
 
@@ -289,7 +289,7 @@ router.get('/', authenticate, requirePolicy('truck:list-own'), userLimiter, asyn
     let query = supabase
       .from('trucks')
       .select('id, name, number_plate, max_capacity_tons, created_at')
-      .eq('owner_id', req.user.id);
+      .eq('driver_id', req.user.id);
 
     if (name && typeof name === 'string') {
       const cleanName = name.trim();
@@ -337,7 +337,7 @@ function isLongitude(value) {
 }
 
 async function canViewTruckNumber(user, truck) {
-  if (user.role === 'admin' || truck.owner_id === user.id) {
+  if (user.role === 'admin' || truck.driver_id === user.id) {
     return { allowed: true };
   }
 
@@ -684,7 +684,7 @@ router.get('/:id/number', authenticate, userLimiter, validateParams(uuidParamSch
   try {
     const { data: truck, error } = await supabase
       .from('trucks')
-      .select('id, owner_id, number_plate')
+      .select('id, driver_id, number_plate')
       .eq('id', req.params.id)
       .maybeSingle();
 
