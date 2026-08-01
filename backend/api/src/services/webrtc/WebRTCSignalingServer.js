@@ -17,7 +17,7 @@ class WebRTCSignalingServer {
   }
 
   setupWebSocket() {
-    this.wss.on('connection', (ws, req) => {
+    this.wss.on('connection', async (ws, req) => {
       const url = new URL(req.url, `http://${req.headers.host}`);
 
       // Authenticate via token query parameter or Authorization header
