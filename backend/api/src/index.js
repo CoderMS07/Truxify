@@ -251,4 +251,7 @@ if (!process.env.ACTIVE_CLOUD) {
 // Validate escrow contract deployment — log warning if validation fails,
 // but don't crash (non-escrow functionality should still work).
 validateEscrowSetup().then((valid) => {
-.catch(err => console.error(err))
+  if (!valid) {
+    logger.warn('⚠️ Escrow setup validation failed. On-chain escrow features may not work correctly.')
+  }
+}).catch(err => console.error(err))
