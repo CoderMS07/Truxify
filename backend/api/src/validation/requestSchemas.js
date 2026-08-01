@@ -241,6 +241,9 @@ export const registerTruckSchema = z.object({
   name: z.string()
     .min(2, 'Truck name must be at least 2 characters')
     .max(100, 'Truck name must be 100 characters or fewer'),
+  truck_type: z.enum(['Open Body', 'Closed Body', 'Container', 'Refrigerated'], {
+    invalid_type_error: 'truck_type must be one of: Open Body, Closed Body, Container, Refrigerated',
+  }),
   number_plate: z.string()
     .transform((v) => v.trim().toUpperCase().replace(/[^A-Z0-9]/g, ''))
     .pipe(

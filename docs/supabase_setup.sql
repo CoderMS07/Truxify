@@ -140,6 +140,8 @@ create table if not exists trucks (
   id                    uuid primary key default gen_random_uuid(),
   driver_id             uuid not null,                        -- profiles.id
   name                  text not null,                        -- e.g. 'Tata 407'
+  truck_type            text not null default 'Open Body'
+                        check (truck_type in ('Open Body','Closed Body','Container','Refrigerated')),
   number_plate          text not null,                        -- e.g. 'TN 45 AB 1234'
   max_capacity_tons     numeric(6,2) not null default 0,
   cargo_length_ft       numeric(6,2),
