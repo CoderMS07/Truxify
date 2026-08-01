@@ -1061,6 +1061,29 @@ export async function closeWebSocketServer() {
   });
 }
 
+export function broadcastOrderMilestone(orderDisplayId, milestone, status) {
+  if (!orderDisplayId || !trackingSubscriptions.has(orderDisplayId)) {
+    return;
+  }
+
+  const payload = JSON.stringify({
+    event: 'milestone_update',
+    data: {
+      order_display_id: orderDisplayId,
+      milestone,
+      status,
+      timestamp: new Date().toISOString(),
+    },
+  });
+
+  const clients = trackingSubscriptions.get(orderDisplayId);
+  clients.forEach((client) => {
+    if (client.readyState === 1) {
+      client.send(payload);
+    }
+  });
+}
+
 export async function handleSubscribe(ws, data) {
   const { order_display_id, driver_id } = data;
   const targetId = order_display_id || driver_id;
