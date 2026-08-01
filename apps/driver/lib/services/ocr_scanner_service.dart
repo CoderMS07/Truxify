@@ -21,8 +21,8 @@ class OcrScannerService {
 
   /// Submits the processed digital PoD to the blockchain ledger for immutable storage
   Future<bool> submitDigitalPoD(PodDocument document) async {
-    // Simulate network upload
-    await Future.delayed(const Duration(seconds: 1));
-    return true; // Success
+    throw UnsupportedError(
+      'Digital PoD submission is not configured. Connect the backend or ledger submission endpoint before reporting success.',
+    );
   }
 }
