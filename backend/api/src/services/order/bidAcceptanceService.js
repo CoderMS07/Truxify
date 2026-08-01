@@ -1,4 +1,4 @@
-import { paisaToMaticWei } from '../escrow.js';
+import { paisaToMaticWei, getEscrowBookingId } from '../escrow.js';
 import { DomainError } from './domainError.js';
 import { sendPushNotification } from '../notificationService.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
@@ -99,7 +99,7 @@ export class BidAcceptanceService {
       });
     }
     const depositTx = await this.buildDepositTxFn(order.order_display_id, freshDriverWallet, amountWei);
-    const bookingId = depositTx?.bookingId || `escrow:${order.order_display_id}`;
+    const bookingId = depositTx?.bookingId || getEscrowBookingId(order.order_display_id);
 
     // Guard against silent escrow disable: if buildDepositTx returned
     // null txData (contract not initialised), reject immediately.

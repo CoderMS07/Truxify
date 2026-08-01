@@ -10,6 +10,7 @@ import {
   submitEscrowRefund,
   submitEscrowCancelWithPenalty,
   confirmEscrowRefund,
+  getEscrowBookingId,
 } from '../escrow.js';
 import { computeOrderPricing } from '../../lib/pricing.js';
 import { getRouteEstimate } from '../osrm.js';
@@ -847,7 +848,7 @@ export class OrderLifecycleService {
       const { data: customerProfile } = await this.orderRepository.findCustomerWallet(userId);
       const customerWallet = customerProfile?.polygon_wallet_address ?? null;
 
-      const bookingId = order.escrow_booking_id || `escrow:${order.order_display_id}`;
+      const bookingId = order.escrow_booking_id || getEscrowBookingId(order.order_display_id);
       const result = await recordDepositTx(
         bookingId,
         txHash,
