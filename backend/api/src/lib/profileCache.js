@@ -2,6 +2,24 @@ import * as db from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { firebaseProfileKey, supabaseProfileKey, customerStatsKey, driverDetailsKey } from '../cache/profileCacheKeys.js';
 
+let _publishFn = null;
+let _pubSubChecked = false;
+
+async function _publishProfileInvalidation(eventOpts) {
+  if (!_pubSubChecked) {
+    _pubSubChecked = true;
+    try {
+      const { publishInvalidation } = await import('../cache/CachePublisher.js');
+      _publishFn = publishInvalidation;
+    } catch {
+      _publishFn = null;
+    }
+  }
+  if (_publishFn) {
+    _publishFn('profile', eventOpts).catch(() => {});
+  }
+}
+
 export const TTL_SECONDS = parseInt(process.env.REDIS_CACHE_TTL || '900', 10); // 15 minutes default
 export const TOMBSTONE_TTL_SECONDS = 30; // 30 seconds
 
@@ -180,6 +198,11 @@ export async function invalidateCachedProfile(firebaseUid) {
   if (!redisClient || !firebaseUid) return;
   try {
     await redisClient.del(firebaseProfileKey(firebaseUid));
+    _publishProfileInvalidation({
+      type: 'INVALIDATE_KEY',
+      key: firebaseProfileKey(firebaseUid),
+      entityId: firebaseUid,
+    });
   } catch (err) {
     logCacheError('invalidateCachedProfile', err);
   }
@@ -243,6 +266,11 @@ export async function invalidateCachedSupabaseProfile(userId) {
   if (!redisClient || !userId) return;
   try {
     await redisClient.del(supabaseProfileKey(userId));
+    _publishProfileInvalidation({
+      type: 'INVALIDATE_KEY',
+      key: supabaseProfileKey(userId),
+      entityId: userId,
+    });
   } catch (err) {
     logCacheError('invalidateCachedSupabaseProfile', err);
   }
@@ -343,6 +371,11 @@ export async function invalidateCachedSupabaseProfileAll(userId) {
       redisClient.del(customerStatsKey(userId)),
       redisClient.del(driverDetailsKey(userId)),
     ]);
+    _publishProfileInvalidation({
+      type: 'INVALIDATE_PATTERN',
+      pattern: `user:profile:sb:${userId}*`,
+      entityId: userId,
+    });
   } catch (err) {
     logCacheError('invalidateCachedSupabaseProfileAll', err);
   }

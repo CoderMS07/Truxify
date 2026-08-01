@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:truxify_driver/models/obd_telemetry_model.dart';
 import 'package:truxify_driver/services/obd_maintenance_service.dart';
@@ -13,6 +14,7 @@ class _FleetMaintenanceScreenState extends State<FleetMaintenanceScreen> {
   final ObdMaintenanceService _obdService = ObdMaintenanceService();
   ObdTelemetryModel? _currentTelemetry;
   String? _alertMessage;
+  StreamSubscription<ObdTelemetryModel>? _telemetrySub;
   
   @override
   void initState() {
@@ -20,8 +22,14 @@ class _FleetMaintenanceScreenState extends State<FleetMaintenanceScreen> {
     _startTelemetryStream();
   }
 
+  @override
+  void dispose() {
+    _telemetrySub?.cancel();
+    super.dispose();
+  }
+
   void _startTelemetryStream() {
-    _obdService.streamTelemetryData().listen((data) async {
+    _telemetrySub = _obdService.streamTelemetryData().listen((data) async {
       final prediction = await _obdService.predictFailure(data);
       if (mounted) {
         setState(() {

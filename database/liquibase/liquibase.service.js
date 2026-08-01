@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../../backend/api/src/middleware/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -75,8 +75,7 @@ class LiquibaseService {
                 `--changeLogFile=${this.liquibasePath}/changelog-master.xml`,
                 `--url=${this.dbUrl}`,
                 `--username=${this.username}`,
-                `rollbackCount`,
-                `${rollbackCount}`,
+                `--rollbackCount=${rollbackCount}`,
             ];
 
             const { stdout, stderr } = await runLiquibase(args, this.password);

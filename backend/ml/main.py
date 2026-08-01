@@ -85,8 +85,6 @@ async def startup_event():
     loaded_models.update(persisted_models)
     if eta_predictor.model is not None:
         loaded_models.add("eta_prediction")
-    if traffic_pipeline.model is not None:
-        loaded_models.add("traffic_eta")
     logger.info("ML Engine startup complete — loaded: %s", sorted(loaded_models))
 
 
@@ -376,7 +374,6 @@ async def health():
         "trust_scorer": model_exists("trust_scorer"),
         "collaborative_filter": model_exists("collaborative_filter"),
         "eta_predictor": eta_predictor.model is not None,
-        "traffic_eta": traffic_pipeline.model is not None,
     }
     non_optional = {k: v for k, v in models.items() if k != 'eta_predictor'}
     all_ready = all(non_optional.values())
@@ -440,32 +437,17 @@ async def predict_price_endpoint(input: PricePredictInput, _auth=Depends(verify_
         raise HTTPException(status_code=500, detail="Price prediction failed")
 
 
-# ETA endpoints are served via routes/eta_routes.py under /eta prefix
-
-@app.post("/predict/eta", response_model=ETAPredictOutput)
-async def predict_eta_endpoint(input: ETAPredictInput, _auth=Depends(verify_api_key)):
-    try:
-        result = eta_predictor.predict(
-            distance=input.route_distance,
-            time_of_day=input.time_of_day,
-            day_of_week=input.day_of_week,
-            route_type=input.route_type,
-            historical_speed=input.historical_speed,
-        )
-        return ETAPredictOutput(**result)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        logger.error("ETA prediction failed: %s", e)
-        raise HTTPException(status_code=500, detail="ETA prediction failed")
-
-
 # ---------------------------------------------------------------------------
 # Bilateral Matcher
 # ---------------------------------------------------------------------------
 
 @app.post("/match/bilateral", response_model=BilateralMatchOutput)
 async def bilateral_match_endpoint(input: BilateralMatchInput, _auth=Depends(verify_api_key)):
+    """
+    Two-Sided Bilateral Matcher endpoint.
+    Accepts a list of AvailableLoads and Drivers to find the most optimal matches.
+    Related Issue: #5552
+    """
     try:
         loads = [load.model_dump() for load in input.loads]
         drivers = [driver.model_dump() for driver in input.drivers]

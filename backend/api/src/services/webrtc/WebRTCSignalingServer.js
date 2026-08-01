@@ -1,5 +1,5 @@
 import { WebSocketServer } from 'ws';
-import jwt from 'jsonwebtoken';
+import { verifyAuthToken } from '../../middleware/auth.js';
 import logger from '../../middleware/logger.js';
 import { supabase, redisClient } from '../../config/db.js';
 
@@ -17,7 +17,7 @@ class WebRTCSignalingServer {
   }
 
   setupWebSocket() {
-    this.wss.on('connection', (ws, req) => {
+    this.wss.on('connection', async (ws, req) => {
       const url = new URL(req.url, `http://${req.headers.host}`);
 
       // Authenticate via token query parameter or Authorization header
@@ -32,9 +32,9 @@ class WebRTCSignalingServer {
 
       let decoded;
       try {
-        decoded = jwt.verify(token, process.env.JWT_SECRET);
+        decoded = await verifyAuthToken(token);
       } catch (err) {
-        logger.warn(`WebRTC connection rejected: invalid token — ${err.message}`);
+        logger.warn(`WebRTC connection rejected: ${err.message}`);
         ws.close(4001, 'Invalid token');
         return;
       }
@@ -45,7 +45,7 @@ class WebRTCSignalingServer {
       // Store peer with authenticated user info
       this.peers.set(peerId, {
         ws,
-        userId: decoded.sub,
+        userId: decoded.id,
         role: decoded.role,
         location: null,
         meshId,
@@ -208,6 +208,12 @@ class WebRTCSignalingServer {
   async handleGPSData(peerId, data) {
     if (!data || typeof data !== 'object' || !this.isValidLocation(data.location)) {
       logger.warn(`Invalid WebRTC GPS payload dropped for peer ${peerId}`);
+      return;
+    }
+
+    const peer = this.peers.get(peerId);
+    if (!peer) {
+      logger.warn(`[WebRTC] GPS data from unknown peer ${peerId}`);
       return;
     }
 
@@ -383,7 +389,11 @@ class WebRTCSignalingServer {
     return Boolean(peer && peer.userId === user?.id);
   }
 
-  async getOfflineGPSData(peerId, since) {
+  async getOfflineGPSData(peerId, since, requestingUser) {
+    if (!requestingUser || !this.canUserAccessPeer(peerId, requestingUser)) {
+      logger.warn(`[WebRTC] Unauthorized offline GPS data access attempt for peer ${peerId}`);
+      return [];
+    }
     const { data } = await supabase
       .from('gps_offline_data')
       .select('*')
@@ -394,7 +404,11 @@ class WebRTCSignalingServer {
     return data || [];
   }
 
-  async syncOfflineData(peerId) {
+  async syncOfflineData(peerId, requestingUser) {
+    if (!requestingUser || !this.canUserAccessPeer(peerId, requestingUser)) {
+      logger.warn(`[WebRTC] Unauthorized sync offline data attempt for peer ${peerId}`);
+      return;
+    }
     // Mark data as synced for this peer
     await supabase
       .from('gps_offline_data')

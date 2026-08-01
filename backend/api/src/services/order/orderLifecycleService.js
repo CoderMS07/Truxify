@@ -564,10 +564,7 @@ export class OrderLifecycleService {
         updated_at: new Date().toISOString(),
       };
 
-      const { data: updatedOrder, error: updateErr } = await this.orderRepository.updateOrder(order.id, updates);
-      if (updateErr) throw new DomainError(500, { error: 'Failed to update order.', details: updateErr.message });
-
-      const { error: offerUpdateErr } = await this.orderRepository.updateLoadOffer(order.order_display_id, {
+      const offerUpdates = {
         drop_address,
         drop_lat: Number(drop_lat),
         drop_lng: Number(drop_lng),
@@ -577,12 +574,19 @@ export class OrderLifecycleService {
         toll_cost: pricing.tollEstimate,
         net_profit: pricing.netProfit,
         extra_distance_km: pricing.distanceKm,
+      };
+
+      const { data: updatedOrder, error: updateErr } = await this.orderRepository.executeRpc('update_order_and_load_offer', {
+        p_order_id: order.id,
+        p_order_display_id: order.order_display_id,
+        p_order_updates: updates,
+        p_offer_updates: offerUpdates
       });
 
-      if (offerUpdateErr) {
+      if (updateErr) {
         throw new DomainError(500, {
-          error: 'Failed to update load offer after drop change.',
-          details: offerUpdateErr.message,
+          error: 'Failed to update order and load offer atomically after drop change.',
+          details: updateErr.message,
         });
       }
 
@@ -813,7 +817,7 @@ export class OrderLifecycleService {
 
     try {
       const { data: order, error: fetchErr } = await this.orderRepository.findOrderById(
-        orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status'
+        orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet'
       );
 
       if (fetchErr || !order) throw new DomainError(404, { error: 'Order not found' });
@@ -828,7 +832,13 @@ export class OrderLifecycleService {
       const customerWallet = customerProfile?.polygon_wallet_address ?? null;
 
       const bookingId = order.escrow_booking_id || `escrow:${order.order_display_id}`;
-      const result = await recordDepositTx(bookingId, txHash, customerWallet);
+      const result = await recordDepositTx(
+        bookingId,
+        txHash,
+        customerWallet,
+        order.escrow_driver_wallet ?? null,
+        order.escrow_amount_wei ?? null
+      );
 
       if (result.error) throw new DomainError(422, { error: result.error });
 

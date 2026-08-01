@@ -34,6 +34,15 @@ class TraceabilityService {
                 ethers.toUtf8Bytes(JSON.stringify(productData))
             );
 
+            const productId = uuidv4();
+
+            await this.storeProduct({
+                ...productData,
+                productId,
+                productHash,
+                txHash: ''
+            });
+
             const tx = await this.contract.createProduct(
                 productData.name,
                 productData.description || '',
@@ -44,18 +53,16 @@ class TraceabilityService {
             );
             const receipt = await tx.wait();
 
-            const productId = await this.contract.getProductCount();
-
-            await this.storeProduct({
-                ...productData,
-                productId: productId.toString(),
-                txHash: receipt.hash
-            });
+            const { error } = await supabase
+                .from('trace_products')
+                .update({ tx_hash: receipt.hash })
+                .eq('product_id', productId);
+            if (error) logger.error('Failed to update txHash:', error);
 
             logger.info(`✅ Product created: ${productId}`);
             return {
                 success: true,
-                productId: productId.toString(),
+                productId,
                 productHash,
                 txHash: receipt.hash
             };

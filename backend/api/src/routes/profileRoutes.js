@@ -568,9 +568,9 @@ router.get('/driver/statement', authenticate, requirePolicy('profile:view-statem
       // Optimize memory: construct CSV string directly using string builder/loop
       const sanitizeCsvValue = (val) => {
         const str = String(val);
-        if (/^[=+\-@\t\r]/.test(str)) {
-          return `"'"${str.replace(/"/g, '""')}"`;
-        }
+  if (/^[=+\-@\t\r]/.test(str)) {
+    str = `'` + str;
+  }
         return `"${str.replace(/"/g, '""')}"`;
       };
       const headers = ['ID', 'Order Display ID', 'Pickup Address', 'Drop Address', 'Pickup Date', 'Base Freight', 'Platform Fee', 'Toll Estimate', 'Net Earnings', 'Status'];

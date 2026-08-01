@@ -61,14 +61,39 @@ m.supabase.rpc = vi.fn().mockImplementation(async (fnName, args) => {
   return originalRpc(fnName, args);
 });
 let mockRedis = null;
+let mockMongoDb = null;
 afterEach(() => { mockRedis = null; });
 
 vi.mock('../../src/config/db.js', () => ({
   supabase: m.supabase,
   firebaseAdmin: null,
   get redisClient() { return mockRedis; },
-  mongoDb: null,
+  get mongoDb() { return mockMongoDb; },
 }));
+
+function makeMongoDbMock(records) {
+  return {
+    collection: () => ({
+      find: () => ({
+        sort: () => ({
+          limit: () => ({
+            toArray: async () => records,
+          }),
+        }),
+      }),
+    }),
+  };
+}
+
+function seedDriverAtDropOff(orderId, driverId) {
+  mockMongoDb = makeMongoDbMock([{
+    driver_id: driverId,
+    order_id: orderId,
+    lat: 28.6139,
+    lng: 77.209,
+    server_received_at: new Date(),
+  }]);
+}
 
 vi.mock('../../src/sockets/tracker.js', () => ({
   initWebSocketServer: () => ({}),
@@ -998,6 +1023,7 @@ describe('Delivery OTP Verification and Milestones', () => {
     m.calls.length = 0;
     completeTripRpcError = null;
     escrowReleaseMock.mockReset();
+    mockMongoDb = makeMongoDbMock([]);
   });
 
   it('blocks direct transition to Delivered milestone with descriptive message', async () => {
@@ -1144,7 +1170,9 @@ describe('Delivery OTP Verification and Milestones', () => {
       id: 'order-1',
       driver_id: 'driver-123',
       order_display_id: 'ORD001',
-      status: 'arriving'
+      status: 'arriving',
+      drop_lat: 28.6139,
+      drop_lng: 77.209
     }];
     m.store.delivery_otps = [{
       id: 'otp-1',
@@ -1154,6 +1182,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString()
     }];
+    seedDriverAtDropOff('order-1', 'driver-123');
     m.store.order_timeline = [{
       order_display_id: 'ORD001',
       milestone: 'Delivered',
@@ -1198,7 +1227,9 @@ describe('Delivery OTP Verification and Milestones', () => {
       id: 'order-retry',
       driver_id: 'driver-123',
       order_display_id: 'ORD-RETRY',
-      status: 'arriving'
+      status: 'arriving',
+      drop_lat: 28.6139,
+      drop_lng: 77.209
     }];
     m.store.delivery_otps = [{
       id: 'otp-retry',
@@ -1208,6 +1239,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString()
     }];
+    seedDriverAtDropOff('order-retry', 'driver-123');
 
     completeTripRpcError = { message: 'temporary database failure' };
 
@@ -1250,6 +1282,8 @@ describe('Delivery OTP Verification and Milestones', () => {
       status: 'arriving',
       total_amount: 125000,
       escrow_status: 'funded',
+      drop_lat: 28.6139,
+      drop_lng: 77.209,
     }];
     m.store.delivery_otps = [{
       id: 'otp-2',
@@ -1259,6 +1293,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString(),
     }];
+    seedDriverAtDropOff('order-2', 'driver-456');
     m.store.order_timeline = [{
       order_display_id: 'ORD002',
       milestone: 'Delivered',
@@ -1305,6 +1340,8 @@ describe('Delivery OTP Verification and Milestones', () => {
       total_amount: 125000,
       escrow_status: 'funded',
       escrow_release_attempts: 0,
+      drop_lat: 28.6139,
+      drop_lng: 77.209,
     }];
     m.store.delivery_otps = [{
       id: 'otp-release-failed',
@@ -1314,6 +1351,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString(),
     }];
+    seedDriverAtDropOff('order-release-failed', 'driver-456');
 
     const app = buildApp();
     const res = await request(app)
@@ -1356,6 +1394,8 @@ describe('Delivery OTP Verification and Milestones', () => {
       total_amount: 125000,
       escrow_status: 'funded',
       escrow_release_attempts: 2,
+      drop_lat: 28.6139,
+      drop_lng: 77.209,
     }];
     m.store.delivery_otps = [{
       id: 'otp-no-release-hash',
@@ -1365,6 +1405,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString(),
     }];
+    seedDriverAtDropOff('order-no-release-hash', 'driver-456');
 
     const app = buildApp();
     const res = await request(app)
@@ -1424,7 +1465,9 @@ describe('Delivery OTP Verification and Milestones', () => {
       id: orderId,
       driver_id: 'driver-123',
       order_display_id: 'ORD-LOCK',
-      status: 'arriving'
+      status: 'arriving',
+      drop_lat: 28.6139,
+      drop_lng: 77.209,
     }];
     m.store.delivery_otps = [{
       id: 'otp-lockout',
@@ -1434,6 +1477,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString()
     }];
+    seedDriverAtDropOff(orderId, 'driver-123');
 
     const app = buildApp();
 
@@ -1481,6 +1525,8 @@ describe('Delivery OTP Verification and Milestones', () => {
 
     // Update expires_at so the OTP itself isn't expired after lockout bypass
     m.store.delivery_otps[0].expires_at = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    // Re-seed telemetry so it stays fresh after the 31-minute time advance
+    seedDriverAtDropOff(orderId, 'driver-123');
 
     try {
       // Correct OTP should now succeed
@@ -1505,7 +1551,9 @@ describe('Delivery OTP Verification and Milestones', () => {
       id: orderId,
       driver_id: 'driver-123',
       order_display_id: 'ORD-CLEAR',
-      status: 'arriving'
+      status: 'arriving',
+      drop_lat: 28.6139,
+      drop_lng: 77.209,
     }];
     m.store.delivery_otps = [{
       id: 'otp-clear-state',
@@ -1515,6 +1563,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString()
     }];
+    seedDriverAtDropOff(orderId, 'driver-123');
 
     const app = buildApp();
 

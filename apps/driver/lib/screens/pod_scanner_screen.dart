@@ -23,6 +23,7 @@ class _PodScannerScreenState extends State<PodScannerScreen> {
     // Simulated image path from camera
     final doc = await _ocrService.scanDocument('/local/cache/image_capture.jpg');
 
+    if (!mounted) return;
     setState(() {
       _isScanning = false;
       _scannedDocument = doc;

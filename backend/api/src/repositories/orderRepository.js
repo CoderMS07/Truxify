@@ -499,12 +499,13 @@ export class OrderRepository {
   // ESCROW
   // ===================================================================
 
-  async updateEscrowBooking(orderId, bookingId, escrowStatus) {
+  async updateEscrowBooking(orderId, bookingId, escrowStatus, extra = {}) {
     return this._retryableQuery(() => this.supabase
       .from('orders')
       .update({
         escrow_booking_id: bookingId,
         escrow_status: escrowStatus,
+        ...extra,
       })
       .eq('id', orderId), 'updateEscrowBooking');
   }

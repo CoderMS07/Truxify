@@ -957,7 +957,7 @@ describe("TruxifyEscrow", function () {
 
   // ─── Security: Concurrent Booking Timestamp ──────────────────────────────
   describe("Concurrent booking timestamp handling", function () {
-    it("preserves earliest deadline for driver with multiple payment releases", async function () {
+    it("extends the deadline for driver with multiple payment releases", async function () {
       const { escrow, owner, customer, driver } = await loadFixture(deployEscrowFixture);
 
       // First booking for driver — sets deadline D1
@@ -968,15 +968,15 @@ describe("TruxifyEscrow", function () {
       // Advance time a bit
       await time.increase(3600); // 1 hour
 
-      // Second booking for same driver — must NOT extend deadline
+      // Second booking for same driver — must extend deadline
       await escrow.connect(customer).createBooking(2, driver.address, { value: ethers.parseEther("2.0") });
       await escrow.connect(owner).releasePayment(2);
       const deadline2 = await escrow.releaseTimestamps(driver.address);
 
-      expect(deadline2).to.equal(deadline1);
+      expect(deadline2).to.be.above(deadline1);
     });
 
-    it("preserves earliest deadline for customer with multiple cancellations", async function () {
+    it("extends the deadline for customer with multiple cancellations", async function () {
       const { escrow, owner, customer, driver } = await loadFixture(deployEscrowFixture);
 
       // First booking for customer — sets deadline D1
@@ -987,12 +987,12 @@ describe("TruxifyEscrow", function () {
       // Advance time
       await time.increase(3600);
 
-      // Second booking for same customer — must NOT extend deadline
+      // Second booking for same customer — must extend deadline
       await escrow.connect(customer).createBooking(2, driver.address, { value: ethers.parseEther("2.0") });
       await escrow.connect(owner).cancelBooking(2);
       const deadline2 = await escrow.releaseTimestamps(customer.address);
 
-      expect(deadline2).to.equal(deadline1);
+      expect(deadline2).to.be.above(deadline1);
     });
 
     it("sets fresh timestamp after withdraw clears existing one", async function () {

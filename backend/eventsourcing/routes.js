@@ -53,7 +53,7 @@ router.get('/eventsourcing/orders', async (req, res) => {
         const orders = await eventStore.getOrderList({
             status,
             customerId,
-            limit: parseInt(limit) || 100
+            limit: parseInt(limit, 10) || 100
         });
         res.json({
             success: true,

@@ -3,7 +3,27 @@ import crypto from 'crypto';
 import { supabase } from '../config/db.js';
 import logger from '../middleware/logger.js';
 
+const MAX_CACHE_SIZE = 100;
+const CACHE_TTL_MS = 10 * 60 * 1000;
 export const audioCache = new Map();
+
+function trimCache() {
+  const now = Date.now();
+  if (audioCache.size > MAX_CACHE_SIZE) {
+    const oldest = [...audioCache.entries()]
+      .filter(([, v]) => now - v.timestamp < CACHE_TTL_MS)
+      .sort(([, a], [, b]) => a.timestamp - b.timestamp);
+    const toDelete = audioCache.size - MAX_CACHE_SIZE;
+    for (let i = 0; i < toDelete && i < oldest.length; i++) {
+      audioCache.delete(oldest[i][0]);
+    }
+  }
+}
+
+function cacheAudio(id, buffer) {
+  audioCache.set(id, { buffer, timestamp: Date.now() });
+  trimCache();
+}
 
 async function getBookingContext(bookingId) {
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -72,7 +92,7 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
     // Generate a dummy silent mp3
     const mockAudio = Buffer.alloc(1000);
     const audioId = crypto.randomUUID();
-    audioCache.set(audioId, mockAudio);
+    cacheAudio(audioId, mockAudio);
 
     return {
       transcript: selected.transcript,
@@ -148,7 +168,7 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
     });
 
     const audioId = crypto.randomUUID();
-    audioCache.set(audioId, Buffer.from(ttsResponse.data));
+    cacheAudio(audioId, Buffer.from(ttsResponse.data));
     audioUrl = `/api/voice/audio/${audioId}`;
   } catch (err) {
     logger.error('ElevenLabs TTS failed:', err.message);
