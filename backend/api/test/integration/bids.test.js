@@ -751,7 +751,7 @@ describe('Bid Routes', () => {
 
       expect(res.status).toBe(422);
       expect(res.body.error).toBe('Transaction reverted or not found on chain');
-      expect(mockRecordDepositTx).toHaveBeenCalledWith('escrow:OD1', '0x' + '1'.repeat(64), null);
+      expect(mockRecordDepositTx).toHaveBeenCalledWith('escrow:OD1', '0x' + '1'.repeat(64), null, null, null);
     });
 
     it('POST /:id/confirm-deposit hashes the order display id when escrow_booking_id is missing', async () => {
@@ -775,7 +775,7 @@ describe('Bid Routes', () => {
 
       expect(res.status).toBe(200);
       // The fallback must be the deterministic hash, NOT a raw `escrow:OD1` string
-      expect(mockRecordDepositTx).toHaveBeenCalledWith(getEscrowBookingId('OD1'), '0x' + '1'.repeat(64), null);
+      expect(mockRecordDepositTx).toHaveBeenCalledWith(getEscrowBookingId('OD1'), '0x' + '1'.repeat(64), null, null, null);
       expect(mockRecordDepositTx.mock.calls[0][0]).not.toBe('escrow:OD1');
     });
 

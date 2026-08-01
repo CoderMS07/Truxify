@@ -88,7 +88,16 @@ export class BidAcceptanceService {
     }
 
     // Build the escrow deposit transaction
-    const amountWei = paisaToMaticWei(bid.bid_amount);
+    let amountWei;
+    try {
+      amountWei = paisaToMaticWei(bid.bid_amount);
+    } catch (err) {
+      throw new DomainError(422, {
+        error: 'Deposit amount exceeds the escrow safety cap.',
+        details: err.message,
+        recovery: 'Configure ESCROW_MATIC_PER_PAISA / MAX_ESCROW_MATIC or contact support for a larger escrow limit.',
+      });
+    }
     const depositTx = await this.buildDepositTxFn(order.order_display_id, freshDriverWallet, amountWei);
     const bookingId = depositTx?.bookingId || getEscrowBookingId(order.order_display_id);
 
@@ -103,8 +112,13 @@ export class BidAcceptanceService {
       });
     }
 
-    // Update order with escrow booking info
-    const { error: escrowUpdateErr } = await this.orderRepository.updateEscrowBooking(orderId, bookingId, 'funding');
+    // Update order with escrow booking info, persisting the expected escrow
+    // amount and assigned driver wallet so deposit confirmation can verify
+    // the on-chain booking matches them.
+    const { error: escrowUpdateErr } = await this.orderRepository.updateEscrowBooking(orderId, bookingId, 'funding', {
+      escrow_amount_wei: amountWei.toString(),
+      escrow_driver_wallet: freshDriverWallet,
+    });
     if (escrowUpdateErr) {
       throw new DomainError(500, { error: 'Failed to store escrow booking reference.', details: escrowUpdateErr.message });
     }

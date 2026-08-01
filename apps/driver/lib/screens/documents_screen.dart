@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:truxify_driver/services/api_client.dart';
 import 'package:truxify_driver/core/driver_session.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
@@ -168,10 +169,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 }
 
-  static const String _apiBaseUrl = String.fromEnvironment(
-    'TRUXIFY_API_BASE_URL',
-    defaultValue: 'http://localhost:5000',
-  );
+  static String get _apiBaseUrl => ApiClient.defaultBaseUrl;
 
   Future<void> _startDigilockerOAuth(BuildContext context) async {
     if (!_requireAuth(context)) return;

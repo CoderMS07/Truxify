@@ -185,7 +185,7 @@ router.post('/virtual-list/item', (req, res) => {
 router.delete('/virtual-list/item/:index', (req, res) => {
     try {
         const { index } = req.params;
-        const result = list.removeItem(parseInt(index));
+        const result = list.removeItem(parseInt(index, 10));
         
         res.json({
             success: true,

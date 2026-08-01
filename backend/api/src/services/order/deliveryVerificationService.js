@@ -1,7 +1,8 @@
 import crypto from 'crypto';
-import { supabase, redisClient } from '../../config/db.js';
+import { supabase, redisClient, mongoDb } from '../../config/db.js';
 import { DomainError } from './domainError.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
+import { haversineKm } from '../../lib/pricing.js';
 import {
   sendDeliveryOtpNotification,
   storeDeliveryOtp,
@@ -21,6 +22,19 @@ import logger from '../../middleware/logger.js';
 import { OrderTimelineService } from './orderTimelineService.js';
 
 const DELIVERY_OTP_READY_STATUSES = new Set(['arriving']);
+
+const DELIVERY_GEOFENCE_RADIUS_KM = Number(process.env.DELIVERY_GEOFENCE_RADIUS_KM) || 0.5;
+const DELIVERY_GEOFENCE_MAX_AGE_MS = Number(process.env.DELIVERY_GEOFENCE_MAX_AGE_MS) || 5 * 60 * 1000;
+
+function toEpochMs(value) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    const time = Date.parse(value);
+    return Number.isNaN(time) ? null : time;
+  }
+  return null;
+}
 
 export class DeliveryVerificationService {
   constructor(orderRepository, deps = {}) {
@@ -43,7 +57,7 @@ export class DeliveryVerificationService {
       });
     }
 
-    const { data: order, error: orderErr } = await this.orderRepository.findOrderById(orderId, 'id, order_display_id, driver_id, customer_id, escrow_status, escrow_release_attempts, status, toll_estimate, base_freight, platform_fee, total_amount');
+    const { data: order, error: orderErr } = await this.orderRepository.findOrderById(orderId, 'id, order_display_id, driver_id, customer_id, escrow_status, escrow_release_attempts, status, drop_lat, drop_lng, toll_estimate, base_freight, platform_fee, total_amount');
 
     if (orderErr || !order) {
       throw new DomainError(404, { error: 'Order not found.' });
@@ -165,9 +179,75 @@ export class DeliveryVerificationService {
     });
   }
 
+  async assertDriverAtDropoff(order) {
+    const rawDropLat = order.drop_lat;
+    const rawDropLng = order.drop_lng;
+    if (rawDropLat === null || rawDropLat === undefined || rawDropLat === '' ||
+        rawDropLng === null || rawDropLng === undefined || rawDropLng === '') {
+      throw new DomainError(400, {
+        error: 'Order is missing drop-off coordinates. Delivery cannot be confirmed.',
+      });
+    }
+    const dropLat = Number(rawDropLat);
+    const dropLng = Number(rawDropLng);
+    if (!Number.isFinite(dropLat) || !Number.isFinite(dropLng)) {
+      throw new DomainError(400, {
+        error: 'Order has invalid drop-off coordinates. Delivery cannot be confirmed.',
+      });
+    }
+
+    if (!mongoDb) {
+      throw new DomainError(503, {
+        error: 'Driver location service is unavailable. Please retry shortly.',
+        retryable: true,
+      });
+    }
+
+    const latestTelemetry = await mongoDb
+      .collection('telemetry')
+      .find({ driver_id: order.driver_id, order_id: order.id })
+      .sort({ timestamp: -1 })
+      .limit(1)
+      .toArray();
+
+    const telemetry = latestTelemetry && latestTelemetry[0];
+    if (!telemetry) {
+      throw new DomainError(409, {
+        error: 'Driver location is not available. Delivery can only be confirmed when the driver is at the drop-off location.',
+      });
+    }
+
+    const lat = Number(telemetry.lat);
+    const lng = Number(telemetry.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      throw new DomainError(409, { error: 'Driver location is invalid. Delivery cannot be confirmed.' });
+    }
+
+    const telemetryTime = telemetry.server_received_at || telemetry.buffered_at || telemetry.timestamp;
+    const timestampMs = toEpochMs(telemetryTime);
+    if (timestampMs === null || Date.now() - timestampMs > DELIVERY_GEOFENCE_MAX_AGE_MS) {
+      throw new DomainError(409, {
+        error: 'Driver location is stale. Delivery can only be confirmed when the driver is at the drop-off location.',
+      });
+    }
+
+    const distanceKm = haversineKm(lat, lng, dropLat, dropLng);
+    if (distanceKm > DELIVERY_GEOFENCE_RADIUS_KM) {
+      throw new DomainError(409, {
+        error: `Driver is ${distanceKm.toFixed(2)} km from the drop-off location. Delivery can only be confirmed within ${DELIVERY_GEOFENCE_RADIUS_KM} km of the drop-off.`,
+      });
+    }
+  }
+
   async verifyDelivery({ orderId, driverId, otp }) {
     return measureExecution('DeliveryVerificationService.verifyDelivery', async () => {
     const { order, otpRecord } = await this.validateDeliveryOtp({ orderId, driverId, otp });
+
+    const isRetryForStuckEscrow = order.status === 'payment_released' && ['funded', 'release_failed'].includes(order.escrow_status);
+
+    if (!isRetryForStuckEscrow) {
+      await this.assertDriverAtDropoff(order);
+    }
 
     let releaseTxHash = null;
     let escrowAlreadyReleased = false;
@@ -195,8 +275,6 @@ export class DeliveryVerificationService {
     }
 
     // 2. Execute Postgres RPC to complete the trip AFTER blockchain success
-    const isRetryForStuckEscrow = order.status === 'payment_released' && ['funded', 'release_failed'].includes(order.escrow_status);
-
     let verifiedOrder;
     let tripData = null;
 

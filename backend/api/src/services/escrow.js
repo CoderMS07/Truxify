@@ -50,8 +50,8 @@ function parseEnvFloat(raw, defaultVal, name) {
   return val;
 }
 
-export const ESCROW_MATIC_PER_PAISA = parseEnvFloat(process.env.ESCROW_MATIC_PER_PAISA, '0.01', 'ESCROW_MATIC_PER_PAISA');
-const MAX_ESCROW_MATIC = parseEnvFloat(process.env.MAX_ESCROW_MATIC, '5', 'MAX_ESCROW_MATIC');
+export const ESCROW_MATIC_PER_PAISA = parseEnvFloat(process.env.ESCROW_MATIC_PER_PAISA, '0.000004', 'ESCROW_MATIC_PER_PAISA');
+const MAX_ESCROW_MATIC = parseEnvFloat(process.env.MAX_ESCROW_MATIC, '100', 'MAX_ESCROW_MATIC');
 
 /** @type {ethers.Contract | null} */
 let escrowContract = null
@@ -245,7 +245,7 @@ export async function buildDepositTx (orderDisplayId, driverWalletAddress, amoun
   });
 }
 
-export async function recordDepositTx (bookingId, txHash, expectedSenderAddress = null) {
+export async function recordDepositTx (bookingId, txHash, expectedSenderAddress = null, expectedDriverAddress = null, expectedAmountWei = null) {
   return measureExecution('EscrowService.recordDepositTx', async () => {
   if (!escrowContract) {
     return { error: 'Contract not initialised' }
@@ -254,10 +254,26 @@ export async function recordDepositTx (bookingId, txHash, expectedSenderAddress 
     return { error: 'Invalid transaction hash' }
   }
 
-  // Idempotency: check if this booking already has a funded escrow on-chain
+  // Idempotency: check if this booking already has a funded escrow on-chain.
+  // createBooking is callable by anyone, so an already-existing booking must be
+  // verified to have been created by the registered customer — and, when the
+  // expected values are persisted on the order, for the assigned driver and
+  // for at least the expected escrow amount — before it is accepted as funded.
   try {
     const booking = await escrowContract.bookings(bookingId)
     if (booking && booking.amount > 0n) {
+      if (!expectedSenderAddress) {
+        return { error: 'No registered customer wallet on file to verify transaction sender against' }
+      }
+      if (booking.customer.toLowerCase() !== expectedSenderAddress.toLowerCase()) {
+        return { error: 'Existing booking was created by a different wallet than the registered customer for this order' }
+      }
+      if (expectedDriverAddress && booking.driver.toLowerCase() !== expectedDriverAddress.toLowerCase()) {
+        return { error: 'Existing booking was created for a different driver than the one assigned to this order' }
+      }
+      if (expectedAmountWei !== null && booking.amount < BigInt(expectedAmountWei)) {
+        return { error: 'Existing booking is underfunded for the expected escrow amount of this order' }
+      }
       logger.info(`[escrow] Booking ${bookingId} already has a funded escrow — idempotency skip.`)
       return { txHash, bookingId, alreadyFunded: true }
     }
@@ -292,20 +308,32 @@ export async function recordDepositTx (bookingId, txHash, expectedSenderAddress 
   }
 
   const [txBookingId, txDriver] = decoded.args
-  if (BigInt(txBookingId) !== BigInt(bookingId)) {
+  let bookingIdMatches
+  try {
+    bookingIdMatches = BigInt(txBookingId) === BigInt(bookingId)
+  } catch (err) {
+    return { error: 'Invalid booking ID format' }
+  }
+  if (!bookingIdMatches) {
     return { error: 'Transaction booking ID does not match' }
   }
 
-  // (No txCustomer argument in createBooking, so we skip that check).
-  // We can still verify the on-chain sender (tx.from) is expected.
-
-  // If an expected sender address was provided (from order record), verify it matches.
+  // Verify the on-chain sender (tx.from) is the registered customer wallet.
   // Reject if no wallet is on file rather than silently skipping sender verification (fail closed).
   if (!expectedSenderAddress) {
     return { error: 'No registered customer wallet on file to verify transaction sender against' }
   }
   if (tx.from.toLowerCase() !== expectedSenderAddress.toLowerCase()) {
     return { error: 'Transaction sender does not match the registered customer wallet for this order' }
+  }
+
+  // Verify the booking was created for the assigned driver and with at least
+  // the expected escrow amount when those are persisted for the order.
+  if (expectedDriverAddress && txDriver.toLowerCase() !== expectedDriverAddress.toLowerCase()) {
+    return { error: 'Transaction driver address does not match the assigned driver for this order' }
+  }
+  if (expectedAmountWei !== null && BigInt(tx.value) < BigInt(expectedAmountWei)) {
+    return { error: 'Transaction value is less than the expected escrow amount for this order' }
   }
 
   logger.info(`[escrow] deposit confirmed for booking ${bookingId} in block ${receipt.blockNumber}`)
