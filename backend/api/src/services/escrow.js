@@ -372,6 +372,10 @@ export async function escrowRelease (orderDisplayId) {
     const tx = await escrowContract.releasePayment(bookingId)
     logger.info(`[escrow] releasePayment tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
     const receipt = await tx.wait(1)
+    if (!receipt || receipt.status === 0) {
+      logger.error(`[escrow] releasePayment reverted or not found for booking ${orderDisplayId}`)
+      return { txHash: null, bookingId, error: 'release reverted' }
+    }
     logger.info(`[escrow] releaseFunds confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`)
     return { txHash: receipt.hash, bookingId }
   } catch (err) {
