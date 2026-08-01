@@ -6,8 +6,17 @@ import { authenticate } from '../middleware/auth.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 
 const router = express.Router();
-const upload = multer({ dest: 'uploads/voice/' }); // Temporary storage for incoming audio
-
+const upload = multer({
+  dest: 'uploads/voice/', // Temporary storage for incoming audio
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('audio/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only audio is allowed.'));
+    }
+  }
+});
 /**
  * @swagger
  * /api/v1/voice/assistant:
