@@ -18,7 +18,8 @@ export async function getLiveTrafficMultiplier(pickupLat, pickupLng) {
     // In a real production scenario, this would call TomTom or Google Maps Distance Matrix API:
     // const url = `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key=${process.env.TOMTOM_API_KEY}&point=${pickupLat},${pickupLng}`;
     // const response = await fetch(url);
-    // const data = await response.json();
+    // if (!response.ok) throw new Error("Request failed");
+const data = await response.json();
     // return calculateMultiplierFromData(data);
 
     // Mocking a live traffic integration:
