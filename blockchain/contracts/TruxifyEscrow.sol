@@ -71,6 +71,14 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
         uint256 refundAmount
     );
 
+    event CancellationPenaltyApplied(
+        uint256 indexed bookingId,
+        address indexed driver,
+        uint256 driverAmount,
+        address customer,
+        uint256 refundAmount
+    );
+
     event BookingDisputed(
         uint256 indexed bookingId,
         address indexed raisedBy
@@ -238,6 +246,55 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
 
         emit WithdrawalReady(bookingId, customer, refundAmount);
         emit BookingCancelled(bookingId, customer, refundAmount);
+    }
+
+    /**
+     * @dev Cancels an active booking, compensating the assigned driver before
+     *      refunding the remaining escrow to the customer. The backend chooses
+     *      the penalty only after validating the off-chain trip state.
+     */
+    function cancelWithPenalty(uint256 bookingId, uint256 driverFee)
+        external
+        onlyOwner
+        nonReentrant
+        whenNotPaused
+    {
+        Booking storage booking = bookings[bookingId];
+
+        require(
+            booking.customer != address(0) && booking.status == BookingStatus.Active,
+            "TruxifyEscrow: Cannot cancel - booking not active"
+        );
+        require(!booking.paid, "TruxifyEscrow: Already paid");
+        require(booking.amount > 0, "TruxifyEscrow: Nothing to refund");
+        require(driverFee <= booking.amount, "TruxifyEscrow: Penalty exceeds escrow");
+
+        uint256 escrowAmount = booking.amount;
+        uint256 customerRefund = escrowAmount - driverFee;
+        address payable customer = booking.customer;
+        address payable driver = booking.driver;
+
+        booking.amount = 0;
+        booking.paid = true;
+        booking.status = BookingStatus.Cancelled;
+
+        uint256 newDeadline = block.timestamp + WITHDRAWAL_TIMEOUT;
+        if (driverFee > 0) {
+            pendingWithdrawals[driver] += driverFee;
+            if (releaseTimestamps[driver] == 0 || newDeadline > releaseTimestamps[driver]) {
+                releaseTimestamps[driver] = newDeadline;
+            }
+            emit WithdrawalReady(bookingId, driver, driverFee);
+        }
+        if (customerRefund > 0) {
+            pendingWithdrawals[customer] += customerRefund;
+            if (releaseTimestamps[customer] == 0 || newDeadline > releaseTimestamps[customer]) {
+                releaseTimestamps[customer] = newDeadline;
+            }
+            emit WithdrawalReady(bookingId, customer, customerRefund);
+        }
+
+        emit CancellationPenaltyApplied(bookingId, driver, driverFee, customer, customerRefund);
     }
 
     /**

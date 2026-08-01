@@ -8,6 +8,7 @@ import {
   escrowRefund,
   recordDepositTx,
   submitEscrowRefund,
+  submitEscrowCancelWithPenalty,
   confirmEscrowRefund,
 } from '../escrow.js';
 import { computeOrderPricing } from '../../lib/pricing.js';
@@ -639,6 +640,16 @@ export class OrderLifecycleService {
       }
 
       const requiresRefund = ['funded', 'refund_pending', 'refund_failed'].includes(currentOrder.escrow_status);
+      const penaltyBps = currentOrder.status === 'assigned'
+        ? 1000
+        : ['arrived_pickup', 'picked_up', 'in_transit', 'arrived_dropoff'].includes(currentOrder.status)
+          ? 5000
+          : 0;
+      const cancellationFee = currentOrder.total_amount && penaltyBps > 0
+        ? Math.round((Number(currentOrder.total_amount) * penaltyBps) / 10_000)
+        : currentOrder.cancellation_fee ?? 0;
+      const escrowAmountWei = currentOrder.escrow_amount_wei ? BigInt(currentOrder.escrow_amount_wei) : 0n;
+      const driverFeeWei = (escrowAmountWei * BigInt(penaltyBps)) / 10_000n;
 
       if (currentOrder.status === 'cancelled' && (!requiresRefund || currentOrder.escrow_status === 'refunded')) {
         return {
@@ -660,6 +671,7 @@ export class OrderLifecycleService {
           {
             status: 'cancelled',
             cancellation_reason: reason ?? currentOrder.cancellation_reason,
+            cancellation_fee: cancellationFee,
             escrow_status: 'refund_pending',
             escrow_refund_error: null,
             escrow_refund_attempts: (currentOrder.escrow_refund_attempts ?? 0) + 1,
@@ -690,7 +702,9 @@ export class OrderLifecycleService {
           if (refundTxHash) {
             receipt = await confirmEscrowRefund(refundTxHash);
           } else {
-            const submitted = await submitEscrowRefund(workingOrder.order_display_id);
+            const submitted = driverFeeWei > 0n
+              ? await submitEscrowCancelWithPenalty(workingOrder.order_display_id, driverFeeWei)
+              : await submitEscrowRefund(workingOrder.order_display_id);
             refundTxHash = submitted.txHash;
             if (!refundTxHash || !submitted.waitForConfirmation) {
               throw new Error('Escrow refund transaction was not submitted.');
@@ -712,6 +726,7 @@ export class OrderLifecycleService {
             {
               status: 'cancelled',
               cancellation_reason: reason ?? workingOrder.cancellation_reason,
+              cancellation_fee: cancellationFee,
               escrow_status: 'refunded',
               refund_tx_hash: receipt.hash ?? refundTxHash,
               escrow_refunded_at: refundedAt,
@@ -776,6 +791,7 @@ export class OrderLifecycleService {
       const updatePayload = {
         status: 'cancelled',
         cancellation_reason: reason,
+        cancellation_fee: cancellationFee,
         updated_at: new Date().toISOString(),
       };
 
@@ -792,14 +808,14 @@ export class OrderLifecycleService {
         throw new DomainError(500, { error: 'Failed to cancel order.', details: updateErr.message });
       }
 
-      const cancellationFee = updatedOrder?.cancellation_fee ?? 0;
+      const persistedCancellationFee = updatedOrder?.cancellation_fee ?? cancellationFee;
 
       await this.orderTimelineService.insertCancelEvent(currentOrder.order_display_id);
       await expireDeliveryOtps(currentOrder.id);
 
       return {
         status: 200,
-        body: { message: 'Order cancelled successfully.', cancellation_fee: cancellationFee, order: updatedOrder },
+        body: { message: 'Order cancelled successfully.', cancellation_fee: persistedCancellationFee, order: updatedOrder },
       };
     } finally {
       await releaseLock(lockKey, lockValue);
