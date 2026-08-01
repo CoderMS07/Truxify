@@ -57,7 +57,7 @@ export class DeliveryVerificationService {
       });
     }
 
-    const { data: order, error: orderErr } = await this.orderRepository.findOrderById(orderId, 'id, order_display_id, driver_id, customer_id, escrow_status, escrow_release_attempts, status, drop_lat, drop_lng, toll_estimate, base_freight, platform_fee, total_amount');
+    const { data: order, error: orderErr } = await this.orderRepository.findOrderById(orderId, 'id, order_display_id, driver_id, customer_id, escrow_status, escrow_release_attempts, status, release_tx_hash, drop_lat, drop_lng, toll_estimate, base_freight, platform_fee, total_amount');
 
     if (orderErr || !order) {
       throw new DomainError(404, { error: 'Order not found.' });
@@ -270,6 +270,26 @@ export class DeliveryVerificationService {
           retryable: true,
         });
       }
+
+      // Persist the confirmed release outcome immediately so a later
+      // complete_trip_tx failure is recoverable: escrow_status becomes
+      // 'released' before the RPC runs, so the SQL gate no longer blocks
+      // retries with a NULL release hash.
+      if (releaseTxHash || escrowAlreadyReleased) {
+        const { error: persistReleaseErr } = await this.orderRepository.updateOrder(orderId, {
+          escrow_status: 'released',
+          escrow_release_error: null,
+          escrow_released_at: new Date().toISOString(),
+          release_tx_hash: releaseTxHash,
+        });
+
+        if (persistReleaseErr) {
+          logger.error('[escrow] Release confirmed but persistence failed:', persistReleaseErr.message);
+        }
+      }
+    } else if (order.escrow_status === 'released') {
+      // Release was confirmed in a previous attempt — reuse the persisted hash.
+      releaseTxHash = order.release_tx_hash || null;
     } else {
       logger.info(`[escrow] Escrow not funded (status: ${order.escrow_status}) — skipping on-chain release.`);
     }
