@@ -117,6 +117,12 @@ export class DeliveryVerificationService {
 
   async ensureDeliveryOtp({ orderId }) {
     return measureExecution('DeliveryVerificationService.ensureDeliveryOtp', async () => {
+    if (await checkOtpLockout(orderId)) {
+      throw new DomainError(429, {
+        error: `Too many failed OTP attempts. Delivery OTP is locked for ${OTP_LOCKOUT_MINUTES} minutes.`,
+      });
+    }
+
     const activeOtp = await this.notificationService.getActiveDeliveryOtp(orderId);
     if (activeOtp) {
       logger.warn(`[DeliveryVerificationService] Driver attempted OTP regeneration for order ${orderId}`);
@@ -135,6 +141,12 @@ export class DeliveryVerificationService {
 
   async resendDeliveryOtp({ orderId, customerId, orderDisplayId, orderStatus }) {
     return measureExecution('DeliveryVerificationService.resendDeliveryOtp', async () => {
+    if (await checkOtpLockout(orderId)) {
+      throw new DomainError(429, {
+        error: `Too many failed OTP attempts. Delivery OTP is locked for ${OTP_LOCKOUT_MINUTES} minutes.`,
+      });
+    }
+
     const terminalStatuses = ['delivered', 'cancelled', 'payment_released'];
     if (terminalStatuses.includes(orderStatus)) {
       throw new DomainError(400, { error: 'Cannot resend OTP for a completed or cancelled order.' });
@@ -143,12 +155,18 @@ export class DeliveryVerificationService {
       throw new DomainError(409, { error: 'Delivery OTP can only be sent after the shipment reaches the delivery location.' });
     }
 
+    const activeOtp = await this.notificationService.getActiveDeliveryOtp(orderId);
     const otp = crypto.randomInt(100000, 1000000).toString();
     const stored = await this.notificationService.storeDeliveryOtp(orderId, otp, OTP_TTL_MINUTES);
     if (!stored) {
       throw new Error('Failed to generate delivery OTP.');
     }
-    await clearOtpState(orderId);
+    // Only a fresh issuance after the previous OTP expired may reset the
+    // failure counter; an active-OTP resend keeps it so repeated resends
+    // cannot zero out the brute-force budget.
+    if (!activeOtp) {
+      await clearOtpState(orderId);
+    }
 
     const notifResult = await this.notificationService.sendDeliveryOtpNotification(customerId, orderDisplayId, otp);
     if (!notifResult.success) {
