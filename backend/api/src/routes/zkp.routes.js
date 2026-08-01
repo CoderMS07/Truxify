@@ -21,6 +21,13 @@ router.post('/zkp/verify', authenticate, userLimiter, async (req, res) => {
   try {
     const { userId, name, licenseNumber, rcNumber, insuranceNumber, issueDate, expiryDate } = req.body;
     
+    if (userId !== req.user.id && req.user.role !== 'admin' && req.user.role !== 'regulator') {
+      return res.status(403).json({
+        success: false,
+        error: 'Access Denied: You can only verify your own account.'
+      });
+    }
+
     if (!userId || !name || !licenseNumber) {
       return res.status(400).json({
         success: false,
@@ -65,6 +72,14 @@ router.post('/zkp/verify', authenticate, userLimiter, async (req, res) => {
 router.get('/zkp/status/:userId', authenticate, userLimiter, async (req, res) => {
   try {
     const { userId } = req.params;
+
+    if (userId !== req.user.id && req.user.role !== 'admin' && req.user.role !== 'regulator') {
+      return res.status(403).json({
+        success: false,
+        error: 'Access Denied: You can only view your own status.'
+      });
+    }
+
     const verified = await zkpService.isVerified(userId);
     
     res.json({
