@@ -146,6 +146,10 @@ export async function waitForMongoDb() {
       ).catch(err => logger.error({ err }, 'Failed to create TTL index on telemetry'));
 
       mongoDb.collection('telemetry').createIndex(
+        { driver_id: 1, order_id: 1, timestamp: -1 }
+      ).catch(err => logger.error({ err }, 'Failed to create compound index on telemetry'));
+
+      mongoDb.collection('telemetry').createIndex(
         { location: '2dsphere' }
       ).catch(err => logger.error({ err }, 'Failed to create 2dsphere index on telemetry'));
       if (_mongoDbResolve) _mongoDbResolve();
