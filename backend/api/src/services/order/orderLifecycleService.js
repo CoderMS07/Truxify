@@ -462,7 +462,7 @@ export class OrderLifecycleService {
     });
   }
 
-  async verifyDeliveryFn(orderId, driverId, otp) {
+  async verifyDeliveryFn(orderId, driverId, otp, userClient) {
     return measureExecution('OrderLifecycleService.verifyDeliveryFn', async () => {
       const lockKey = `escrow_lock:${orderId}`;
       const lockValue = await acquireLock(lockKey, 120000);
@@ -471,7 +471,7 @@ export class OrderLifecycleService {
       }
 
       try {
-        return await this.deliveryVerification.verifyDelivery({ orderId, driverId, otp });
+        return await this.deliveryVerification.verifyDelivery({ orderId, driverId, otp }, userClient);
       } finally {
         await releaseLock(lockKey, lockValue);
       }
@@ -495,7 +495,7 @@ export class OrderLifecycleService {
     });
   }
 
-  async changeDrop(orderId, customerId, body) {
+  async changeDrop(orderId, customerId, body, userClient) {
     return measureExecution('OrderLifecycleService.changeDrop', async () => {
     const { drop_address, drop_lat, drop_lng } = body;
 
@@ -577,7 +577,7 @@ export class OrderLifecycleService {
         p_order_display_id: order.order_display_id,
         p_order_updates: updates,
         p_offer_updates: offerUpdates
-      }, supabaseAdmin);
+      }, userClient ?? supabaseAdmin);
 
       if (updateErr) {
         throw new DomainError(500, {
@@ -818,7 +818,7 @@ export class OrderLifecycleService {
     });
   }
 
-  async confirmDeposit(orderId, userId, txHash) {
+  async confirmDeposit(orderId, userId, txHash, userClient) {
     return measureExecution('OrderLifecycleService.confirmDeposit', async () => {
     const lockKey = `escrow_lock:${orderId}`;
     const lockValue = await acquireLock(lockKey, 30000);
@@ -881,7 +881,7 @@ export class OrderLifecycleService {
           p_order_display_id: pending.order_display_id,
           p_expected_version: pending.version,
           p_escrow_booking_id: bookingId,
-        }, supabaseAdmin ?? undefined);
+        }, userClient ?? supabaseAdmin);
         if (acceptErr) {
           logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
           try {
@@ -913,7 +913,7 @@ export class OrderLifecycleService {
     });
   }
 
-  async submitRating(orderId, customerId, stars, comment) {
+  async submitRating(orderId, customerId, stars, comment, userClient) {
     return measureExecution('OrderLifecycleService.submitRating', async () => {
     const { data: order, error: orderErr } = await this.orderRepository.findOrderById(
       orderId, 'id, order_display_id, customer_id, driver_id, status'
@@ -938,7 +938,7 @@ export class OrderLifecycleService {
       p_driver_id: order.driver_id,
       p_stars: stars,
       p_comment: comment,
-    });
+    }, userClient ?? supabaseAdmin);
 
     if (rpcErr) throw new DomainError(500, { error: 'Failed to submit rating.', details: rpcErr.message });
 
