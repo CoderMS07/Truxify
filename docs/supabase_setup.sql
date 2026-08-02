@@ -917,11 +917,26 @@ create policy "Service role full access on driver_details"
   to service_role
   using (true) with check (true);
 
-create policy "Drivers access own driver_details"
-  on driver_details for all
+create policy "Drivers select own driver_details"
+  on driver_details for select
+  to authenticated
+  using (user_id = get_profile_id());
+
+create policy "Drivers insert own driver_details"
+  on driver_details for insert
+  to authenticated
+  with check (user_id = get_profile_id());
+
+create policy "Drivers update own driver_details"
+  on driver_details for update
   to authenticated
   using (user_id = get_profile_id())
   with check (user_id = get_profile_id());
+
+-- Financial/derived columns are backend-only: clients may not PATCH them.
+revoke update (wallet_confirmed, wallet_pending, wallet_total, wallet_withdrawn,
+               wallet_locked, rating, total_trips, completion_rate)
+  on driver_details from anon, authenticated;
 
 
 -- 3. CUSTOMER STATS
@@ -1024,11 +1039,32 @@ create policy "Service role full access on orders"
   to service_role
   using (true) with check (true);
 
-create policy "Customers access own orders"
-  on orders for all
+create policy "Customers select own orders"
+  on orders for select
+  to authenticated
+  using (customer_id = get_profile_id());
+
+create policy "Customers insert own orders"
+  on orders for insert
+  to authenticated
+  with check (customer_id = get_profile_id());
+
+create policy "Customers update own orders"
+  on orders for update
   to authenticated
   using (customer_id = get_profile_id())
   with check (customer_id = get_profile_id());
+
+-- Financial/state columns are backend-only: clients may not PATCH them.
+revoke update (status, driver_id, driver_name, driver_rating, truck_number,
+               base_freight, toll_estimate, platform_fee, total_amount,
+               cancellation_fee, blockchain_tx_hash,
+               delivery_otp, otp_verified, otp_generated_at,
+               escrow_refund_error, escrow_refund_attempts,
+               escrow_refund_last_attempt_at, escrow_refund_submitted_at,
+               escrow_release_error, escrow_release_attempts,
+               escrow_release_last_attempt_at)
+  on orders from anon, authenticated;
 
 create policy "Drivers view assigned orders"
   on orders for select
