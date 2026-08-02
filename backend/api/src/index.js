@@ -155,6 +155,9 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
+const earningsRouter = require('../routes/earnings');
+app.use('/api/earnings', earningsRouter);
+
 // Payload parsers
 app.use(express.json({ limit: '1mb' })); // Added payload limit for security
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
