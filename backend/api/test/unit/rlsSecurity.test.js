@@ -143,6 +143,32 @@ describe('Individual migration files with RLS policies', () => {
   });
 });
 
+describe('RLS ownership policies compare profile ids, not auth.uid() (issue #5852)', () => {
+  const readMigration = (name) =>
+    readFileSync(path.resolve(__dirname, `../../../../supabase/migrations/${name}`), 'utf8');
+
+  it('bids migration uses get_profile_id() for driver and customer ownership policies', () => {
+    const content = readMigration('20260730120000_create_bids_table.sql');
+    expect(content).toMatch(/USING \(get_profile_id\(\) = driver_id\)/);
+    expect(content).toMatch(/WITH CHECK \(get_profile_id\(\) = driver_id\)/);
+    expect(content).toMatch(/USING \(get_profile_id\(\) = driver_id AND status = 'pending'\)/);
+    expect(content).toMatch(/lo\.customer_id = get_profile_id\(\)/);
+    expect(content).not.toMatch(/auth\.uid\(\)/);
+  });
+
+  it('application_audit_logs admin-read policy resolves the profile via get_profile_id()', () => {
+    const content = readMigration('20260723000010_create_application_audit_logs.sql');
+    expect(content).toMatch(/profiles\.id = get_profile_id\(\)/);
+    expect(content).not.toMatch(/auth\.uid\(\)/);
+  });
+
+  it('cold chain telemetry policy uses get_profile_id() for load ownership checks', () => {
+    const content = readMigration('20260721000000_add_cold_chain_telemetry.sql');
+    expect(content).toMatch(/load_offers\.customer_id = get_profile_id\(\) OR load_offers\.driver_id = get_profile_id\(\)/);
+    expect(content).not.toMatch(/auth\.uid\(\) = [a-z_]+_id/);
+  });
+});
+
 describe('Revoke anon privileges (revoke_anon_privileges.sql)', () => {
   let revokeContent;
 
