@@ -383,13 +383,13 @@ router.get('/wallet/history', authenticate, userLimiter, requirePolicy('driver:v
     const limit = parseIntegerQuery(req.query.limit) ?? 20;
 
     // Validation
-    if (isNaN(page) || page < 1) {
+    if (Number.isNaN(page) || page < 1) {
       return res.status(400).json({
         error: 'page must be greater than or equal to 1'
       });
     }
 
-    if (isNaN(limit) || limit < 1 || limit > 100) {
+    if (Number.isNaN(limit) || limit < 1 || limit > 100) {
       return res.status(400).json({
         error: 'limit must be between 1 and 100'
       });
@@ -1378,7 +1378,7 @@ router.get('/ltl/optimize-route', authenticate, userLimiter, requireDriverRole, 
     const lat = parseFloat(req.query.lat);
     const lng = parseFloat(req.query.lng);
 
-    if (isNaN(lat) || isNaN(lng)) {
+    if (Number.isNaN(lat) || Number.isNaN(lng)) {
       return res.status(400).json({ error: 'Valid lat and lng query parameters are required.' });
     }
 

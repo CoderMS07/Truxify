@@ -18,7 +18,7 @@ router.get('/estimate', authenticate, userLimiter, async (req, res) => {
     const dropLat = Number(drop_lat);
     const dropLng = Number(drop_lng);
 
-    if (isNaN(pickupLat) || isNaN(pickupLng) || isNaN(dropLat) || isNaN(dropLng)) {
+    if (Number.isNaN(pickupLat) || Number.isNaN(pickupLng) || Number.isNaN(dropLat) || Number.isNaN(dropLng)) {
       return res.status(400).json({ error: 'Invalid coordinates provided.' });
     }
 
