@@ -61,6 +61,8 @@ class KafkaConfig {
       this.producer = kafka.producer({
         allowAutoTopicCreation: true,
         transactionTimeout: 30000,
+        enableIdempotence: true,
+        maxInFlightRequests: 5,
       });
       await this.producer.connect();
       this.isConnected = true;
