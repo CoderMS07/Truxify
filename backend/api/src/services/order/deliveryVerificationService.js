@@ -47,6 +47,7 @@ export class DeliveryVerificationService {
       verifyDeliveryOtp,
     };
     this.escrowReleaseFn = deps.escrowReleaseFn || defaultEscrowRelease;
+    this.trackingTokenService = deps.trackingTokenService || null;
   }
 
   async validateDeliveryOtp({ orderId, driverId, otp }) {
@@ -362,6 +363,11 @@ export class DeliveryVerificationService {
     } else {
       logger.info(`[verify-delivery] Retry for stuck escrow for order ${orderId} by driver ${driverId}`);
     }
+
+    // The trip is complete (payment_released) — kill any active public
+    // tracking tokens so a shared link can no longer broadcast the driver's
+    // live location. Best-effort: revokeAllForOrder never throws.
+    await this.trackingTokenService?.revokeAllForOrder(order.order_display_id);
 
     let escrowUpdateFailed = false;
     if (releaseTxHash || escrowAlreadyReleased) {
