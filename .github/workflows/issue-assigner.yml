@@ -1,27 +1,102 @@
-name: Issue Auto Assigner
+name: Issue Assignment
 
 on:
-  issues:
-    types: [opened]
+  issue_comment:
+    types: [created]
 
 permissions:
   issues: write
 
 jobs:
   assign:
-    name: Assign Issue to Creator
+    name: Auto-assign contributor
     runs-on: ubuntu-latest
+    
+    # Skip pull request comments (only process real issues)
+    if: github.event.issue.pull_request == null
 
     steps:
-      - name: Assign issue
+      - name: Handle assignment request
+      
         uses: actions/github-script@v7
         with:
+        
           script: |
-            const opener = context.payload.issue.user.login;
+            const comment = context.payload.comment.body.toLowerCase().trim();
+            const KEYWORDS = [
+              "/assign",
+              "assign me",
+              "i'd like to work on this",
+              "i want to work on this",
+              "can i work on this",
+              "please assign me"
+            ];
+
+            // 1. Check if the comment matches any assignment keyword
+            
+            if (!KEYWORDS.some(kw => comment.includes(kw))) return;
+            
+            // Skip automated bot comments
+            
+            if (context.payload.comment.user.type === 'Bot') return;
+
+            const { owner, repo } = context.repo;
+            const issueNumber = context.payload.issue.number;
+            const commenter = context.payload.comment.user.login;
+
+            // 2. Fetch live issue data from the GitHub API
+            
+            const { data: issue } = await github.rest.issues.get({
+              owner, repo, issue_number: issueNumber,
+            });
+
+            if (issue.state !== 'open') return;
+
+            // 3. Check if the issue is already taken
+            
+            if (issue.assignees && issue.assignees.length > 0) {
+              const assignees = issue.assignees.map(a => a.login);
+              
+              if (assignees.includes(commenter)) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issueNumber,
+                  body: `@${commenter} You are already assigned to this issue! Please link your upcoming Pull Request to this ticket.`,
+                });
+                
+              } else {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issueNumber,
+                  body: `@${commenter} This issue is already claimed by @${assignees.join(', @')}. Keep an eye out for other open tasks!`,
+                });
+                
+              }
+              return;
+            }
+
+            // 4. Assign the contributor
             
             await github.rest.issues.addAssignees({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.issue.number,
-              assignees: [opener]
+              owner, repo, issue_number: issueNumber,
+              assignees: [commenter],
             });
+
+            // 5. add an "assigned" label to track status
+            
+            const currentLabels = issue.labels.map(l => l.name);
+            if (!currentLabels.includes('assigned')) {
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: issueNumber,
+                labels: ['assigned'],
+              });
+              
+            }
+
+            // 6. Post confirmation comment
+            
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: issueNumber,
+              
+              body: `Assigned to @${commenter}! Please open a Pull Request linking to this issue once ready.`,
+            });
+
+            
