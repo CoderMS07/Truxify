@@ -10,6 +10,7 @@ import '../models/deadhead_recommendation.dart';
 import '../models/marketplace_models.dart';
 import 'api_client.dart';
 import 'driver_insights_service.dart';
+import 'secure_storage.dart';
 
 class MarketplaceRepository {
   MarketplaceRepository({
@@ -58,6 +59,11 @@ class MarketplaceRepository {
 
   Future<Map<String, String>> _authHeaders() async {
     final token = _supabaseAccessToken() ?? await _firebaseAccessToken();
+    if (token != null && token.isNotEmpty) {
+      // Persist to OS-backed secure storage for background sync and
+      // WebSocket reconnects (issue #5739).
+      unawaited(AuthTokenStore.persist(token));
+    }
     return <String, String>{
       'Content-Type': 'application/json',
       if (token != null && token.isNotEmpty)

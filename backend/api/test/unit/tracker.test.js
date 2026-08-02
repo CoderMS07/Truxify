@@ -10,6 +10,7 @@ const dbMock = vi.hoisted(() => ({
     orders: [],
   },
   calls: [],
+  authUser: null,
 }));
 
 vi.mock('../../src/config/db.js', () => ({
@@ -17,6 +18,11 @@ vi.mock('../../src/config/db.js', () => ({
   redisClient: null,
   firebaseAdmin: null,
   supabase: {
+    auth: {
+      async getUser() {
+        return { data: { user: dbMock.authUser }, error: null };
+      },
+    },
     from(table) {
       const filters = [];
       return {
@@ -54,6 +60,7 @@ describe('tracker WebSocket telemetry authorization', () => {
   beforeEach(async () => {
     dbMock.store.orders = [];
     dbMock.calls = [];
+    dbMock.authUser = null;
     __testing.resetTrackingSubscriptions();
     const { supabase } = await import('../../src/config/db.js');
     const orderRepo = new OrderRepository(supabase);
@@ -146,6 +153,109 @@ describe('tracker WebSocket telemetry authorization', () => {
     await handleSubscribe(ws, { driver_id: 'driver-owner' });
 
     expect(sentMessages).toEqual([{ status: 'subscribed', target: 'driver-owner', reconnect_supported: true }]);
+  });
+});
+
+describe('tracker first-frame WebSocket auth (issue #5739)', () => {
+  const supabaseJwt = (() => {
+    const enc = (obj) => Buffer.from(JSON.stringify(obj)).toString('base64url');
+    return `${enc({ alg: 'HS256', typ: 'JWT' })}.${enc({
+      iss: 'https://example.supabase.co/auth/v1',
+      sub: 'sb-user-1',
+    })}.signature`;
+  })();
+
+  function pendingSocket(sentMessages) {
+    return {
+      authenticated: false,
+      close: vi.fn(),
+      send(message) {
+        sentMessages.push(typeof message === 'string' ? JSON.parse(message) : message);
+      },
+    };
+  }
+
+  it('authenticates a pending socket via a first-frame auth event', async () => {
+    dbMock.authUser = { id: 'sb-user-1' };
+    dbMock.store.profiles = [{ id: 'sb-user-1', firebase_uid: 'fb-uid-1', role: 'driver', is_active: true }];
+    const sentMessages = [];
+    const ws = pendingSocket(sentMessages);
+
+    await handleTrackingMessage(ws, JSON.stringify({
+      event: 'auth',
+      data: { token: supabaseJwt },
+    }));
+
+    expect(ws.authenticated).toBe(true);
+    expect(ws.user).toEqual({ id: 'sb-user-1', uid: 'fb-uid-1', role: 'driver' });
+    expect(ws.driverId).toBe('sb-user-1');
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(sentMessages).toEqual([
+      { status: 'authenticated', user_id: 'sb-user-1' },
+    ]);
+  });
+
+  it('accepts telemetry after first-frame auth completes', async () => {
+    dbMock.authUser = { id: 'sb-user-1' };
+    dbMock.store.profiles = [{ id: 'sb-user-1', firebase_uid: 'fb-uid-1', role: 'driver', is_active: true }];
+    const sentMessages = [];
+    const ws = pendingSocket(sentMessages);
+
+    await handleTrackingMessage(ws, JSON.stringify({
+      event: 'auth',
+      data: { token: supabaseJwt },
+    }));
+
+    await handleLocationPing(ws, {
+      driver_id: 'sb-user-1',
+      order_display_id: 'ORDER-AUTH',
+      latitude: 12.9716,
+      longitude: 77.5946,
+      speed: 40,
+      bearing: 90,
+    });
+
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(sentMessages[0]).toEqual({ status: 'authenticated', user_id: 'sb-user-1' });
+  });
+
+  it('rejects a non-auth first message on a pending socket', async () => {
+    const sentMessages = [];
+    const ws = pendingSocket(sentMessages);
+
+    await handleTrackingMessage(ws, JSON.stringify({
+      event: 'location_ping',
+      data: { lat: 12.9, lng: 77.5 },
+    }));
+
+    expect(ws.authenticated).toBe(false);
+    expect(ws.close).toHaveBeenCalledWith(4001, 'Unauthorized: Authenticate first');
+    expect(sentMessages).toEqual([
+      { error: 'Unauthorized: Authenticate first', code: 4001 },
+    ]);
+  });
+
+  it('rejects an auth event without a token', async () => {
+    const sentMessages = [];
+    const ws = pendingSocket(sentMessages);
+
+    await handleTrackingMessage(ws, JSON.stringify({ event: 'auth', data: {} }));
+
+    expect(ws.authenticated).toBe(false);
+    expect(ws.close).toHaveBeenCalledWith(4001, 'Unauthorized: No token provided');
+  });
+
+  it('rejects an auth event with an invalid token', async () => {
+    const sentMessages = [];
+    const ws = pendingSocket(sentMessages);
+
+    await handleTrackingMessage(ws, JSON.stringify({
+      event: 'auth',
+      data: { token: 'not-a-valid-token' },
+    }));
+
+    expect(ws.authenticated).toBe(false);
+    expect(ws.close).toHaveBeenCalledWith(4001, 'Unauthorized: Firebase Auth is not configured');
   });
 });
 

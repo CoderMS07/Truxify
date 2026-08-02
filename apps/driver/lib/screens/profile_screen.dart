@@ -11,6 +11,7 @@ import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/fcm_service.dart';
+import '../services/secure_storage.dart';
 import '../core/supabase_config.dart';
 import 'package:truxify_shared/truxify_shared.dart' hide NotificationsScreen;
 import 'notifications_screen.dart';
@@ -1128,6 +1129,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   await FcmService.clearToken();
 
                   await client.auth.signOut();
+
+                  // Remove the persisted auth token from OS-backed secure
+                  // storage so it cannot be reused after logout (issue #5739).
+                  await AuthTokenStore.clear();
                 }
 
                 if (!context.mounted) {
