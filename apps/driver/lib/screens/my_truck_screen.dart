@@ -12,6 +12,7 @@ import '../widgets/common_widgets.dart';
 import '../core/driver_session.dart';
 import '../widgets/maintenance_photo_picker.dart';
 import '../widgets/maintenance_photo_gallery.dart';
+import '../services/fuel_analytics_service.dart';
 
 class MyTruckScreen extends StatefulWidget {
   const MyTruckScreen({super.key});

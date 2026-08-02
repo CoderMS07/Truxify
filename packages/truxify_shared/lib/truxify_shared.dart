@@ -50,6 +50,3 @@ class SharedHelpers {
   static String initials(String name) =>
       name.split(' ').where((w) => w.isNotEmpty).take(2).map((w) => w[0].toUpperCase()).join();
 }
-
-// ── Widgets ─────────────────────────────────────────────────────────
-export 'shimmer_widget.dart';

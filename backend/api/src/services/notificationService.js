@@ -222,7 +222,7 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
       .insert({
         user_id: customerId,
         title,
-        body: `Your delivery verification OTP for order ${orderDisplayId} is ${otp}.`,
+        body,
         notif_type: 'order_update',
         metadata: { order_display_id: orderDisplayId, delivery_otp_hash: otpHash },
       });
@@ -240,7 +240,7 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
   let fcmResult;
   try { fcmResult = await sendFcmNotification(
       customerId,
-    { title: 'Delivery Verification OTP', body: `Your delivery verification OTP for order ${orderDisplayId} is ${otp}.` },
+    { title, body },
     { orderDisplayId, notifType: 'delivery_otp', deliveryOtp: String(otp) }
   ); } catch (err) { logger.error({ err: err?.message ?? String(err) }, 'Unexpected sendFcmNotification error'); }
 

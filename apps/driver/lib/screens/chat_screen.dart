@@ -24,7 +24,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    _myUserId = SupabaseService.currentUserId ?? 'unknown';
+    _myUserId = Supabase.instance.client.auth.currentUser?.id ?? 'unknown';
     _setupSupabaseChannel();
   }
 

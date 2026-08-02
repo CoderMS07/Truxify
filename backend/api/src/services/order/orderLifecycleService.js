@@ -20,6 +20,19 @@ import { getLiveTrafficMultiplier } from '../trafficService.js';
 import { eventBus } from '../../core/events/index.js';
 import logger from '../../middleware/logger.js';
 import { supabaseAdmin } from '../../config/db.js';
+import { CircuitBreaker } from '../../lib/circuitBreaker.js';
+
+const osrmCircuitBreaker = new CircuitBreaker('osrmRouting', {
+  failureThreshold: 3,
+  resetTimeoutMs: 15000,
+  requestTimeoutMs: 5000,
+});
+
+const mlPriceCircuitBreaker = new CircuitBreaker('mlPricePrediction', {
+  failureThreshold: 3,
+  resetTimeoutMs: 15000,
+  requestTimeoutMs: 5000,
+});
 import { generateOrderDisplayId, ORDER_DISPLAY_ID_MAX_RETRIES } from '../../lib/orderDisplayId.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -55,12 +68,12 @@ export class OrderLifecycleService {
 
     let pricing;
     try {
-      const routeEstimate = await getRouteEstimate({
+      const routeEstimate = await osrmCircuitBreaker.execute(() => getRouteEstimate({
         pickupLat: Number(pickup_lat),
         pickupLng: Number(pickup_lng),
         dropLat: Number(drop_lat),
         dropLng: Number(drop_lng),
-      });
+      }));
       pricing = computeOrderPricing({
         pickupLat: Number(pickup_lat),
         pickupLng: Number(pickup_lng),
@@ -82,13 +95,13 @@ export class OrderLifecycleService {
     try {
       const trafficMultiplier = await getLiveTrafficMultiplier(pickup_lat, pickup_lng);
 
-      const mlResult = await predictPrice({
+      const mlResult = await mlPriceCircuitBreaker.execute(() => predictPrice({
         distanceKm: pricing.distanceKm,
         cargoWeightKg: Number(weight_tonnes) * 1000,
         routeOrigin: pickup_address,
         routeDestination: drop_address,
         trafficMultiplier,
-      });
+      }));
       estimatedPrice = mlResult.estimatedPricePaisa;
     } catch (mlErr) {
       logger.warn({ err: mlErr.message }, 'Price prediction unavailable, falling back to base pricing');

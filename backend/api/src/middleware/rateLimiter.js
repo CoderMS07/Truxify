@@ -85,42 +85,47 @@ class DeferredRedisStore {
   }
 }
 
-/**
- * Generates a rate-limit key from the proxy-resolved IP address.
- */
-export function safeIpKeyGenerator(req) {
-const forwarded = req.headers?.['x-forwarded-for'];
+export function normalizeIp(rawIp) {
+  if (typeof rawIp !== 'string' || !rawIp) return 'unknown';
+  let ip = rawIp.trim();
+  if (ip.includes(',')) ip = ip.split(',')[0].trim();
+  ip = ip.replace(/^::ffff:/, '');
+  if (ip === '::1') return '127.0.0.1';
 
-if (isSuspiciousForwardedHeader(forwarded)) {
-  logger.warn(
-    {
-      requestId: req.requestId,
-      header: forwarded,
-      socketIp: req.socket?.remoteAddress,
-    },
-    'Suspicious X-Forwarded-For header detected'
-  );
-  let ip = req.ip || req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
-  if (typeof ip === 'string') {
-    if (ip.includes(',')) ip = ip.split(',')[0].trim();
-    ip = ip.replace(/^::ffff:/, '');
-    if (ip === '::1') ip = '127.0.0.1';
+  if (ip.includes(':')) {
+    const parts = ip.split(':');
+    const prefix = parts.slice(0, 4).join(':');
+    return `${prefix}::/64`;
   }
   return ip;
 }
 
-let ip =
-  req.ip ||
-  req.socket?.remoteAddress ||
-  req.connection?.remoteAddress ||
-  'unknown';
+/**
+ * Generates a rate-limit key from the proxy-resolved IP address with IPv6 /64 subnet masking.
+ */
+export function safeIpKeyGenerator(req) {
+  const forwarded = req.headers?.['x-forwarded-for'];
 
-if (typeof ip === 'string') {
-  ip = ip.replace(/^::ffff:/, '');
-  if (ip === '::1') ip = '127.0.0.1';
-}
+  if (isSuspiciousForwardedHeader(forwarded)) {
+    logger.warn(
+      {
+        requestId: req.requestId,
+        header: forwarded,
+        socketIp: req.socket?.remoteAddress,
+      },
+      'Suspicious X-Forwarded-For header detected'
+    );
+    const raw = req.ip || req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
+    return normalizeIp(raw);
+  }
 
-return ip;
+  const raw =
+    req.ip ||
+    req.socket?.remoteAddress ||
+    req.connection?.remoteAddress ||
+    'unknown';
+
+  return normalizeIp(raw);
 }
 
 /**
@@ -185,6 +190,7 @@ export const globalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
+  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:global:'),
   handler: sentryAlertHandler('globalLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 900 },
@@ -197,6 +203,7 @@ export const userLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: userKeyGenerator,
+  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:user:'),
   handler: sentryAlertHandler('userLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 900 },
@@ -208,6 +215,7 @@ export const healthLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
+  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:health:'),
   handler: sentryAlertHandler('healthLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 60 },
@@ -219,6 +227,7 @@ export const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
+  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:auth:'),
 
   handler: (req, res) => {
@@ -246,6 +255,7 @@ export const bidLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: userKeyGenerator,
+  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:bid:'),
   handler: sentryAlertHandler('bidLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 60 },
@@ -261,6 +271,7 @@ export const deviceLimiter = rateLimit({
     if (req.user?.uid) return `uid:${req.user.uid}`;
     return safeIpKeyGenerator(req);
   },
+  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:device:'),
   handler: sentryAlertHandler('deviceLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 600 },
@@ -275,6 +286,7 @@ export const adminRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: userKeyGenerator,
+  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:admin:'),
   message: { error: 'Rate limit exceeded', retryAfter: Math.ceil(adminWindowMs / 1000) },
 });

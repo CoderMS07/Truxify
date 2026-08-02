@@ -132,7 +132,8 @@ export async function awardReputationPoints(driverWalletAddress, stars) {
     const tx = await reputationContract.increaseReputation(driverWalletAddress, stars);
     logger.info(`[reputation] increaseReputation tx submitted: ${tx.hash}`);
     await retryWithBackoff(async () => {
-      const receipt = await reputationContract.runner.provider.waitForTransaction(tx.hash, 1, 60_000);
+      const provider = reputationContract.provider || reputationContract.runner?.provider;
+      const receipt = provider ? await provider.waitForTransaction(tx.hash, 1, 60_000) : await tx?.wait?.(1);
       if (!receipt || receipt.status === 0) {
         throw new Error(`increaseReputation transaction ${tx.hash} reverted or was not found on chain.`);
       }
