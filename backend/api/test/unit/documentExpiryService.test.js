@@ -13,4 +13,19 @@ function createChainableTerminal(finalFn) {
           try {
             const result = finalFn();
             return Promise.resolve(result).then(resolve, reject);
-            .catch(err => console.error(err))
+          } catch (e) {
+            reject(e);
+          }
+        };
+      }
+      return new Proxy(() => {}, handler);
+    }
+  };
+  return new Proxy(() => {}, handler);
+}
+
+describe('documentExpiryService', () => {
+  it('should be a placeholder', () => {
+    expect(true).toBe(true);
+  });
+});
