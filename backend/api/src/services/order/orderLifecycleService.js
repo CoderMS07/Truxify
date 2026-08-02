@@ -4,6 +4,7 @@ import { DeliveryVerificationService } from './deliveryVerificationService.js';
 import { expireDeliveryOtps, sendPushNotification } from '../notificationService.js';
 import { acquireLock, releaseLock } from '../../lib/redisLock.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
+import { supabaseAdmin } from '../../config/db.js';
 import {
   escrowRefund,
   recordDepositTx,
@@ -19,6 +20,7 @@ import { predictPrice } from '../ml.js';
 import { getLiveTrafficMultiplier } from '../trafficService.js';
 import { eventBus } from '../../core/events/index.js';
 import logger from '../../middleware/logger.js';
+import { supabaseAdmin } from '../../config/db.js';
 import { CircuitBreaker } from '../../lib/circuitBreaker.js';
 
 const osrmCircuitBreaker = new CircuitBreaker('osrmRouting', {
@@ -596,7 +598,7 @@ export class OrderLifecycleService {
         p_order_display_id: order.order_display_id,
         p_order_updates: updates,
         p_offer_updates: offerUpdates
-      });
+      }, supabaseAdmin);
 
       if (updateErr) {
         throw new DomainError(500, {
@@ -847,7 +849,7 @@ export class OrderLifecycleService {
 
     try {
       const { data: order, error: fetchErr } = await this.orderRepository.findOrderById(
-        orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet'
+        orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet, pending_bid_acceptance'
       );
 
       if (fetchErr || !order) throw new DomainError(404, { error: 'Order not found' });
@@ -881,6 +883,48 @@ export class OrderLifecycleService {
       if (updateErr) {
         logger.error('[confirm-deposit] DB update failed:', updateErr.message);
         throw new DomainError(500, { error: 'Database update failed after deposit confirmation. Please contact support.' });
+      }
+
+      // Two-phase acceptance (#5724): finalize the driver assignment now that
+      // the escrow deposit is confirmed.
+      const pending = order.pending_bid_acceptance;
+      if (pending) {
+        const { error: acceptErr } = await this.orderRepository.executeRpc('accept_bid_tx', {
+          p_bid_id: pending.bid_id,
+          p_order_id: orderId,
+          p_load_id: pending.load_id,
+          p_driver_id: pending.driver_id,
+          p_truck_id: pending.truck_id,
+          p_driver_name: pending.driver_name,
+          p_driver_rating: pending.driver_rating,
+          p_truck_number: pending.truck_number,
+          p_bid_amount: pending.bid_amount,
+          p_order_display_id: pending.order_display_id,
+          p_expected_version: pending.version,
+          p_escrow_booking_id: bookingId,
+        }, supabaseAdmin ?? undefined);
+        if (acceptErr) {
+          logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
+          try {
+            await escrowRefund(order.order_display_id);
+          } catch (refundErr) {
+            logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
+          }
+          await this.orderRepository.revertEscrowStatus(orderId).catch((revertErr) => {
+            logger.error('[confirm-deposit] Failed to revert escrow status:', revertErr.message);
+          });
+          throw new DomainError(409, {
+            error: 'Deposit confirmed but the driver assignment could not be finalized. The escrow deposit has been refunded. Please try again.',
+            details: acceptErr.message,
+          });
+        }
+        sendPushNotification(
+          pending.driver_id,
+          'Bid Accepted!',
+          `Your bid for order ${pending.order_display_id} has been accepted. You are now assigned to this load.`,
+          'bid_accepted',
+          { orderId, orderDisplayId: pending.order_display_id }
+        ).catch((err) => logger.error(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
       }
 
       return { message: 'Escrow deposit confirmed', txHash: result.txHash };
