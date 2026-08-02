@@ -71,6 +71,9 @@ services:
       - no-new-privileges:true
 
   # ─── ML Engine ─────────────────────────────────────────────────────────────
+  # Security: NOT published on the host network — reachable only by the API
+  # service on the internal Docker network (`http://ml-engine:8000`). All routes
+  # require the shared X-API-Key, and interactive docs are disabled in production.
   ml-engine:
     build:
       context: ./backend/ml
@@ -80,8 +83,7 @@ services:
       - .env
     environment:
       ML_API_KEY: ${ML_API_KEY:?ML_API_KEY is required}
-    ports:
-      - "${ML_PORT:-8001}:8000"
+      ENVIRONMENT: production
     volumes:
       # Remove dev code mount — code is baked into the production image
       # Persist trained models across restarts
