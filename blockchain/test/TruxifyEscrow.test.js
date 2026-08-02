@@ -1058,23 +1058,23 @@ describe("TruxifyEscrow", function () {
     });
   });
 
-  // "?"?"? resolveDisputeTimeout "?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?"?
+  // ─── resolveDisputeTimeout ───────────────────────────────────────────────
   describe("resolveDisputeTimeout", function () {
     it("resolves dispute by refunding customer after timeout", async function () {
-      const { escrow, customer, driver } = await loadFixture(deployEscrowFixture);
+      const { escrow, owner, customer, driver } = await loadFixture(deployEscrowFixture);
 
       const amount = ethers.parseEther("1.0");
       await escrow.connect(customer).createBooking(2, driver.address, { value: amount });
 
-      // Raise dispute
-      await escrow.connect(customer).raiseDispute(2);
+      // Raise dispute (owner-only)
+      await escrow.connect(owner).raiseDispute(2);
 
       // Fast forward time by 8 days (7 days timeout)
       await hre.network.provider.send("evm_increaseTime", [8 * 24 * 60 * 60]);
       await hre.network.provider.send("evm_mine");
 
       // Resolve dispute
-      await escrow.resolveDisputeTimeout(2);
+      await escrow.connect(owner).resolveDisputeTimeout(2);
 
       // Check that customer got the pending withdrawal
       const pendingRefund = await escrow.pendingWithdrawals(customer.address);
@@ -1086,18 +1086,111 @@ describe("TruxifyEscrow", function () {
     });
 
     it("reverts if timeout has not been reached", async function () {
-      const { escrow, customer, driver } = await loadFixture(deployEscrowFixture);
+      const { escrow, owner, customer, driver } = await loadFixture(deployEscrowFixture);
 
       const amount = ethers.parseEther("1.0");
       await escrow.connect(customer).createBooking(3, driver.address, { value: amount });
 
-      // Raise dispute
-      await escrow.connect(customer).raiseDispute(3);
+      // Raise dispute (owner-only)
+      await escrow.connect(owner).raiseDispute(3);
 
       // Try to resolve immediately
       await expect(
-        escrow.resolveDisputeTimeout(3)
+        escrow.connect(owner).resolveDisputeTimeout(3)
       ).to.be.revertedWith("TruxifyEscrow: Dispute timeout not reached");
+    });
+
+    it("reverts if called by a non-owner before timeout expires", async function () {
+      const { escrow, owner, customer, driver, attacker } = await loadFixture(deployEscrowFixture);
+
+      await escrow.connect(customer).createBooking(4, driver.address, { value: ethers.parseEther("1") });
+      await escrow.connect(owner).raiseDispute(4);
+
+      await hre.network.provider.send("evm_increaseTime", [8 * 24 * 60 * 60]);
+      await hre.network.provider.send("evm_mine");
+
+      await expect(
+        escrow.connect(attacker).resolveDisputeTimeout(4)
+      ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount")
+       .withArgs(attacker.address);
+    });
+  });
+
+  // ─── resolveDispute ──────────────────────────────────────────────────────
+  describe("resolveDispute", function () {
+    async function deployDisputedBookingFixture() {
+      const { escrow, owner, customer, driver, attacker } = await loadFixture(deployWithBookingFixture);
+      await escrow.connect(owner).raiseDispute(1);
+      return { escrow, owner, customer, driver, attacker, bookingId: 1, amount: ethers.parseEther("1.0") };
+    }
+
+    it("splits a disputed booking between driver and customer", async function () {
+      const { escrow, owner, customer, driver, bookingId, amount } = await loadFixture(deployDisputedBookingFixture);
+      const driverAward = ethers.parseEther("0.6");
+
+      await expect(escrow.connect(owner).resolveDispute(bookingId, driverAward))
+        .to.emit(escrow, "DisputeResolved")
+        .withArgs(bookingId, driver.address, driverAward, customer.address, amount - driverAward);
+
+      const booking = await escrow.getBooking(bookingId);
+      expect(booking.status).to.equal(4); // Resolved
+      expect(booking.paid).to.be.true;
+      expect(booking.amount).to.equal(0);
+      expect(await escrow.pendingWithdrawals(driver.address)).to.equal(driverAward);
+      expect(await escrow.pendingWithdrawals(customer.address)).to.equal(amount - driverAward);
+    });
+
+    it("pays the driver in full when award equals the escrow amount", async function () {
+      const { escrow, owner, customer, driver, bookingId, amount } = await loadFixture(deployDisputedBookingFixture);
+
+      await escrow.connect(owner).resolveDispute(bookingId, amount);
+
+      expect(await escrow.pendingWithdrawals(driver.address)).to.equal(amount);
+      expect(await escrow.pendingWithdrawals(customer.address)).to.equal(0);
+    });
+
+    it("refunds the customer in full when the driver award is zero", async function () {
+      const { escrow, owner, customer, driver, bookingId, amount } = await loadFixture(deployDisputedBookingFixture);
+
+      await escrow.connect(owner).resolveDispute(bookingId, 0);
+
+      expect(await escrow.pendingWithdrawals(driver.address)).to.equal(0);
+      expect(await escrow.pendingWithdrawals(customer.address)).to.equal(amount);
+    });
+
+    it("reverts if called by a non-owner", async function () {
+      const { escrow, attacker, bookingId } = await loadFixture(deployDisputedBookingFixture);
+
+      await expect(
+        escrow.connect(attacker).resolveDispute(bookingId, 0)
+      ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount")
+       .withArgs(attacker.address);
+    });
+
+    it("reverts if the driver award exceeds the escrow amount", async function () {
+      const { escrow, owner, bookingId, amount } = await loadFixture(deployDisputedBookingFixture);
+
+      await expect(
+        escrow.connect(owner).resolveDispute(bookingId, amount + 1n)
+      ).to.be.revertedWith("TruxifyEscrow: Award exceeds escrow");
+    });
+
+    it("reverts for a booking that is not disputed", async function () {
+      const { escrow, owner, bookingId } = await loadFixture(deployWithBookingFixture);
+
+      await expect(
+        escrow.connect(owner).resolveDispute(bookingId, 0)
+      ).to.be.revertedWith("TruxifyEscrow: Booking not disputed");
+    });
+
+    it("reverts when the contract is paused", async function () {
+      const { escrow, owner, bookingId } = await loadFixture(deployDisputedBookingFixture);
+
+      await escrow.connect(owner).pause();
+
+      await expect(
+        escrow.connect(owner).resolveDispute(bookingId, 0)
+      ).to.be.revertedWithCustomError(escrow, "EnforcedPause");
     });
   });
 });
