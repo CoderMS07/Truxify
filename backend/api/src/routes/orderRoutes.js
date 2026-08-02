@@ -157,7 +157,7 @@ import {
   updateMilestoneSchema, verifyDeliverySchema, predictDemandSchema, changeDropSchema, cancelOrderSchema,
 } from '../validation/requestSchemas.js';
 import { awardReputationPoints } from '../services/reputation.js';
-import { expireDeliveryOtps } from '../services/notificationService.js';
+import { expireDeliveryOtps, sendPushNotification } from '../services/notificationService.js';
 import { DomainError } from '../services/order/domainError.js';
 import { predictDemand, predictPrice, matchEnRouteLoads } from '../services/ml.js';
 import { requireIdempotency } from '../middleware/idempotency.js';
@@ -1227,7 +1227,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
   }
 
   try {
-    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet');
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet, pending_bid_acceptance');
     orderValidationService.assertOrderFound(order);
     orderValidationService.assertCustomerOwnership(order, req.user.id);
     orderValidationService.assertEscrowState(order, ['funding'], 'Order is not in funding state');
@@ -1236,6 +1236,51 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
     const { data: customerProfile } = await orderRepository.findCustomerWallet(req.user.id);
     const customerWallet = customerProfile?.polygon_wallet_address ?? null;
     const bookingId = order.escrow_booking_id || (order.order_display_id ? getEscrowBookingId(order.order_display_id) : orderId);
+
+    // Two-phase acceptance (#5724): once the deposit is verified on-chain we
+    // finalize the driver assignment via accept_bid_tx. If that cannot be
+    // completed the deposit is refunded and the order stays pending.
+    const finalizeAcceptance = async () => {
+      const pending = order.pending_bid_acceptance;
+      if (!pending) return;
+      const { error: acceptErr } = await orderRepository.executeRpc('accept_bid_tx', {
+        p_bid_id: pending.bid_id,
+        p_order_id: orderId,
+        p_load_id: pending.load_id,
+        p_driver_id: pending.driver_id,
+        p_truck_id: pending.truck_id,
+        p_driver_name: pending.driver_name,
+        p_driver_rating: pending.driver_rating,
+        p_truck_number: pending.truck_number,
+        p_bid_amount: pending.bid_amount,
+        p_order_display_id: pending.order_display_id,
+        p_expected_version: pending.version,
+        p_escrow_booking_id: bookingId,
+      }, req.token ? createUserClient(req.token) : undefined);
+      if (acceptErr) {
+        logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
+        try {
+          await escrowRefund(order.order_display_id);
+        } catch (refundErr) {
+          logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
+        }
+        await orderRepository.revertEscrowStatus(orderId).catch((revertErr) => {
+          logger.error('[confirm-deposit] Failed to revert escrow status:', revertErr.message);
+        });
+        throw new DomainError(409, {
+          error: 'Deposit confirmed but the driver assignment could not be finalized. The escrow deposit has been refunded. Please try again.',
+          details: acceptErr.message,
+        });
+      }
+      sendPushNotification(
+        pending.driver_id,
+        'Bid Accepted!',
+        `Your bid for order ${pending.order_display_id} has been accepted. You are now assigned to this load.`,
+        'bid_accepted',
+        { orderId, orderDisplayId: pending.order_display_id }
+      ).catch((err) => logger.error(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
+    };
+
     const result = await recordDepositTx(
       bookingId,
       txHash,
@@ -1252,6 +1297,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
       }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
 
       if (!updateErr && updatedData) {
+        await finalizeAcceptance();
         return res.json({ message: 'Escrow deposit confirmed (recovered).', txHash: result.txHash });
       }
       return res.status(202).json({ message: 'Escrow deposit confirmed on-chain. Database sync pending.', txHash: result.txHash });
@@ -1277,6 +1323,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
       return res.status(409).json({ error: 'Order was not in funding state. Please refresh and try again.' });
     }
 
+    await finalizeAcceptance();
     res.json({ message: 'Escrow deposit confirmed', txHash: result.txHash });
   } catch (err) {
     if (err instanceof DomainError) {
