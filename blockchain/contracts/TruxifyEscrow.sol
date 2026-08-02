@@ -26,7 +26,8 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
         Active,       // Payment locked, trip in progress
         Delivered,    // GPS + OTP confirmed, payment released to driver
         Cancelled,    // Cancelled before driver started — full refund
-        Disputed      // Under dispute resolution via n8n automation
+        Disputed,     // Under dispute resolution via n8n automation
+        Resolved      // Dispute settled by owner — funds split per resolution
     }
 
     // ─── Structs ─────────────────────────────────────────────────────────────
@@ -82,6 +83,14 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
     event BookingDisputed(
         uint256 indexed bookingId,
         address indexed raisedBy
+    );
+
+    event DisputeResolved(
+        uint256 indexed bookingId,
+        address indexed driver,
+        uint256 driverAmount,
+        address indexed customer,
+        uint256 refundAmount
     );
 
     event WithdrawalReady(
@@ -317,11 +326,76 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
     }
 
     /**
+     * @dev Resolve a disputed booking by splitting the escrowed funds between
+     *      the driver and the customer. Restricted to onlyOwner (backend) so
+     *      disputes are settled through the backend's resolution pipeline
+     *      (n8n automation) — no third party can force an outcome.
+     *
+     *      Pass driverAmount == booking.amount to pay the driver in full,
+     *      or 0 to refund the customer in full. Any partial amount is split
+     *      between both parties. Sets a terminal Resolved state and routes
+     *      each party's share to their pending-withdrawal bucket.
+     *
+     * @param bookingId   The disputed booking to resolve
+     * @param driverAmount The portion of the escrow awarded to the driver
+     */
+    function resolveDispute(uint256 bookingId, uint256 driverAmount)
+        external
+        onlyOwner
+        nonReentrant
+        whenNotPaused
+    {
+        Booking storage booking = bookings[bookingId];
+
+        require(
+            booking.status == BookingStatus.Disputed,
+            "TruxifyEscrow: Booking not disputed"
+        );
+        require(!booking.paid, "TruxifyEscrow: Already paid");
+        require(booking.amount > 0, "TruxifyEscrow: Nothing to resolve");
+        require(driverAmount <= booking.amount, "TruxifyEscrow: Award exceeds escrow");
+
+        uint256 escrowAmount   = booking.amount;
+        uint256 customerRefund = escrowAmount - driverAmount;
+        address payable driver = booking.driver;
+        address payable customer = booking.customer;
+
+        booking.amount = 0;
+        booking.paid = true;
+        booking.status = BookingStatus.Resolved;
+
+        uint256 newDeadline = block.timestamp + WITHDRAWAL_TIMEOUT;
+        if (driverAmount > 0) {
+            pendingWithdrawals[driver] += driverAmount;
+            if (releaseTimestamps[driver] == 0 || newDeadline > releaseTimestamps[driver]) {
+                releaseTimestamps[driver] = newDeadline;
+            }
+            emit WithdrawalReady(bookingId, driver, driverAmount);
+        }
+        if (customerRefund > 0) {
+            pendingWithdrawals[customer] += customerRefund;
+            if (releaseTimestamps[customer] == 0 || newDeadline > releaseTimestamps[customer]) {
+                releaseTimestamps[customer] = newDeadline;
+            }
+            emit WithdrawalReady(bookingId, customer, customerRefund);
+        }
+
+        emit DisputeResolved(bookingId, driver, driverAmount, customer, customerRefund);
+    }
+
+    /**
      * @dev Resolve a stale dispute that has been inactive for DISPUTE_TIMEOUT.
      *      Defaults to refunding the customer in full to prevent locked funds.
+     *      Restricted to onlyOwner (backend) so an arbitrary third party cannot
+     *      front-run a pending resolution and force a full customer refund.
      * @param bookingId The booking to resolve
      */
-    function resolveDisputeTimeout(uint256 bookingId) external nonReentrant whenNotPaused {
+    function resolveDisputeTimeout(uint256 bookingId)
+        external
+        onlyOwner
+        nonReentrant
+        whenNotPaused
+    {
         Booking storage booking = bookings[bookingId];
 
         require(
