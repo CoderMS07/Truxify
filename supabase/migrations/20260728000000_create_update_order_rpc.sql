@@ -7,10 +7,28 @@ CREATE OR REPLACE FUNCTION update_order_and_load_offer(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_updated_order JSONB;
+  v_customer_id   UUID;
 BEGIN
+  -- Resolve the owning customer of the order for the ownership guard.
+  SELECT customer_id INTO v_customer_id
+  FROM orders
+  WHERE id = p_order_id;
+
+  IF v_customer_id IS NULL THEN
+    RAISE EXCEPTION 'Order not found';
+  END IF;
+
+  -- Ownership guard: only the order's customer (resolved via get_profile_id,
+  -- which maps the Firebase JWT sub to profiles.id) or the service-role
+  -- backend may update the order and its load offer.
+  IF auth.role() <> 'service_role' AND get_profile_id() <> v_customer_id THEN
+    RAISE EXCEPTION 'Unauthorized: you can only update your own orders';
+  END IF;
+
   -- Update orders table based on JSONB keys
   UPDATE orders
   SET
