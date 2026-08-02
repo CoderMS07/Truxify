@@ -1,4 +1,4 @@
-import { supabase } from '../../config/db.js';
+import { supabase, supabaseAdmin } from '../../config/db.js';
 import { getRouteEstimate } from '../osrm.js';
 import { computeOrderPricing } from '../../lib/pricing.js';
 import { predictPrice } from '../ml.js';
@@ -72,7 +72,7 @@ export async function createOrder({ orderData, userId, user }) {
 
   for (let attempt = 0; attempt < MAX_ID_RETRIES; attempt++) {
     orderDisplayId = generateOrderDisplayId();
-    const { data: rpcData, error: rpcErr } = await supabase.rpc('create_order_tx', {
+    const { data: rpcData, error: rpcErr } = await (supabaseAdmin ?? supabase).rpc('create_order_tx', {
       p_order_display_id: orderDisplayId,
       p_customer_id: userId,
       p_customer_name: user?.fullName || 'Customer',
