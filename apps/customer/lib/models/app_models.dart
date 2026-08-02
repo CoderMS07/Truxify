@@ -247,6 +247,9 @@ class HistoryOrderData {
   final bool? isStackable;
   final bool? isFragile;
   final String? specialRequirements;
+  final bool? requiresRefrigeration;
+  final double? targetTemperatureMin;
+  final double? targetTemperatureMax;
 }
 
 class TimelineStepData {

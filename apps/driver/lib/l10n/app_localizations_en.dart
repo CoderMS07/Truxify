@@ -71,10 +71,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get phoneMustBeDigits => 'Phone number must contain only digits';
 
   @override
-  String get autoVerificationFailed => 'Auto-verification failed. Please enter OTP manually.';
+  String get autoVerificationFailed =>
+      'Auto-verification failed. Please enter OTP manually.';
 
   @override
-  String get protectedDriverAccess => 'This area is restricted to registered drivers.';
+  String get protectedDriverAccess =>
+      'This area is restricted to registered drivers.';
 
   @override
   String get verifyOtp => 'Verify OTP';
@@ -165,7 +167,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get radarActiveLooking => 'Radar active — looking for loads near you.';
 
   @override
-  String get todayPay => "Today's Pay";
+  String get todayPay => 'Today\'s Pay';
 
   @override
   String get shiftHours => 'Shift Hours';
@@ -230,7 +232,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get pleaseGoOnline => 'Please go online first';
 
   @override
-  String get noDestinationAvailable2 => 'No destination available. Please set a destination.';
+  String get noDestinationAvailable2 =>
+      'No destination available. Please set a destination.';
 
   @override
   String get locationPermissionRequired => 'Location permission is required';
@@ -239,7 +242,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get locationAccessDenied => 'Location access denied';
 
   @override
-  String get locationPermDenied => 'Location permission permanently denied. Please enable in settings.';
+  String get locationPermDenied =>
+      'Location permission permanently denied. Please enable in settings.';
 
   @override
   String get openSettings => 'Open Settings';
@@ -299,7 +303,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get aboutTruxifyDriverApp => 'About Truxify Driver App';
 
   @override
-  String get truxifyDescription => 'Truxify is a truck logistics platform connecting drivers with loads across East Africa.';
+  String get truxifyDescription =>
+      'Truxify is a truck logistics platform connecting drivers with loads across East Africa.';
 
   @override
   String get documents => 'Documents';
@@ -452,7 +457,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get couldNotLoadRecommendations => 'Could not load recommendations';
 
   @override
-  String get noActiveTripForRecommendations => 'Complete a trip to see return load suggestions';
+  String get noActiveTripForRecommendations =>
+      'Complete a trip to see return load suggestions';
 
   @override
   String get detourDistance => 'Detour';
@@ -474,7 +480,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get enterValidBid => 'Enter a valid bid amount';
+
+  @override
   String get unableToOpen => 'Unable to open notification';
+
+  @override
   String get withdraw => 'Withdraw';
 
   @override
@@ -503,4 +513,19 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get withdrawalSuccessful => 'Withdrawal successful';
+
+  @override
+  String get networkError => 'Network error. Please check your connection.';
+
+  @override
+  String get theme => 'Theme';
+
+  @override
+  String get system => 'System';
+
+  @override
+  String get light => 'Light';
+
+  @override
+  String get dark => 'Dark';
 }

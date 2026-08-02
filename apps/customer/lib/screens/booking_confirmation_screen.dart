@@ -121,7 +121,7 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
         goodsType: widget.draft.goodsType + (_isPassengerMode ? ' + Passenger' : ''),
         weightTonnes: double.tryParse(widget.draft.weightTonnes) ?? 0,
         paymentMethodId: _selectedPayment?.id,
-        requiresRefrigeration: widget.draft.requiresRefrigeration,
+        requiresRefrigeration: widget.draft.requiresRefrigeration ?? false,
         targetTemperatureMin: widget.draft.targetTemperatureMin,
         targetTemperatureMax: widget.draft.targetTemperatureMax,
       );
