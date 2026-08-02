@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { DomainError } from './domainError.js';
 import { DeliveryVerificationService } from './deliveryVerificationService.js';
 import { expireDeliveryOtps, sendPushNotification } from '../notificationService.js';
@@ -21,16 +20,9 @@ import { getLiveTrafficMultiplier } from '../trafficService.js';
 import { eventBus } from '../../core/events/index.js';
 import logger from '../../middleware/logger.js';
 import { supabaseAdmin } from '../../config/db.js';
+import { generateOrderDisplayId, ORDER_DISPLAY_ID_MAX_RETRIES } from '../../lib/orderDisplayId.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function generateOrderDisplayId() {
-  const prefix = '#FF';
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
-  const random = crypto.randomInt(100000, 999999).toString();
-  return `${prefix}${dateStr}${random}`;
-}
 
 export class OrderLifecycleService {
   constructor({ orderRepository, orderTimelineService, bidAcceptanceService, deliveryVerificationService }) {
@@ -102,7 +94,7 @@ export class OrderLifecycleService {
       logger.warn({ err: mlErr.message }, 'Price prediction unavailable, falling back to base pricing');
     }
 
-    const MAX_ID_RETRIES = 3;
+    const MAX_ID_RETRIES = ORDER_DISPLAY_ID_MAX_RETRIES;
     let order = null;
     let orderErr = null;
     let orderDisplayId = null;
