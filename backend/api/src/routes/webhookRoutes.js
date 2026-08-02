@@ -26,6 +26,11 @@ function verifyWebhookSignature(req, res, next) {
   }
 
   const rawBody = req.rawBody;
+  if (!rawBody) {
+    logger.error('[Webhook] rawBody missing — cannot verify signature, rejecting request');
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+
   const expectedSignature = crypto
     .createHmac('sha256', WEBHOOK_SECRET)
     .update(rawBody)
