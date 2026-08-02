@@ -53,6 +53,12 @@ router.get('/alerts/active', authenticate, requireRole(['admin', 'support']), as
 router.post('/alerts/:alertId/resolve', authenticate, requireRole(['admin', 'support']), async (req, res) => {
   try {
     const { alertId } = req.params;
+
+    // Validate alertId format (prevent injection attacks)
+    if (!alertId || typeof alertId !== 'string' || alertId.length > 100 || !/^[a-zA-Z0-9_-]+$/.test(alertId)) {
+      return res.status(400).json({ error: 'Invalid alert ID format' });
+    }
+
     const resolved = await req.escalationHandler.resolveAlert(alertId);
 
     if (!resolved) {
@@ -75,13 +81,38 @@ router.post('/alerts/:alertId/resolve', authenticate, requireRole(['admin', 'sup
  */
 router.get('/events', authenticate, requireRole(['admin', 'support']), async (req, res) => {
   try {
-    const { type, severity, limit = 50 } = req.query;
+    const { type, severity, limit = '50' } = req.query;
+
+    // Validate and sanitize limit parameter
+    const parsedLimit = parseInt(limit, 10);
+    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 1000) {
+      return res.status(400).json({ error: 'Invalid limit. Must be between 1 and 1000' });
+    }
+
+    // Validate event type if provided
+    const validTypes = [
+      'PAYMENT_RECEIVED',
+      'INSURANCE_CLAIM_APPROVED',
+      'INSURANCE_CLAIM_REJECTED',
+      'GEOFENCE_BREACH',
+      'BALANCE_UPDATE_FAILED',
+      'SMART_CONTRACT_REVERT',
+    ];
+    if (type && !validTypes.includes(type)) {
+      return res.status(400).json({ error: 'Invalid event type' });
+    }
+
+    // Validate severity if provided
+    const validSeverities = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+    if (severity && !validSeverities.includes(severity)) {
+      return res.status(400).json({ error: 'Invalid severity level' });
+    }
 
     let query = req.supabase
       .from('blockchain_monitoring_events')
       .select('*')
       .order('created_at', { ascending: false })
-      .limit(Math.min(parseInt(limit), 1000));
+      .limit(parsedLimit);
 
     if (type) {
       query = query.eq('type', type);
@@ -116,6 +147,11 @@ router.get('/events', authenticate, requireRole(['admin', 'support']), async (re
 router.get('/escalations/:alertId', authenticate, requireRole(['admin', 'support']), async (req, res) => {
   try {
     const { alertId } = req.params;
+
+    // Validate alertId format (prevent injection attacks)
+    if (!alertId || typeof alertId !== 'string' || alertId.length > 100 || !/^[a-zA-Z0-9_-]+$/.test(alertId)) {
+      return res.status(400).json({ error: 'Invalid alert ID format' });
+    }
 
     const { data: escalation, error } = await req.supabase
       .from('blockchain_escalations')
