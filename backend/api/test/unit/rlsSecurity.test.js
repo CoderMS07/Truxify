@@ -213,6 +213,27 @@ describe('accept_bid_tx — auth.uid() verification present in migration chain',
   });
 });
 
+describe('complete_trip_tx — order-linked trip finalization (issue #5756)', () => {
+  it('the 20260704000001 migration selects the trip by order_id and raises when none exists', async () => {
+    const p = path.resolve(__dirname, '../../../../supabase/migrations/20260704000001_add_auth_verification_to_complete_trip_tx.sql');
+    const content = await fs.readFile(p, 'utf8');
+
+    expect(/select\s+trip_display_id\s+into\s+v_trip_display_id\s+from\s+trips\s+where\s+order_id\s*=\s*p_order_id/i.test(content)).toBe(true);
+    expect(/if\s+v_trip_display_id\s+is\s+null[\s\S]*raise\s+exception[\s\S]*no\s+active\s+trip\s+found/i.test(content)).toBe(true);
+    expect(/v_active_trip_count/i.test(content)).toBe(false);
+  });
+
+  it('the link_trips_to_orders migration adds an order_id FK to trips and recreates complete_trip_tx', async () => {
+    const p = path.resolve(__dirname, '../../../../supabase/migrations/20260802060000_link_trips_to_orders.sql');
+    const content = await fs.readFile(p, 'utf8');
+
+    expect(/alter\s+table\s+trips\s+add\s+column\s+if\s+not\s+exists\s+order_id\s+uuid\s+references\s+orders\s*\(\s*id\s*\)/i.test(content)).toBe(true);
+    expect(/create\s+index\s+if\s+not\s+exists\s+idx_trips_order_id\s+on\s+trips\s*\(\s*order_id\s*\)/i.test(content)).toBe(true);
+    expect(/select\s+trip_display_id\s+into\s+v_trip_display_id\s+from\s+trips\s+where\s+order_id\s*=\s*p_order_id/i.test(content)).toBe(true);
+    expect(/if\s+v_trip_display_id\s+is\s+null[\s\S]*raise\s+exception[\s\S]*no\s+active\s+trip\s+found/i.test(content)).toBe(true);
+  });
+});
+
 describe('Service-level RPC calls carry an authenticated client (issue #5737)', () => {
   const base = path.resolve(__dirname, '../../src');
   const readSource = (rel) => readFileSync(path.resolve(base, rel), 'utf8');

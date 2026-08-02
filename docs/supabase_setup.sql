@@ -511,6 +511,7 @@ create table if not exists trips (
   id                uuid primary key default gen_random_uuid(),
   trip_display_id   text unique not null,                     -- '#TX20241205'
   driver_id         uuid not null,                            -- profiles.id
+  order_id          uuid,                                     -- orders.id (the order this trip serves)
   route_label       text not null,                            -- 'Surat → Jaipur'
 
   status            text not null default 'active'
@@ -537,10 +538,16 @@ create table if not exists trips (
   updated_at        timestamptz not null default now()
 );
 
+alter table trips
+  add constraint trips_order_id_fkey
+  foreign key (order_id) references orders(id)
+  on update cascade on delete set null;
+
 create index if not exists idx_trips_driver     on trips (driver_id);
 create index if not exists idx_trips_status     on trips (status);
 create index if not exists idx_trips_date       on trips (trip_date);
 create index if not exists idx_trips_display_id on trips (trip_display_id);
+create index if not exists idx_trips_order_id   on trips (order_id);
 create unique index if not exists idx_trips_one_active_per_driver on trips (driver_id) where (status = 'active');
 
 
@@ -1661,7 +1668,6 @@ as $$
 declare
   v_order record;
   v_trip_display_id text;
-  v_active_trip_count int;
   v_updated_count int;
 begin
   -- Use FOR UPDATE to lock the order row and prevent concurrent modifications
@@ -1701,40 +1707,36 @@ begin
     raise exception 'Order has already been delivered';
   end if;
 
-  -- Safe lookup for the driver's active trip
-  select count(*) into v_active_trip_count
+  -- Finalize the active trip that actually served THIS order
+  select trip_display_id into v_trip_display_id
   from trips
-  where driver_id = v_order.driver_id and status = 'active';
+  where order_id = p_order_id and status = 'active'
+  order by created_at
+  limit 1;
 
-  if v_active_trip_count > 1 then
-    raise exception 'Multiple active trips found for driver %', v_order.driver_id;
+  if v_trip_display_id is null then
+    raise exception 'No active trip found for this order — cannot complete trip';
   end if;
 
-  if v_active_trip_count = 1 then
-    select trip_display_id into v_trip_display_id
-    from trips
-    where driver_id = v_order.driver_id and status = 'active';
+  -- Update trip record
+  update trips
+  set status = 'completed',
+      end_time = to_char(now(), 'HH24:MI'),
+      updated_at = now()
+  where trip_display_id = v_trip_display_id;
 
-    -- Update trip record
-    update trips
-    set status = 'completed',
-        end_time = to_char(now(), 'HH24:MI'),
-        updated_at = now()
-    where trip_display_id = v_trip_display_id;
+  -- Update trip items to delivered
+  update trip_items
+  set is_delivered = true
+  where trip_display_id = v_trip_display_id;
 
-    -- Update trip items to delivered
-    update trip_items
-    set is_delivered = true
-    where trip_display_id = v_trip_display_id;
-
-    -- Update trip stops to completed/delivered
-    update trip_stops
-    set is_completed = true,
-        is_current = false,
-        status_label = 'Delivered',
-        updated_at = now()
-    where trip_display_id = v_trip_display_id;
-  end if;
+  -- Update trip stops to completed/delivered
+  update trip_stops
+  set is_completed = true,
+      is_current = false,
+      status_label = 'Delivered',
+      updated_at = now()
+  where trip_display_id = v_trip_display_id;
 
   -- Update order status to payment_released with defensive WHERE guards
   update orders
