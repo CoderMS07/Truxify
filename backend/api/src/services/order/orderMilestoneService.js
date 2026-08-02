@@ -27,6 +27,7 @@ export class OrderMilestoneService {
     if (args.orderValidationService) this.validation = args.orderValidationService;
     if (args.orderTimelineService) this.orderTimelineService = args.orderTimelineService;
     if (args.orderNotificationService) this.orderNotificationService = args.orderNotificationService;
+    if (args.trackingTokenService) this.trackingTokenService = args.trackingTokenService;
   }
 
   async updateMilestone({ orderId, milestone, driverId }) {
@@ -211,6 +212,10 @@ export class OrderMilestoneService {
         error: 'Order status changed during processing. Payment was not released.',
       });
     }
+
+    // Trip complete — revoke any public tracking tokens so the shared link
+    // can no longer expose the driver's live location. Best-effort.
+    await this.trackingTokenService?.revokeAllForOrder(order.order_display_id);
 
     await verifyDeliveryOtp(otpRecord.id);
     await clearOtpState(orderId);

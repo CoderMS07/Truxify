@@ -38,11 +38,21 @@ import { generateOrderDisplayId, ORDER_DISPLAY_ID_MAX_RETRIES } from '../../lib/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class OrderLifecycleService {
-  constructor({ orderRepository, orderTimelineService, bidAcceptanceService, deliveryVerificationService }) {
+  constructor({ orderRepository, orderTimelineService, bidAcceptanceService, deliveryVerificationService, trackingTokenService }) {
     this.orderRepository = orderRepository;
     this.orderTimelineService = orderTimelineService;
     this.bidAcceptanceService = bidAcceptanceService;
     this.deliveryVerification = deliveryVerificationService || new DeliveryVerificationService(orderRepository);
+    this.trackingTokenService = trackingTokenService || null;
+  }
+
+  async revokeTrackingTokensForOrder(orderDisplayId) {
+    if (!this.trackingTokenService || !orderDisplayId) return;
+    try {
+      await this.trackingTokenService.revokeAllForOrder(orderDisplayId);
+    } catch (error) {
+      logger.error(`[OrderLifecycleService] Failed to revoke tracking tokens for order ${orderDisplayId}:`, error);
+    }
   }
 
   async createOrder(customerId, customerName, body) {
@@ -660,6 +670,7 @@ export class OrderLifecycleService {
       const driverFeeWei = (escrowAmountWei * BigInt(penaltyBps)) / 10_000n;
 
       if (currentOrder.status === 'cancelled' && (!requiresRefund || currentOrder.escrow_status === 'refunded')) {
+        await this.revokeTrackingTokensForOrder(currentOrder.order_display_id);
         return {
           status: 200,
           body: {
@@ -760,6 +771,7 @@ export class OrderLifecycleService {
 
           await this.orderTimelineService.insertCancelEvent(currentOrder.order_display_id);
           await expireDeliveryOtps(currentOrder.id);
+          await this.revokeTrackingTokensForOrder(currentOrder.order_display_id);
 
           return {
             status: 200,
@@ -820,6 +832,7 @@ export class OrderLifecycleService {
 
       await this.orderTimelineService.insertCancelEvent(currentOrder.order_display_id);
       await expireDeliveryOtps(currentOrder.id);
+      await this.revokeTrackingTokensForOrder(currentOrder.order_display_id);
 
       return {
         status: 200,
