@@ -156,6 +156,35 @@ describe('Revoke anon privileges (revoke_anon_privileges.sql)', () => {
   });
 });
 
+describe('Admin role on profiles (issue #5848)', () => {
+  let migrationContent;
+  let setupContent;
+  let auditLogContent;
+
+  beforeAll(async () => {
+    const migrationPath = path.resolve(__dirname, '../../../../supabase/migrations/20260802160000_add_admin_role_to_profiles.sql');
+    migrationContent = await fs.readFile(migrationPath, 'utf8');
+    const setupPath = path.resolve(__dirname, '../../../../docs/supabase_setup.sql');
+    setupContent = await fs.readFile(setupPath, 'utf8');
+    const auditPath = path.resolve(__dirname, '../../../../supabase/migrations/20260723000010_create_application_audit_logs.sql');
+    auditLogContent = await fs.readFile(auditPath, 'utf8');
+  });
+
+  it('adds admin to the profiles.role CHECK constraint in a migration', () => {
+    expect(migrationContent).toMatch(/ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_role_check/i);
+    expect(migrationContent).toMatch(/CHECK \(role IN \('customer', 'driver', 'admin'\)\)/i);
+  });
+
+  it('updates the canonical profiles.role constraint in docs/supabase_setup.sql', () => {
+    expect(setupContent).toMatch(/role\s+text\s+not\s+null\s+check\s*\(\s*role\s+in\s*\(\s*'customer'\s*,\s*'driver'\s*,\s*'admin'\s*\)\s*\)/i);
+  });
+
+  it('keeps the audit-logs admin-read policy on role = \'admin\', which is now satisfiable', () => {
+    expect(auditLogContent).toMatch(/CREATE POLICY "Admins can read audit logs"/i);
+    expect(auditLogContent).toMatch(/profiles\.role = 'admin'/i);
+  });
+});
+
 describe('RPC Security Fix (20260708000000_fix_rpc_security.sql)', () => {
   let fixContent;
 
