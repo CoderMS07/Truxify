@@ -28,7 +28,7 @@ class OrderEventService {
 
   _publish(event) {
     if (this._eventBus) {
-      this._eventBus.publish(event, { adapters: ['kafka'], deduplicate: false });
+      this._eventBus.publish(event, { adapters: ['kafka'] });
     }
     this.events.push(event.toJSON());
     return event;
