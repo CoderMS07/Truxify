@@ -138,7 +138,7 @@ router.get('/types', authenticate, userLimiter, (req, res) => {
 });
 function parseCapacityFilter(value, field) {
   if (value === undefined) return { value: undefined };
-  if (typeof value !== 'string' || value.trim() === '') {
+  if (typeof value !== 'string' || value.trim().length === 0) {
     return { error: `${field} must be a non-negative number` };
   }
 
