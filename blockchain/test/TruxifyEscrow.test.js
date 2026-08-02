@@ -151,7 +151,8 @@ describe("TruxifyEscrow", function () {
       expect(booking.amount).to.equal(0);
       expect(booking.status).to.equal(1); // Delivered
 
-      // Withdraw the funds to driver
+      // Withdraw the funds to driver after the withdrawal timelock elapses
+      await time.increase(30 * 24 * 60 * 60 + 1);
       await escrow.connect(driver).withdraw();
 
       const driverBalanceAfter = await ethers.provider.getBalance(driver.address);
@@ -326,6 +327,9 @@ describe("TruxifyEscrow", function () {
 
       await escrow.connect(owner).releasePayment(bookingId);
 
+      // Let the withdrawal timelock elapse so the re-entrancy guard is what blocks the attack
+      await time.increase(30 * 24 * 60 * 60 + 1);
+
       await expect(
         malicious.attackWithdraw()
       ).to.be.reverted;
@@ -348,6 +352,8 @@ describe("TruxifyEscrow", function () {
       const balanceBefore = await ethers.provider.getBalance(customer.address);
       await escrow.connect(owner).cancelBooking(1);
 
+      // Withdraw after the withdrawal timelock elapses
+      await time.increase(30 * 24 * 60 * 60 + 1);
       await escrow.connect(customer).withdraw();
 
       const balanceAfter = await ethers.provider.getBalance(customer.address);
@@ -582,6 +588,8 @@ describe("TruxifyEscrow", function () {
       await escrow.connect(customer).createBooking(1, driver.address, { value: amount });
       await escrow.connect(owner).releasePayment(1);
 
+      // Withdraw after the withdrawal timelock elapses
+      await time.increase(30 * 24 * 60 * 60 + 1);
       const before = await ethers.provider.getBalance(driver.address);
       const tx = await escrow.connect(driver).withdraw();
       const receipt = await tx.wait();
@@ -592,6 +600,21 @@ describe("TruxifyEscrow", function () {
       expect(await escrow.pendingWithdrawals(driver.address)).to.equal(0);
     });
 
+    it("reverts if the withdrawal period is still active", async function () {
+      const { escrow, owner, customer, driver } = await loadFixture(deployEscrowFixture);
+      const amount = ethers.parseEther("1.0");
+
+      await escrow.connect(customer).createBooking(1, driver.address, { value: amount });
+      await escrow.connect(owner).releasePayment(1);
+
+      await expect(
+        escrow.connect(driver).withdraw()
+      ).to.be.revertedWith("Withdrawal period active");
+
+      // Funds must remain pending while the timelock is active
+      expect(await escrow.pendingWithdrawals(driver.address)).to.equal(amount);
+    });
+
     it("allows customer to withdraw cancelled refund", async function () {
       const { escrow, owner, customer, driver } = await loadFixture(deployEscrowFixture);
       const amount = ethers.parseEther("1.5");
@@ -599,6 +622,8 @@ describe("TruxifyEscrow", function () {
       await escrow.connect(customer).createBooking(1, driver.address, { value: amount });
       await escrow.connect(owner).cancelBooking(1);
 
+      // Withdraw after the withdrawal timelock elapses
+      await time.increase(30 * 24 * 60 * 60 + 1);
       const before = await ethers.provider.getBalance(customer.address);
       const tx = await escrow.connect(customer).withdraw();
       const receipt = await tx.wait();
@@ -615,6 +640,8 @@ describe("TruxifyEscrow", function () {
       await escrow.connect(customer).createBooking(1, driver.address, { value: amount });
       await escrow.connect(owner).releasePayment(1);
 
+      // Withdraw after the withdrawal timelock elapses
+      await time.increase(30 * 24 * 60 * 60 + 1);
       await expect(escrow.connect(driver).withdraw())
         .to.emit(escrow, "Withdrawn")
         .withArgs(driver.address, amount);
@@ -628,6 +655,8 @@ describe("TruxifyEscrow", function () {
 
       expect(await escrow.releaseTimestamps(driver.address)).to.be.gt(0);
 
+      // Withdraw after the withdrawal timelock elapses
+      await time.increase(30 * 24 * 60 * 60 + 1);
       await escrow.connect(driver).withdraw();
 
       expect(await escrow.releaseTimestamps(driver.address)).to.equal(0);
@@ -665,6 +694,8 @@ describe("TruxifyEscrow", function () {
 
       expect(await escrow.pendingWithdrawals(driver.address)).to.equal(amount1 + amount2);
 
+      // Withdraw after the withdrawal timelock elapses
+      await time.increase(30 * 24 * 60 * 60 + 1);
       const before = await ethers.provider.getBalance(driver.address);
       const tx = await escrow.connect(driver).withdraw();
       const receipt = await tx.wait();
@@ -945,6 +976,9 @@ describe("TruxifyEscrow", function () {
       const amount = ethers.parseEther("1.0");
       await escrow.connect(customer).createBooking(1, driver.address, { value: amount });
       await escrow.connect(owner).releasePayment(1);
+
+      // Withdraw after the withdrawal timelock elapses so the timestamp is cleared
+      await time.increase(30 * 24 * 60 * 60 + 1);
       await escrow.connect(driver).withdraw();
 
       // Timestamp is now 0 — emergencyRecover must be blocked
@@ -1026,6 +1060,8 @@ describe("TruxifyEscrow", function () {
       // First booking — release, withdraw (clears timestamp)
       await escrow.connect(customer).createBooking(1, driver.address, { value: ethers.parseEther("1.0") });
       await escrow.connect(owner).releasePayment(1);
+      // Withdraw after the withdrawal timelock elapses
+      await time.increase(30 * 24 * 60 * 60 + 1);
       await escrow.connect(driver).withdraw();
 
       // Timestamp should be 0 after withdraw
@@ -1051,6 +1087,8 @@ describe("TruxifyEscrow", function () {
       const pending = await escrow.pendingWithdrawals(driver.address);
       expect(pending).to.equal(ethers.parseEther("3.0"));
 
+      // Withdraw after the withdrawal timelock elapses
+      await time.increase(30 * 24 * 60 * 60 + 1);
       const balanceBefore = await ethers.provider.getBalance(driver.address);
       await escrow.connect(driver).withdraw();
       const balanceAfter = await ethers.provider.getBalance(driver.address);
