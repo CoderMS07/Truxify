@@ -1,9 +1,18 @@
--- Migration: Add auth.uid() verification to complete_trip_tx function
--- This fixes privilege escalation vulnerability where any authenticated user could
--- call this function directly via Supabase REST API, bypassing Node.js backend authorization.
--- Issue: #1851
+-- Migration: Link trips to orders and finalize only the order's own trip in complete_trip_tx
+-- Fixes wrong-trip finalization: complete_trip_tx used to complete the driver's
+-- only active trip regardless of which order was being completed, and it credited
+-- the wallet even when no trip existed for the order.
+-- Issue: #5756
 
-DROP FUNCTION IF EXISTS complete_trip_tx(UUID, UUID, TEXT);
+-- 1. Add order_id to trips so a trip can be attributed to the order it served
+ALTER TABLE trips
+  ADD COLUMN IF NOT EXISTS order_id uuid REFERENCES orders(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_trips_order_id ON trips (order_id);
+
+-- 2. Recreate complete_trip_tx to select the active trip linked to THIS order and
+--    raise when none exists instead of silently crediting the driver.
+DROP FUNCTION IF EXISTS complete_trip_tx(uuid, uuid);
 
 CREATE OR REPLACE FUNCTION complete_trip_tx(p_order_id UUID, p_otp_id UUID, p_release_tx_hash TEXT DEFAULT NULL)
 RETURNS void
