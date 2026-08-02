@@ -1193,7 +1193,26 @@ async function canSubscribe(ws, { order_display_id, driver_id }) {
   }
 
   if (driver_id) {
-    return driver_id === userId || driver_id === ws.driverId;
+    // The driver may always subscribe to their own telemetry.
+    if (driver_id === userId || driver_id === ws.driverId) {
+      return true;
+    }
+
+    // Non-driver subscribers (customers) must have an active order with the
+    // target driver, mirroring the relationship check used for order_display_id.
+    if (_orderRepository && userRole === 'customer') {
+      const { data: linkedOrder, error } = await _orderRepository.findActiveOrderForDriverByCustomer(
+        userId,
+        driver_id,
+        'id, order_display_id'
+      );
+
+      if (!error && linkedOrder) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   if (!order_display_id || !_orderRepository) {

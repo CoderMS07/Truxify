@@ -97,6 +97,18 @@ export class OrderRepository {
     }, 'findOrdersByCustomer');
   }
 
+  async findActiveOrderForDriverByCustomer(customerId, driverId, columns) {
+    const activeStatuses = ['pending', 'active', 'truck_assigned', 'en_route_pickup', 'arrived_pickup', 'picked_up', 'in_transit', 'arriving'];
+    return this._retryableQuery(() => this.supabase
+      .from('orders')
+      .select(columns || 'id, order_display_id')
+      .eq('customer_id', customerId)
+      .eq('driver_id', driverId)
+      .in('status', activeStatuses)
+      .limit(1)
+      .maybeSingle(), 'findActiveOrderForDriverByCustomer');
+  }
+
   async findOrdersWithCount(customerId, columns, pagination) {
     const { page = 1, limit: perPage = 10 } = pagination || {};
     const from = (page - 1) * perPage;
