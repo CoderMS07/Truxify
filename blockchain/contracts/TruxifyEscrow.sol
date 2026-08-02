@@ -442,6 +442,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
     function withdraw() external nonReentrant whenNotPaused {
         uint256 amount = pendingWithdrawals[msg.sender];
         require(amount > 0, "Nothing to withdraw");
+        require(block.timestamp > releaseTimestamps[msg.sender], "Withdrawal period active");
 
         pendingWithdrawals[msg.sender] = 0;
         releaseTimestamps[msg.sender] = 0;
