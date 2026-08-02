@@ -16,7 +16,11 @@ from app.models.demand_forecast import (
     train_demand_forecast_model,
     FEATURE_NAMES,
 )
-from app.models.price_prediction import predict_price, train_price_model
+from app.models.price_prediction import (
+    predict_price,
+    train_price_model,
+    PriceModelDataUnavailableError,
+)
 from app.models.bilateral_matcher import match_bilateral
 from app.models.driver_profit import driver_profit_predictor
 from app.models.bin_packing import optimise_packing
@@ -429,9 +433,17 @@ async def predict_price_endpoint(input: PricePredictInput, _auth=Depends(verify_
             fuel_price=input.fuel_price,
             cargo_type=input.cargo_type,
         )
+        if result is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Price model unavailable: no model trained on real historical data. "
+                       "Train via POST /train/price once completed trips exist.",
+            )
         return PricePredictOutput(**result)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Price prediction failed: %s", e)
         raise HTTPException(status_code=500, detail="Price prediction failed")
@@ -631,6 +643,9 @@ async def train_price_endpoint(_auth=Depends(verify_api_key)):
             timeout=timeout,
         )
         return TrainResponse(status="success", metrics=metrics)
+    except PriceModelDataUnavailableError as e:
+        logger.warning("Price model training skipped: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
     except asyncio.TimeoutError:
         logger.error("Price model training timed out after %d seconds", timeout)
         raise HTTPException(status_code=504, detail="Training timed out")
