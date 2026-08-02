@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:truxify_shared/truxify_shared.dart';
 
 import 'battery_service.dart';
+import 'secure_storage.dart';
 
 class LocationService {
   LocationService._privateConstructor();
@@ -37,6 +38,7 @@ class LocationService {
   String? _activeOrderId;
   String? _activeOrderDisplayId;
   int? _lastCloseCode;
+  String? _authToken;
   Position? _lastSentPosition;
   DateTime? _lastSentTime;
   String? _lastTriggeredMilestone;
@@ -300,9 +302,17 @@ class LocationService {
   }
 
   /// Builds the WebSocket URI for the tracking endpoint.
+  ///
+  /// Auth tokens are deliberately NOT included in the URL — they are sent via
+  /// a first-frame `auth` handshake after the socket connects (issue #5739) —
+  /// so they never leak into proxies, logs or web analytics.
   Uri _buildWsUri() {
     final session = Supabase.instance.client.auth.currentSession;
-    final token = session?.accessToken ?? '';
+    final token = session?.accessToken;
+    if (token != null && token.isNotEmpty) {
+      _authToken = token;
+      unawaited(AuthTokenStore.persist(token));
+    }
     final driverId = Supabase.instance.client.auth.currentUser?.id ?? '';
 
     final baseUri = Uri.parse(defaultApiBaseUrl);
@@ -319,10 +329,22 @@ class LocationService {
       port: baseUri.hasPort ? baseUri.port : null,
       path: wsPath,
       queryParameters: {
-        if (token.isNotEmpty) 'token': token,
         'driver_id': driverId,
       },
     );
+  }
+
+  /// Resolves the auth token used for the WS handshake, preferring the live
+  /// Supabase session and falling back to the token persisted in OS-backed
+  /// secure storage (issue #5739).
+  Future<String?> _resolveAuthToken() async {
+    final session = Supabase.instance.client.auth.currentSession;
+    final token = session?.accessToken;
+    if (token != null && token.isNotEmpty) {
+      await AuthTokenStore.persist(token);
+      return token;
+    }
+    return AuthTokenStore.read();
   }
 
   /// Creates a [ResilientWebSocket] and subscribes to its message stream.
@@ -332,6 +354,8 @@ class LocationService {
   /// [_scheduleReconnect] and [_startHeartbeat] that were needed before.
   Future<void> _connectWebSocket() async {
     if (_resilientWs != null) return;
+
+    _authToken = await _resolveAuthToken();
 
     final wsUri = _buildWsUri();
     final redactedUrl = wsUri.toString().replaceAll(RegExp(r'token=[^&]+'), 'token=[REDACTED]');
@@ -345,6 +369,15 @@ class LocationService {
       onConnect: () {
         _lastCloseCode = null;
         debugPrint('[LocationService] WebSocket connected');
+        final token = _authToken;
+        if (token != null && token.isNotEmpty) {
+          // First-frame auth handshake (issue #5739): the token is sent over
+          // the socket, never as part of the URL.
+          _resilientWs?.send({
+            'event': 'auth',
+            'data': {'token': token},
+          });
+        }
       },
     );
 

@@ -947,7 +947,7 @@ router.post('/wallet/withdraw', authenticate, userLimiter, requirePolicy('driver
     }
 
     // 5.2 Execute atomically via Supabase RPC
-    const userClient = req.token ? createUserClient(req.token) : supabase;
+    const userClient = createUserClient(req.token);
     const { error: rpcErr } = await userClient.rpc('withdraw_funds_tx', {
       p_driver_id: req.user.id,
       p_amount:    amount

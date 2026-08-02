@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { DomainError } from './domainError.js';
 import { DeliveryVerificationService } from './deliveryVerificationService.js';
 import { expireDeliveryOtps, sendPushNotification } from '../notificationService.js';
@@ -34,16 +33,9 @@ const mlPriceCircuitBreaker = new CircuitBreaker('mlPricePrediction', {
   resetTimeoutMs: 15000,
   requestTimeoutMs: 5000,
 });
+import { generateOrderDisplayId, ORDER_DISPLAY_ID_MAX_RETRIES } from '../../lib/orderDisplayId.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function generateOrderDisplayId() {
-  const prefix = '#FF';
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
-  const random = crypto.randomInt(100000, 999999).toString();
-  return `${prefix}${dateStr}${random}`;
-}
 
 export class OrderLifecycleService {
   constructor({ orderRepository, orderTimelineService, bidAcceptanceService, deliveryVerificationService }) {
@@ -115,7 +107,7 @@ export class OrderLifecycleService {
       logger.warn({ err: mlErr.message }, 'Price prediction unavailable, falling back to base pricing');
     }
 
-    const MAX_ID_RETRIES = 3;
+    const MAX_ID_RETRIES = ORDER_DISPLAY_ID_MAX_RETRIES;
     let order = null;
     let orderErr = null;
     let orderDisplayId = null;
@@ -483,7 +475,7 @@ export class OrderLifecycleService {
     });
   }
 
-  async verifyDeliveryFn(orderId, driverId, otp) {
+  async verifyDeliveryFn(orderId, driverId, otp, userClient) {
     return measureExecution('OrderLifecycleService.verifyDeliveryFn', async () => {
       const lockKey = `escrow_lock:${orderId}`;
       const lockValue = await acquireLock(lockKey, 120000);
@@ -492,7 +484,7 @@ export class OrderLifecycleService {
       }
 
       try {
-        return await this.deliveryVerification.verifyDelivery({ orderId, driverId, otp });
+        return await this.deliveryVerification.verifyDelivery({ orderId, driverId, otp }, userClient);
       } finally {
         await releaseLock(lockKey, lockValue);
       }
@@ -516,7 +508,7 @@ export class OrderLifecycleService {
     });
   }
 
-  async changeDrop(orderId, customerId, body) {
+  async changeDrop(orderId, customerId, body, userClient) {
     return measureExecution('OrderLifecycleService.changeDrop', async () => {
     const { drop_address, drop_lat, drop_lng } = body;
 
@@ -598,7 +590,7 @@ export class OrderLifecycleService {
         p_order_display_id: order.order_display_id,
         p_order_updates: updates,
         p_offer_updates: offerUpdates
-      }, supabaseAdmin);
+      }, userClient ?? supabaseAdmin);
 
       if (updateErr) {
         throw new DomainError(500, {
@@ -839,7 +831,7 @@ export class OrderLifecycleService {
     });
   }
 
-  async confirmDeposit(orderId, userId, txHash) {
+  async confirmDeposit(orderId, userId, txHash, userClient) {
     return measureExecution('OrderLifecycleService.confirmDeposit', async () => {
     const lockKey = `escrow_lock:${orderId}`;
     const lockValue = await acquireLock(lockKey, 30000);
@@ -902,7 +894,7 @@ export class OrderLifecycleService {
           p_order_display_id: pending.order_display_id,
           p_expected_version: pending.version,
           p_escrow_booking_id: bookingId,
-        }, supabaseAdmin ?? undefined);
+        }, userClient ?? supabaseAdmin);
         if (acceptErr) {
           logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
           try {
@@ -934,7 +926,7 @@ export class OrderLifecycleService {
     });
   }
 
-  async submitRating(orderId, customerId, stars, comment) {
+  async submitRating(orderId, customerId, stars, comment, userClient) {
     return measureExecution('OrderLifecycleService.submitRating', async () => {
     const { data: order, error: orderErr } = await this.orderRepository.findOrderById(
       orderId, 'id, order_display_id, customer_id, driver_id, status'
@@ -959,7 +951,7 @@ export class OrderLifecycleService {
       p_driver_id: order.driver_id,
       p_stars: stars,
       p_comment: comment,
-    });
+    }, userClient ?? supabaseAdmin);
 
     if (rpcErr) throw new DomainError(500, { error: 'Failed to submit rating.', details: rpcErr.message });
 
