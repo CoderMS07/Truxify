@@ -25,7 +25,7 @@ function validateTelemetryPayload(data) {
       continue;
     }
     if (value === undefined || value === null) continue;
-    if (rules.type === 'number' && (typeof value !== 'number' || isNaN(value))) {
+    if (rules.type === 'number' && (typeof value !== 'number' || Number.isNaN(value))) {
       errors.push(`${field} must be a valid number`);
     }
     if (rules.type === 'string' && typeof value !== 'string') {
@@ -687,7 +687,7 @@ export async function handleLocationPing(ws, data, req) {
   let deviceTime = null;
   if (device_timestamp) {
     const parsedEpoch = Date.parse(device_timestamp);
-    if (isNaN(parsedEpoch)) {
+    if (Number.isNaN(parsedEpoch)) {
       logger.error(`[TRUXIFY VALIDATION ERROR] Malformed device_timestamp received from driver: ${driver_id}. Falling back to server time.`);
     } else {
       deviceTime = new Date(parsedEpoch);
@@ -1062,7 +1062,7 @@ export async function closeWebSocketServer() {
 
   // Wait for MongoDB to be available before final flush
   const parsedWait = parseInt(process.env.MONGODB_SHUTDOWN_WAIT_MS, 10);
-  const mongoMaxWaitMs = isNaN(parsedWait) ? 10000 : parsedWait;
+  const mongoMaxWaitMs = Number.isNaN(parsedWait) ? 10000 : parsedWait;
   if (mongoMaxWaitMs > 0) {
     const mongoPollIntervalMs = Math.min(500, mongoMaxWaitMs);
     const mongoWaitStart = Date.now();
