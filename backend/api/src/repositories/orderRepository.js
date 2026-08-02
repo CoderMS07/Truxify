@@ -357,8 +357,12 @@ export class OrderRepository {
   // ===================================================================
 
   async executeRpc(name, params, client) {
-    const supabaseClient = client || this.supabase;
-    return this._retryableQuery(() => supabaseClient.rpc(name, params), `executeRpc:${name}`);
+    if (!client) {
+      throw new Error(
+        `executeRpc("${name}") requires a Supabase client. Pass the per-request user client so auth.uid() resolves to the caller instead of falling back to the shared anon-key client.`
+      );
+    }
+    return this._retryableQuery(() => client.rpc(name, params), `executeRpc:${name}`);
   }
 
   // ===================================================================

@@ -55,7 +55,7 @@ async function finalizeOrRevert(order, orderRepository) {
           p_order_display_id: pending.order_display_id,
           p_expected_version: pending.version,
           p_escrow_booking_id: order.escrow_booking_id,
-        }, supabaseAdmin ?? undefined);
+        }, supabaseAdmin);
 
         if (acceptErr) {
           logger.warn(`[escrow-funding] Funding healed for ${order.order_display_id} but accept_bid_tx failed: ${acceptErr.message}`);

@@ -145,7 +145,7 @@ import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 
 import { bidLimiter, userLimiter, userKeyGenerator, createStore } from '../middleware/rateLimiter.js';
-import { mongoDb, supabase, supabaseAdmin, redisClient, createUserClient } from '../config/db.js';
+import { mongoDb, supabase, redisClient, createUserClient } from '../config/db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { validateDocumentBuffer } from '../lib/documentValidation.js';
@@ -954,7 +954,7 @@ router.put('/:id/milestones', authenticate, userLimiter, requirePolicy('mileston
  */
 router.post('/:id/verify-delivery', authenticate, userLimiter, requirePolicy('delivery:verify'), auditLog({ action: 'delivery:verify', resourceType: 'delivery_verification' }), verifyDeliveryLimiter, requireIdempotency(86400), validateParams(paramIdSchema), validateBody(verifyDeliverySchema), async (req, res) => {
   try {
-    const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(req.params.id, req.user.id, req.body.otp);
+    const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(req.params.id, req.user.id, req.body.otp, req.token ? createUserClient(req.token) : undefined);
 
     if (escrowUpdateFailed) {
       return res.status(202).json({
@@ -1114,7 +1114,7 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       p_order_display_id: order.order_display_id,
       p_order_updates: updates,
       p_offer_updates: offerUpdates
-    }, supabaseAdmin);
+    }, req.token ? createUserClient(req.token) : undefined);
 
     if (updateErr) {
       logger.error('Order and load offer atomic update failed for change-drop:', updateErr.message);

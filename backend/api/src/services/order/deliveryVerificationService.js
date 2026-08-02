@@ -257,7 +257,7 @@ export class DeliveryVerificationService {
     }
   }
 
-  async verifyDelivery({ orderId, driverId, otp }) {
+  async verifyDelivery({ orderId, driverId, otp }, userClient) {
     return measureExecution('DeliveryVerificationService.verifyDelivery', async () => {
     const { order, otpRecord } = await this.validateDeliveryOtp({ orderId, driverId, otp });
 
@@ -335,7 +335,7 @@ export class DeliveryVerificationService {
         p_order_id: orderId,
         p_otp_id: otpRecord.id,
         p_release_tx_hash: releaseTxHash,
-      });
+      }, userClient);
       tripData = rpcResult.data;
 
       if (rpcResult.error) {

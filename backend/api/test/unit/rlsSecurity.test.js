@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'fs/promises';
+import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -209,5 +210,77 @@ describe('accept_bid_tx — auth.uid() verification present in migration chain',
   it('withdraw_funds_tx has auth.uid() check verifying caller owns the wallet', () => {
     const hasAuthCheck = /IF auth\.uid\(\) <> p_driver_id THEN/i.test(secureRpcContent);
     expect(hasAuthCheck).toBe(true);
+  });
+});
+
+describe('Service-level RPC calls carry an authenticated client (issue #5737)', () => {
+  const base = path.resolve(__dirname, '../../src');
+  const readSource = (rel) => readFileSync(path.resolve(base, rel), 'utf8');
+
+  // Extract every `executeRpc('<rpc_name>', {...}, <client>)` invocation block
+  // so we can assert each one passes an explicit client rather than relying on
+  // the repository defaulting to the shared anon-key client.
+  function rpcCallBlocks(content) {
+    const blocks = [];
+    const re = /executeRpc\(\s*'([a-z_0-9]+)'/g;
+    let match;
+    while ((match = re.exec(content))) {
+      // The regex consumed the opening '(' of executeRpc, so start at depth 1;
+      // the balanced closing ')' brings the count back to 0.
+      let depth = 1;
+      let i = re.lastIndex;
+      for (; i < content.length; i++) {
+        const ch = content[i];
+        if (ch === '(') depth += 1;
+        else if (ch === ')') {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      blocks.push({ rpc: match[1], block: content.slice(match.index, i + 1) });
+    }
+    return blocks;
+  }
+
+  it('executeRpc requires an explicit client instead of falling back to the shared anon-key client', () => {
+    const orderRepositoryContent = readSource('repositories/orderRepository.js');
+    const executeRpcMethod = orderRepositoryContent.match(/async executeRpc\(name, params, client\)[\s\S]*?\n  \}/)[0];
+    expect(executeRpcMethod).toMatch(/if \(!client\)\s*\{\s*throw new Error/);
+    expect(executeRpcMethod).not.toMatch(/client \|\| this\.supabase/);
+  });
+
+  it.each(rpcCallBlocks(readSource('services/order/deliveryVerificationService.js')))(
+    'deliveryVerificationService passes a client for $rpc',
+    ({ block }) => {
+      expect(block).toMatch(/,\s*(userClient|supabaseAdmin)\s*\)\s*;?$/);
+    }
+  );
+
+  it.each(rpcCallBlocks(readSource('services/order/orderMilestoneService.js')))(
+    'orderMilestoneService passes a client for $rpc',
+    ({ block }) => {
+      expect(block).toMatch(/,\s*(userClient|supabaseAdmin)\s*\)\s*;?$/);
+    }
+  );
+
+  it.each(rpcCallBlocks(readSource('services/order/orderLifecycleService.js')))(
+    'orderLifecycleService passes a client for $rpc',
+    ({ block }) => {
+      expect(block).toMatch(/,\s*(userClient(?:\s*\?\?\s*supabaseAdmin)?|supabaseAdmin)\s*\)\s*;?$/);
+    }
+  );
+
+  it.each(rpcCallBlocks(readSource('routes/orderRoutes.js')))(
+    'orderRoutes passes a client for $rpc',
+    ({ block }) => {
+      expect(block).toMatch(/,\s*(req\.token \? createUserClient\(req\.token\) : undefined|supabaseAdmin)\s*\)\s*;?$/);
+    }
+  );
+
+  it('withdraw_funds_tx is invoked through a per-user client in driverRoutes, never the shared anon-key client', () => {
+    const driverRoutesContent = readSource('routes/driverRoutes.js');
+    expect(driverRoutesContent).toMatch(/createUserClient\(req\.token\)/);
+    expect(driverRoutesContent).toMatch(/userClient\.rpc\('withdraw_funds_tx'/);
+    expect(driverRoutesContent).not.toMatch(/createUserClient\(req\.token\) \? [^;]* : supabase/);
   });
 });

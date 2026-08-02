@@ -111,7 +111,7 @@ export class OrderMilestoneService {
     });
   }
 
-  async verifyDelivery({ orderId, otp, driverId }) {
+  async verifyDelivery({ orderId, otp, driverId }, userClient) {
     return measureExecution('OrderMilestoneService.verifyDelivery', async () => {
     if (await checkOtpLockout(orderId)) {
       throw new DomainError(429, {
@@ -192,7 +192,7 @@ export class OrderMilestoneService {
       p_order_id: orderId,
       p_otp_id: otpRecord.id,
       p_release_tx_hash: releaseTxHash,
-    });
+    }, userClient);
     if (rpcErr) {
       logger.error('complete_trip_tx RPC failed:', rpcErr.message);
       throw new DomainError(500, { error: 'Failed to complete trip and release payment.', details: rpcErr.message });
