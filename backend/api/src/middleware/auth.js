@@ -49,7 +49,7 @@ export async function verifyAuthToken(token) {
     if (!firebaseAdmin) {
       throw new Error('Firebase Auth verification is not configured on this server.');
     }
-    const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
+    const decodedToken = await firebaseAdmin.auth().verifyIdToken(token, true);
     firebaseUid = decodedToken.uid;
 
     if (!supabase) {
@@ -226,7 +226,7 @@ export async function authenticate(req, res, next) {
       if (!firebaseAdmin) {
         return res.status(500).json({ error: 'Firebase Auth verification is not configured on this server.' });
       }
-      const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
+      const decodedToken = await firebaseAdmin.auth().verifyIdToken(token, true);
       firebaseUid = decodedToken.uid;
 
       // Check Redis cache first.
