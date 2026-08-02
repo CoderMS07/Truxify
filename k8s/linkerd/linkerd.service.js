@@ -109,7 +109,7 @@ class LinkerdService {
         const ns = sanitizePromQL(namespace);
         const l = parseInt(limit, 10);
         const query = `
-            topk(${isNaN(l) ? 10 : l}, 
+            topk(${Number.isNaN(l) ? 10 : l}, 
                 sum(rate(response_total{
                     namespace="${ns}"
                 }[5m])) by (dst_service, dst_deployment)

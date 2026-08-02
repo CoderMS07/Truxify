@@ -48,7 +48,7 @@ const contractAddress   = process.env.ESCROW_CONTRACT_ADDRESS;
 const relayerPrivateKey = process.env.RELAYER_WALLET_PRIVATE_KEY;
 function parseEnvFloat(raw, defaultVal, name) {
   const val = parseFloat(raw || defaultVal);
-  if (isNaN(val) || val <= 0) {
+  if (Number.isNaN(val) || val <= 0) {
     throw new Error(`Invalid ${name}: "${raw}" — must be a positive number`);
   }
   return val;
