@@ -25,8 +25,11 @@ jobs:
           # Days of inactivity before a warning is posted
           days-before-stale: 14
 
-          # Days after the warning before auto-close
-          days-before-close: 7
+          # Disable auto-closing issues (never close issues)
+          days-before-issue-close: -1
+
+          # Auto-close stale PRs after 7 days
+          days-before-pr-close: 7
 
           # Labels applied when stale
           stale-issue-label: "stale"
@@ -35,13 +38,14 @@ jobs:
           # Remove stale label automatically if activity resumes
           remove-stale-when-updated: true
 
+          # Unassign inactive users when marked stale
+          remove-issue-assignees-when-stale: true
+
           # Warning comment posted on stale issues
-          
           stale-issue-message: >
-            This issue has had no activity for **14 days** and has been
-            marked as `stale`. If this is still relevant, please leave a
-            comment or push an update within the next **7 days**, otherwise
-            it will be closed automatically to keep the tracker clean.
+            This issue has had no activity for **14 days**. You have been unassigned 
+            so other contributors can pick it up. If you are still working on this, 
+            please leave a comment to re-claim it!
 
           # Warning comment posted on stale PRs
           
@@ -51,13 +55,6 @@ jobs:
             please push a commit or leave a comment within the next **7 days**,
             otherwise it will be closed automatically.
 
-          # Comment posted when a stale issue is closed
-          
-          close-issue-message: >
-          
-            This issue has been automatically closed after 21 days of
-            inactivity. If still relevant, please open a new issue with
-            updated context. Thank you for contributing to Truxify!
 
           # Comment posted when a stale PR is closed
           
