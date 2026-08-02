@@ -119,6 +119,8 @@ services:
       - postgres_data:/var/lib/postgresql/data
       # Optional: mount init scripts
       # - ./docs/supabase_setup.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      # Create the dedicated least-privilege n8n role/database (fresh volumes only).
+      - ./automation/n8n/init/01-create-n8n-db.sh:/docker-entrypoint-initdb.d/01-create-n8n-db.sh:ro
     deploy:
       resources:
         limits:
@@ -221,6 +223,10 @@ services:
       --save 60 10000
 
   # ─── n8n Automation (Dispute Pipeline & ML Retraining) ────────────────────
+  # Security: NOT exposed on the host network — reachable only on the internal
+  # Docker network. User management is mandatory (owner setup required) and the
+  # service uses its own dedicated, least-privilege database instead of the
+  # application's `postgres` superuser-equivalent credentials.
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
     container_name: truxify-n8n
@@ -231,17 +237,19 @@ services:
       N8N_PORT: 5678
       N8N_PROTOCOL: https
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY is required}
+      # Fail to start unless user management + owner provisioning is enabled.
+      N8N_USER_MANAGEMENT_JWT_SECRET: ${N8N_USER_MANAGEMENT_JWT_SECRET:?N8N_USER_MANAGEMENT_JWT_SECRET is required}
+      N8N_USER_MANAGEMENT_DISABLED: "false"
+      # Dedicated least-privilege database (never the app's `truxify` DB).
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: db
       DB_POSTGRESDB_PORT: 5432
-      DB_POSTGRESDB_DATABASE: truxify
-      DB_POSTGRESDB_USER: postgres
-      DB_POSTGRESDB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      DB_POSTGRESDB_DATABASE: truxify_n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD:?N8N_DB_PASSWORD is required}
       EXECUTIONS_DATA_PRUNE: "true"
       EXECUTIONS_DATA_MAX_AGE: 336
       N8N_METRICS: "true"
-    ports:
-      - "${N8N_PORT:-5678}:5678"
     volumes:
       - n8n_data:/home/node/.n8n
     deploy:
