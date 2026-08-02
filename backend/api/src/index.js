@@ -114,6 +114,10 @@ import {
   stopEscrowRefundReconciliation
 } from './services/escrowRefundReconciliation.js'
 import {
+  startEscrowFundingReconciliation,
+  stopEscrowFundingReconciliation
+} from './services/escrowFundingReconciliation.js'
+import {
   startReputationReconciliation,
   stopReputationReconciliation,
 } from './services/reputationReconciliation.js'

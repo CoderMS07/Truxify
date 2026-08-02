@@ -440,6 +440,35 @@ export async function confirmEscrowRefund (txHash) {
   });
 }
 
+/**
+ * Read a booking's on-chain state (used by the escrow funding reconciliation
+ * worker to decide whether a 'funding' order was actually funded).
+ * @param {string} bookingId - bytes32 booking id
+ * @returns {Promise<{customer: string, driver: string, amount: bigint, status: bigint, paid: boolean, createdAt: bigint} | null>}
+ */
+export async function getEscrowBooking (bookingId) {
+  if (!escrowContract || !bookingId) {
+    return null
+  }
+  try {
+    const booking = await escrowContract.bookings(bookingId)
+    if (!booking) {
+      return null
+    }
+    return {
+      customer: booking.customer,
+      driver: booking.driver,
+      amount: booking.amount,
+      status: booking.status,
+      paid: booking.paid,
+      createdAt: booking.createdAt,
+    }
+  } catch (err) {
+    logger.warn(`[escrow] Failed to read booking ${bookingId}: ${err.message}`)
+    return null
+  }
+}
+
 export function bookingIdFromUuid (orderId) {
   return getEscrowBookingId(orderId)
 }

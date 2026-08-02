@@ -1,6 +1,5 @@
 import { paisaToMaticWei, getEscrowBookingId } from '../escrow.js';
 import { DomainError } from './domainError.js';
-import { sendPushNotification } from '../notificationService.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 
 // Re-export for backward compatibility — prefer importing from domainError.js
@@ -18,12 +17,22 @@ export class BidAcceptanceService {
 
   async acceptBid({ orderId, bidId, customerId }) {
     return measureExecution('BidAcceptanceService.acceptBid', async () => {
-    const { data: order, error: orderErr } = await this.orderRepository.findOrderById(orderId, 'order_display_id, customer_id, version');
+    const { data: order, error: orderErr } = await this.orderRepository.findOrderById(
+      orderId, 'order_display_id, customer_id, version, escrow_status, pending_bid_acceptance'
+    );
     if (orderErr) {
       throw new DomainError(500, { error: 'Failed to retrieve order.', details: orderErr.message });
     }
     if (!order || order.customer_id !== customerId) {
       throw new DomainError(403, { error: 'Access Denied: You do not own this order.' });
+    }
+
+    // Two-phase guard: if funding for another bid is already in flight, block
+    // further acceptances until the pending escrow deposit is confirmed.
+    if (order.escrow_status === 'funding' && order.pending_bid_acceptance) {
+      throw new DomainError(409, {
+        error: 'Funding has already been initiated for a bid on this order. Confirm the pending escrow deposit before accepting another bid.'
+      });
     }
 
     const { data: bid, error: bidErr } = await this.orderRepository.findBidById(bidId);
@@ -112,94 +121,44 @@ export class BidAcceptanceService {
       });
     }
 
-    // Update order with escrow booking info, persisting the expected escrow
-    // amount and assigned driver wallet so deposit confirmation can verify
-    // the on-chain booking matches them.
+    // Persist the escrow booking reference PLUS the full bid-acceptance context
+    // needed by confirm-deposit to finalize the driver assignment atomically.
+    // Two-phase design (#5724): the driver is NOT committed here. accept_bid_tx
+    // runs only from confirm-deposit, AFTER the on-chain deposit is verified.
+    if (order.version == null) {
+      throw new DomainError(500, {
+        error: 'Order version is missing. Cannot safely reserve a bid.',
+        recovery: 'Please retry the request.',
+      });
+    }
+
+    const pendingAcceptance = {
+      bid_id: bidId,
+      load_id: bid.load_id,
+      driver_id: bid.driver_id,
+      truck_id: truckInfo?.id || null,
+      driver_name: profile?.full_name || 'Assigned Driver',
+      driver_rating: details?.rating || 0.00,
+      truck_number: truckInfo?.number_plate || 'N/A',
+      bid_amount: bid.bid_amount,
+      order_display_id: order.order_display_id,
+      version: order.version,
+    };
+
     const { error: escrowUpdateErr } = await this.orderRepository.updateEscrowBooking(orderId, bookingId, 'funding', {
       escrow_amount_wei: amountWei.toString(),
       escrow_driver_wallet: freshDriverWallet,
+      escrow_funding_started_at: new Date().toISOString(),
+      pending_bid_acceptance: pendingAcceptance,
     });
     if (escrowUpdateErr) {
       throw new DomainError(500, { error: 'Failed to store escrow booking reference.', details: escrowUpdateErr.message });
     }
 
-    // Execute RPC to accept bid
-    if (order.version == null) {
-      throw new DomainError(500, {
-        error: 'Order version is missing. Cannot safely accept bid.',
-        recovery: 'Please retry the request.',
-      });
-    }
-
-    const { error: rpcErr } = await this.orderRepository.executeRpc('accept_bid_tx', {
-      p_bid_id: bidId,
-      p_order_id: orderId,
-      p_load_id: bid.load_id,
-      p_driver_id: bid.driver_id,
-      p_truck_id: truckInfo?.id || null,
-      p_driver_name: profile?.full_name || 'Assigned Driver',
-      p_driver_rating: details?.rating || 0.00,
-      p_truck_number: truckInfo?.number_plate || 'N/A',
-      p_bid_amount: bid.bid_amount,
-      p_order_display_id: order.order_display_id,
-      p_expected_version: order.version,
-    });
-
-    if (rpcErr) {
-      if (bookingId) {
-        try {
-          await this.escrowRefundFn(order.order_display_id);
-          this.logger?.warn?.(`[escrow] Compensating refund issued for order ${order.order_display_id} after RPC failure.`);
-        } catch (refundErr) {
-          this.logger?.error?.(`[escrow] CRITICAL: Escrow refund also failed for order ${order.order_display_id}:`, refundErr.message);
-        }
-      }
-      // Revert escrow status back to pending since RPC failed
-      const { error: revertErr } = await this.orderRepository.revertEscrowStatus(orderId);
-      if (revertErr) {
-        this.logger?.error?.('[escrow] Failed to revert escrow status after RPC failure:', revertErr.message);
-      }
-
-      if (rpcErr.message?.includes('OPTIMISTIC_LOCK_FAIL') || rpcErr.message?.includes('Load offer is no longer available') || rpcErr.message?.includes('Order is no longer pending')) {
-        throw new DomainError(409, {
-          error: 'Conflict: This load offer was already accepted or is no longer available.',
-          details: rpcErr.message
-        });
-      }
-
-      throw new DomainError(500, {
-        error: 'Failed to accept bid atomically.',
-        details: rpcErr.message,
-        recovery: 'The escrow deposit has been refunded. Please try again.'
-      });
-    }
-
-    if (this.notificationDispatcher) {
-      try {
-        await this.notificationDispatcher({
-          orderId,
-          bidId,
-          orderDisplayId: order.order_display_id,
-          driverId: bid.driver_id,
-          bidAmount: bid.bid_amount,
-        });
-      } catch (notifyErr) {
-        this.logger?.warn?.('[bidAcceptance] Notification dispatcher failed:', notifyErr.message);
-      }
-    }
-
-    sendPushNotification(
-      bid.driver_id,
-      'Bid Accepted!',
-      `Your bid for order ${order.order_display_id} has been accepted. You are now assigned to this load.`,
-      'bid_accepted',
-      { orderId, orderDisplayId: order.order_display_id }
-    ).catch(err => this.logger?.error?.(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
-
     return {
       status: 200,
       body: {
-        message: 'Bid accepted. Driver and truck assigned.',
+        message: 'Bid reserved. Complete the escrow deposit to finalize the driver assignment.',
         depositTx,
       },
     };

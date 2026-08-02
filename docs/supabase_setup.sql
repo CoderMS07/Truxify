@@ -370,6 +370,12 @@ alter table orders add column if not exists escrow_refund_submitted_at timestamp
 alter table orders add column if not exists escrow_release_error text;
 alter table orders add column if not exists escrow_release_attempts integer not null default 0;
 alter table orders add column if not exists escrow_release_last_attempt_at timestamptz;
+-- Two-phase bid acceptance (#5724): reserved bid context + funding sweeper state
+alter table orders add column if not exists pending_bid_acceptance jsonb;
+alter table orders add column if not exists escrow_funding_started_at timestamptz;
+alter table orders add column if not exists escrow_funding_attempts integer not null default 0;
+alter table orders add column if not exists escrow_funding_last_attempt_at timestamptz;
+alter table orders add column if not exists escrow_funding_error text;
 alter table orders
   add constraint orders_customer_id_fkey
   foreign key (customer_id) references profiles(id)
@@ -1366,8 +1372,10 @@ create trigger trg_user_devices_updated_at
 
 
 -- ────────────────────────────────────────────────────────────────────────────
--- RPC 1: accept_bid_tx — Accept a driver's bid on a load offer atomically
--- Called from: POST /api/orders/:id/bids/:bidId/accept
+-- RPC 1: accept_bid_tx — Finalize a driver's bid on a load offer atomically
+-- Called from: POST /api/orders/:id/confirm-deposit (two-phase acceptance, #5724)
+-- and the escrow funding reconciliation worker (service_role).
+-- The driver is committed ONLY after the escrow deposit is confirmed on-chain.
 -- ────────────────────────────────────────────────────────────────────────────
 create or replace function accept_bid_tx(
   p_bid_id           uuid,
@@ -1380,15 +1388,34 @@ create or replace function accept_bid_tx(
   p_truck_number     text,
   p_bid_amount       int,
   p_order_display_id text,
+  p_expected_version int,
   p_escrow_booking_id text default null
 ) returns void
 language plpgsql
 security definer
+set search_path = public, pg_temp
 as $$
 declare
+  v_customer_id uuid;
   v_load_status text;
   v_order_status text;
+  v_current_version int;
 begin
+  -- Verify the caller is the customer who owns the order, unless it is the
+  -- backend service (confirm-deposit / funding reconciliation worker).
+  select customer_id into v_customer_id
+  from orders
+  where id = p_order_id;
+
+  if v_customer_id is null then
+    raise exception 'Order not found';
+  end if;
+
+  if auth.role() <> 'service_role'
+     and (auth.uid() is null or auth.uid() <> v_customer_id) then
+    raise exception 'Unauthorized: you can only accept bids on your own orders';
+  end if;
+
   -- Lock load offer row; concurrent calls block until this transaction completes
   select status into v_load_status
     from load_offers
@@ -1400,13 +1427,17 @@ begin
   end if;
 
   -- Lock order row before modifying driver assignment
-  select status into v_order_status
+  select status, version into v_order_status, v_current_version
     from orders
     where id = p_order_id
     for update;
 
   if v_order_status is null or v_order_status <> 'pending' then
     raise exception 'Order is no longer pending';
+  end if;
+
+  if v_current_version != p_expected_version then
+    raise exception 'OPTIMISTIC_LOCK_FAIL';
   end if;
 
   -- Step 1: Accept the chosen bid
@@ -1425,7 +1456,8 @@ begin
     set status = 'claimed', updated_at = now()
     where id = p_load_id;
 
-  -- Step 4: Assign driver + truck to order, update pricing and escrow
+  -- Step 4: Assign driver + truck to order, update pricing and escrow,
+  -- and clear the pending two-phase acceptance context.
   update orders
     set driver_id        = p_driver_id,
         truck_id         = p_truck_id,
@@ -1434,7 +1466,10 @@ begin
         driver_rating    = p_driver_rating,
         truck_number     = p_truck_number,
         total_amount     = p_bid_amount,
+        bid_amount       = p_bid_amount,
         escrow_booking_id = coalesce(p_escrow_booking_id, escrow_booking_id),
+        pending_bid_acceptance = null,
+        version          = version + 1,
         updated_at       = now()
     where id = p_order_id;
 
