@@ -19,7 +19,7 @@ export async function getLiveTrafficMultiplier(pickupLat, pickupLng) {
     // const url = `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key=${process.env.TOMTOM_API_KEY}&point=${pickupLat},${pickupLng}`;
     // const response = await fetch(url);
     // if (!response.ok) throw new Error("Request failed");
-const data = await response.json();
+    // const data = await response.json();
     // return calculateMultiplierFromData(data);
 
     // Mocking a live traffic integration:

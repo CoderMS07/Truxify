@@ -12,8 +12,8 @@ import logger from './logger.js';
  * are unconditionally stripped to prevent any possibility of bypass.
  */
 export async function verifyAuthToken(token) {
-  let userProfile = null;
-  let firebaseUid = null;
+  let userProfile;
+  let firebaseUid;
   let supabaseUserId = null;
 
   let decoded;

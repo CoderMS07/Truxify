@@ -142,7 +142,7 @@ class DigilockerService {
           txHash = receipt.hash;
         } catch (err) {
           logger.error(`On-chain registration failed for ${doc.type}:`, err.message);
-          throw new Error(`On-chain registration failed for ${doc.type}: ${err.message}`);
+          throw new Error(`On-chain registration failed for ${doc.type}: ${err.message}`, { cause: err });
         }
       }
 
