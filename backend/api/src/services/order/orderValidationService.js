@@ -158,9 +158,10 @@ export class OrderValidationService {
   }
 
   assertChangeDropAllowed(order) {
-    if (order.escrow_status === 'funded' || order.status !== 'pending') {
-      const reason = order.escrow_status === 'funded'
-        ? 'after escrow has been funded'
+    const escrowInFlight = order.escrow_status === 'funding' || order.escrow_status === 'funded';
+    if (escrowInFlight || order.status !== 'pending') {
+      const reason = escrowInFlight
+        ? `after escrow ${order.escrow_status === 'funding' ? 'funding has been initiated' : 'has been funded'}`
         : `after order status is '${order.status}'`;
       throw new DomainError(409, {
         error: `Drop location cannot be changed ${reason}.`,
