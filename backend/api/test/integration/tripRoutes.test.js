@@ -48,6 +48,9 @@ describe('Trip Routes', () => {
     beforeEach(() => {
         m.store.trip_events = [];
         m.store.processed_batches = [];
+        m.store.orders = [
+            { id: 'trip-1', driver_id: 'driver-1', customer_id: 'customer-1' },
+        ];
         m.calls.length = 0;
     });
 
@@ -229,6 +232,54 @@ describe('Trip Routes', () => {
         expect(res.body.error).toBe('Database failed to process batch.');
     });
 
+    it('POST /events/batch returns 403 when the caller does not own the trip', async () => {
+        m.store.orders = [];
+
+        const res = await request(buildApp())
+            .post('/api/v1/trips/events/batch')
+            .set(DRIVER_HEADERS)
+            .send(validPayload);
+
+        expect(res.status).toBe(403);
+        expect(res.body.error).toContain('Access Denied');
+    });
+
+    it('POST /events/batch returns 403 when the caller owns only some of the trips', async () => {
+        m.store.orders = [
+            { id: 'trip-1', driver_id: 'driver-1', customer_id: 'customer-1' },
+        ];
+
+        const res = await request(buildApp())
+            .post('/api/v1/trips/events/batch')
+            .set(DRIVER_HEADERS)
+            .send({
+                idempotencyKey: 'batch-partial-ownership',
+                events: [
+                    validPayload.events[0],
+                    {
+                        ...validPayload.events[0],
+                        id: 'event-other-trip',
+                        trip_id: 'other-trip',
+                    },
+                ],
+            });
+
+        expect(res.status).toBe(403);
+        expect(res.body.error).toContain('Access Denied');
+    });
+
+    it('POST /events/batch returns 500 when trip ownership check fails', async () => {
+        m.programErrorFor('orders', 'select', 'ownership check failed');
+
+        const res = await request(buildApp())
+            .post('/api/v1/trips/events/batch')
+            .set(DRIVER_HEADERS)
+            .send(validPayload);
+
+        expect(res.status).toBe(500);
+        expect(res.body.error).toBe('Internal Server Error');
+    });
+
     it('POST /events/batch returns 422 for otpDelivery event containing otp', async () => {
         const res = await request(buildApp())
             .post('/api/v1/trips/events/batch')
@@ -356,17 +407,46 @@ describe('GET /api/trips/:id/events', () => {
     process.env.BYPASS_AUTH = 'true';
     process.env.NODE_ENV = 'test';
     m.store.trip_events = [];
-    m.store.orders = [];
+    m.store.orders = [
+      { id: '11111111-1111-4111-a111-111111111111', driver_id: 'driver-1', customer_id: 'customer-1' },
+    ];
     m.calls.length = 0;
   });
 
   it('returns 404 when trip has no events and no matching order', async () => {
+    m.store.orders = [];
     const res = await request(buildEventsApp())
       .get('/api/trips/22222222-2222-4222-a222-222222222222/events')
       .set(DRIVER_HEADERS);
 
     console.log("RESPONSE:", res.body); expect(res.status).toBe(404);
     expect(res.body.error).toBe('Trip not found.');
+  });
+
+  it('returns 404 when no matching order exists even if events were injected', async () => {
+    m.store.orders = [];
+    m.store.trip_events.push(
+      { event_id: 'ev-1', user_id: 'driver-1', trip_id: '11111111-1111-4111-a111-111111111111', event_type: 'gpsUpdate', event_timestamp: '2026-06-01T10:00:00Z', latitude: 19.0, longitude: 72.8, metadata: {}, created_at: '2026-06-01T10:00:00Z' },
+    );
+
+    const res = await request(buildEventsApp())
+      .get('/api/trips/11111111-1111-4111-a111-111111111111/events')
+      .set(DRIVER_HEADERS);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 403 for a user who is neither driver, customer, nor admin', async () => {
+    m.store.trip_events.push(
+      { event_id: 'ev-1', user_id: 'driver-1', trip_id: '11111111-1111-4111-a111-111111111111', event_type: 'gpsUpdate', event_timestamp: '2026-06-01T10:00:00Z', latitude: 19.0, longitude: 72.8, metadata: {}, created_at: '2026-06-01T10:00:00Z' },
+    );
+    // Order belongs to a different customer => customer-1 must be denied
+    m.store.orders[0].customer_id = 'customer-2';
+    const res = await request(buildEventsApp())
+      .get('/api/trips/11111111-1111-4111-a111-111111111111/events')
+      .set(CUSTOMER_HEADERS);
+
+    expect(res.status).toBe(403);
   });
 
   it('returns events for the driver who uploaded them', async () => {
@@ -382,18 +462,6 @@ describe('GET /api/trips/:id/events', () => {
     expect(res.status).toBe(200);
     expect(res.body.trip_id).toBe('11111111-1111-4111-a111-111111111111');
     expect(res.body.events).toHaveLength(2);
-  });
-
-  it('returns 403 for a user who is neither driver, customer, nor admin', async () => {
-    m.store.trip_events.push(
-      { event_id: 'ev-1', user_id: 'driver-1', trip_id: '11111111-1111-4111-a111-111111111111', event_type: 'gpsUpdate', event_timestamp: '2026-06-01T10:00:00Z', latitude: 19.0, longitude: 72.8, metadata: {}, created_at: '2026-06-01T10:00:00Z' },
-    );
-    // No order => customer_id won't match
-    const res = await request(buildEventsApp())
-      .get('/api/trips/11111111-1111-4111-a111-111111111111/events')
-      .set(CUSTOMER_HEADERS);
-
-    expect(res.status).toBe(403);
   });
 
   it('allows the order customer to access trip events', async () => {
