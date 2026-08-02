@@ -657,6 +657,13 @@ export class OrderLifecycleService {
         throw new DomainError(409, { error: 'Cannot cancel: delivery OTP has already been verified.' });
       }
 
+      // The driver has already started the trip — a full-refund cancellation is
+      // no longer possible. On-chain, cancelBooking / cancelWithPenalty revert
+      // once the booking has been marked as started, so reject here first.
+      if (['picked_up', 'in_transit', 'arriving', 'arrived_dropoff'].includes(currentOrder.status)) {
+        throw new DomainError(409, { error: 'Cannot cancel: the shipment has already been picked up and is in transit.' });
+      }
+
       const requiresRefund = ['funded', 'refund_pending', 'refund_failed'].includes(currentOrder.escrow_status);
       const penaltyBps = currentOrder.status === 'assigned'
         ? 1000

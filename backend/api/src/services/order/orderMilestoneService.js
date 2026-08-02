@@ -16,7 +16,7 @@ import {
   OTP_LOCKOUT_MINUTES,
   DELIVERY_OTP_READY_STATUSES,
 } from './orderNotificationService.js';
-import { escrowRelease } from '../escrow.js';
+import { escrowRelease, markEscrowBookingStarted } from '../escrow.js';
 import { DomainError } from './domainError.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 import { broadcastOrderMilestone } from '../../sockets/tracker.js';
@@ -92,6 +92,23 @@ export class OrderMilestoneService {
     if (updateErr) {
       await this.orderTimelineService.resetMilestone(order.order_display_id, milestone);
       throw new DomainError(500, { error: 'Failed to update order.', details: updateErr.message });
+    }
+
+    // Once the goods are loaded, the trip has started on-chain. Mark the
+    // booking so cancelBooking / cancelWithPenalty revert for a full refund.
+    // Best-effort: a chain failure must not block the milestone itself.
+    if (status === 'picked_up' && ['funded', 'release_failed'].includes(order.escrow_status)) {
+      try {
+        const started = await markEscrowBookingStarted(order.order_display_id);
+        if (started?.txHash && started.waitForConfirmation) {
+          const startedReceipt = await started.waitForConfirmation();
+          logger.info(`[escrow] Booking marked started for order ${order.order_display_id} in block ${startedReceipt.blockNumber}`);
+        } else if (started?.error) {
+          logger.warn(`[escrow] Failed to mark booking started for order ${order.order_display_id}: ${started.error}`);
+        }
+      } catch (startErr) {
+        logger.warn(`[escrow] Failed to mark booking started for order ${order.order_display_id}: ${startErr.message}`);
+      }
     }
 
     if (generatedOtp) {
