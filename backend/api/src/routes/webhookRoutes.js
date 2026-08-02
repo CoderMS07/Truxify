@@ -14,9 +14,10 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
  */
 function verifyWebhookSignature(req, res, next) {
   if (!WEBHOOK_SECRET) {
-    // Fail closed: an unset secret must never mean "accept everything".
+    // Fail closed: never accept unsigned webhook traffic when the shared
+    // secret is missing from the environment.
     logger.error('[Webhook] WEBHOOK_SECRET not set — rejecting webhook request');
-    return res.status(500).json({ error: 'Webhook processing is not configured' });
+    return res.status(500).json({ error: 'Webhook secret not configured' });
   }
 
   const signature = req.headers['x-webhook-signature'];

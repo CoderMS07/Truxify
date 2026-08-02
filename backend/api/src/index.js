@@ -172,6 +172,10 @@ if (process.env.NODE_ENV === 'production' && (!process.env.POLYGON_RPC_URL || !p
 if (!process.env.DRIVER_LOGIN_OTP) {
   logger.warn('DRIVER_LOGIN_OTP is not set. Driver OTP login will be disabled until it is configured in production.')
 }
+if (!process.env.WEBHOOK_SECRET) {
+  logger.fatal('WEBHOOK_SECRET is not set. Escrow webhook signature verification cannot run and webhook requests will be rejected. Set WEBHOOK_SECRET and restart.')
+  process.exit(1)
+}
 
 // ============================================================================
 // 🆕 WEBHOOK VALIDATION
