@@ -1220,7 +1220,17 @@ create policy "Customers manage own ratings"
   on ratings for all
   to authenticated
   using (customer_id = get_profile_id())
-  with check (customer_id = get_profile_id());
+  with check (
+    customer_id = get_profile_id()
+    and exists (
+      select 1
+      from orders o
+      where o.order_display_id = ratings.order_display_id
+        and o.customer_id      = ratings.customer_id
+        and o.driver_id        = ratings.driver_id
+        and o.status           in ('delivered', 'payment_released')
+    )
+  );
 
 create policy "Drivers view ratings about themselves"
   on ratings for select
@@ -1737,9 +1747,28 @@ begin
     raise exception 'Star rating must be between 1 and 5, got %', p_stars;
   end if;
 
+  -- Step 0.5: Validate the order relationship — the order must exist, be owned
+  --           by the caller, be delivered or payment released, and must have
+  --           been completed by the rated driver.
+  if not exists (
+    select 1
+    from orders
+    where order_display_id = p_order_display_id
+      and customer_id      = p_customer_id
+      and driver_id        = p_driver_id
+      and status           in ('delivered', 'payment_released')
+  ) then
+    raise exception 'Order not found or not eligible for rating: the order must be delivered or payment released, owned by you, and completed by this driver';
+  end if;
+
   -- Step 1: Insert the rating
   insert into ratings (order_display_id, customer_id, driver_id, stars, comment)
-  values (p_order_display_id, p_customer_id, p_driver_id, p_stars, p_comment);
+  values (p_order_display_id, p_customer_id, p_driver_id, p_stars, p_comment)
+  on conflict (order_display_id, customer_id)
+  do update set
+    stars      = excluded.stars,
+    comment    = excluded.comment,
+    updated_at = now();
 
   -- Step 2: Recalculate driver average rating
   select round(avg(stars)::numeric, 2)
