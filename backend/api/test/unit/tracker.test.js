@@ -854,6 +854,44 @@ describe('handleLocationPing - main telemetry flow', () => {
     expect(locationUpdate).toBeTruthy();
     expect(locationUpdate.data.driver_id).toBe('driver-1');
   });
+
+  it('rejects telemetry payload with out-of-range speed (issue #5758)', async () => {
+    const sentMessages = [];
+    const ws = {
+      driverId: 'driver-1',
+      send(msg) { sentMessages.push(JSON.parse(msg)); }
+    };
+
+    await handleLocationPing(ws, {
+      driver_id: 'driver-1',
+      latitude: 12.9,
+      longitude: 77.5,
+      speed: 250,
+    });
+
+    expect(sentMessages[0].error).toContain('Invalid telemetry payload');
+  });
+
+  it('rejects telemetry payload with over-long order_display_id (issue #5758)', async () => {
+    const sentMessages = [];
+    const ws = {
+      driverId: 'driver-1',
+      send(msg) { sentMessages.push(JSON.parse(msg)); }
+    };
+
+    await handleLocationPing(ws, {
+      driver_id: 'driver-1',
+      order_display_id: 'x'.repeat(100),
+      latitude: 12.9,
+      longitude: 77.5,
+    });
+
+    expect(sentMessages[0].error).toContain('Invalid telemetry payload');
+  });
+
+  it('caps the WebSocket max payload at 4 KB (issue #5758)', async () => {
+    expect(__testing.WS_MAX_PAYLOAD_BYTES).toBe(4096);
+  });
 });
 
 describe('handleLocationPing - with Redis', () => {

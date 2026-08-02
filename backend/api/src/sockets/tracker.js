@@ -8,12 +8,17 @@ import fs from 'fs';
 import crypto from 'crypto';
 
 const TELEMETRY_SCHEMA = {
-  lat: { type: 'number', required: true, min: -90, max: 90 },
-  lng: { type: 'number', required: true, min: -180, max: 180 },
-  driverId: { type: 'string', required: true, minLen: 1 },
-  timestamp: { type: 'number', required: true },
+  lat: { type: 'number', required: false, min: -90, max: 90 },
+  lng: { type: 'number', required: false, min: -180, max: 180 },
+  latitude: { type: 'number', required: false, min: -90, max: 90 },
+  longitude: { type: 'number', required: false, min: -180, max: 180 },
+  driver_id: { type: 'string', required: false, minLen: 1, maxLen: 64 },
   speed: { type: 'number', required: false, min: 0, max: 200 },
-  heading: { type: 'number', required: false, min: 0, max: 360 },
+  bearing: { type: 'number', required: false, min: 0, max: 360 },
+  device_timestamp: { type: 'string', required: false, maxLen: 64 },
+  order_id: { type: 'string', required: false, maxLen: 64 },
+  orderId: { type: 'string', required: false, maxLen: 64 },
+  order_display_id: { type: 'string', required: false, maxLen: 64 },
 };
 
 function validateTelemetryPayload(data) {
@@ -34,6 +39,7 @@ function validateTelemetryPayload(data) {
     if (rules.min !== undefined && value < rules.min) errors.push(`${field} must be >= ${rules.min}`);
     if (rules.max !== undefined && value > rules.max) errors.push(`${field} must be <= ${rules.max}`);
     if (rules.minLen !== undefined && String(value).length < rules.minLen) errors.push(`${field} is too short`);
+    if (rules.maxLen !== undefined && String(value).length > rules.maxLen) errors.push(`${field} exceeds max length ${rules.maxLen}`);
   }
   return errors.length > 0 ? errors : null;
 }
@@ -217,6 +223,7 @@ let telemetryOverflowDropped = 0;
 const WS_UPGRADE_RATE_LIMIT = 5;
 const WS_UPGRADE_RATE_WINDOW_SECONDS = 60;
 const MAX_MSG_PER_SECOND = 10;
+const WS_MAX_PAYLOAD_BYTES = 4096;
 const messageRateTracker = new WeakMap();
 
 // Max time a socket may stay unauthenticated while awaiting a first-frame
@@ -433,7 +440,7 @@ export function initWebSocketServer(server, orderRepository) {
   }
 
   _orderRepository = orderRepository;
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD_BYTES });
   wsServer = wss;
 
   server.on('upgrade', async (request, socket, head) => {
@@ -675,6 +682,16 @@ export async function handleLocationPing(ws, data, req) {
   if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
     return ws.send(JSON.stringify({ error: 'Coordinates out of valid range' }));
   }
+
+  // Schema-validate and sanitize the telemetry payload before further
+  // processing (issue #5758). Enforces field ranges and string lengths that
+  // the inline guards above do not cover.
+  const validationErrors = validateTelemetryPayload(data);
+  if (validationErrors) {
+    return ws.send(JSON.stringify({ error: 'Invalid telemetry payload', details: validationErrors }));
+  }
+  const sanitized = sanitizeTelemetryData(data);
+  Object.assign(data, sanitized);
 
   // Parse device timestamp for analytics and clock skew check only (Fix 1)
   let deviceTime = null;
@@ -1416,6 +1433,7 @@ export const __testing = {
   get MAX_CONSECUTIVE_DROPS() {
     return MAX_CONSECUTIVE_DROPS;
   },
+  WS_MAX_PAYLOAD_BYTES,
   // ── Driver order cache helpers (for testing) ──────────────────────
   getCachedDriverOrder,
   setCachedDriverOrder,
