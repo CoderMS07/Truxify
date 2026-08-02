@@ -394,15 +394,32 @@ router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) 
   // Optional driver GPS — used to score loads by detour distance
   const currentLat = parseFloat(req.query.current_lat);
   const currentLng = parseFloat(req.query.current_lng);
-  const maxDetourKm = parseFloat(req.query.max_detour_km) || 50;
+
+  // Validate and clamp max_detour_km: the raw client value is unbounded and is
+  // embedded in the cache key, so an unclamped value lets clients mint an
+  // unlimited number of distinct cache entries (each forcing a DB read + ML
+  // ranking pass on miss). Absent/empty falls back to the default; non-numeric
+  // input is rejected; out-of-range values are clamped to [1, 500].
+  let maxDetourKm;
+  if (req.query.max_detour_km === undefined || req.query.max_detour_km === '') {
+    maxDetourKm = 50;
+  } else {
+    const parsed = Number(req.query.max_detour_km);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return res.status(400).json({ error: 'max_detour_km must be a positive number' });
+    }
+    maxDetourKm = Math.min(Math.max(parsed, 1), 500);
+  }
 
   const hasGps = Number.isFinite(currentLat) && Number.isFinite(currentLng);
 
   // Cache key includes GPS bucket (0.1° resolution ≈ 11 km) so nearby drivers
-  // share a cache entry without stale results.
+  // share a cache entry without stale results. max_detour_km is bucketed to
+  // 5 km steps so the key space is bounded even for valid values.
   const latBucket = hasGps ? (Math.round(currentLat * 10) / 10).toFixed(1) : 'x';
   const lngBucket = hasGps ? (Math.round(currentLng * 10) / 10).toFixed(1) : 'x';
-  const cacheKey = `load-offers:en-route:${latBucket}:${lngBucket}:${maxDetourKm}`;
+  const maxDetourBucket = Math.round(maxDetourKm / 5) * 5;
+  const cacheKey = `load-offers:en-route:${latBucket}:${lngBucket}:${maxDetourBucket}`;
 
   try {
     const cachedOffers = await readLoadOfferCache(cacheKey);
