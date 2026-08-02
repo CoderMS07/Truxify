@@ -148,7 +148,7 @@ async def train_model(request: TrainRequest):
 
 @router.post("/save")
 async def save_model(path: str = "models/diffusion_route.pth"):
-    path = os.path.join("models", os.path.basename(path)):
+    path = os.path.join("models", os.path.basename(path))
     """Save diffusion model"""
     try:
         generator.save(path)
@@ -165,7 +165,7 @@ async def save_model(path: str = "models/diffusion_route.pth"):
 
 @router.post("/load")
 async def load_model(path: str = "models/diffusion_route.pth"):
-    path = os.path.join("models", os.path.basename(path)):
+    path = os.path.join("models", os.path.basename(path))
     """Load diffusion model"""
     try:
         generator.load(path)
