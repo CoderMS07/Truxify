@@ -11,6 +11,11 @@ jobs:
   assign:
     name: Auto-assign contributor
     runs-on: ubuntu-latest
+
+    # Serialize runs for the same issue to prevent race conditions
+    concurrency:
+      group: issue-assign-${{ github.event.issue.number }}
+      cancel-in-progress: false
     
     # Skip pull request comments (only process real issues)
     if: github.event.issue.pull_request == null
@@ -80,18 +85,32 @@ jobs:
               assignees: [commenter],
             });
 
-            // 5. add an "assigned" label to track status
+            // 5. Verify GitHub successfully added the assignee (handles non-collaborator silent drops)
             
-            const currentLabels = issue.labels.map(l => l.name);
+            const { data: updatedIssue } = await github.rest.issues.get({
+              owner, repo, issue_number: issueNumber,
+            });
+
+            const currentAssignees = updatedIssue.assignees.map(a => a.login);
+            if (!currentAssignees.includes(commenter)) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `@${commenter} Unable to assign you automatically. A repository administrator may need to assign you manually.`,
+              });
+              return;
+            }
+
+            // 6. Add an "assigned" label to track status
+            
+            const currentLabels = updatedIssue.labels.map(l => l.name);
             if (!currentLabels.includes('assigned')) {
               await github.rest.issues.addLabels({
                 owner, repo, issue_number: issueNumber,
                 labels: ['assigned'],
               });
-              
             }
 
-            // 6. Post confirmation comment
+            // 7. Post confirmation comment
             
             await github.rest.issues.createComment({
               owner, repo, issue_number: issueNumber,
