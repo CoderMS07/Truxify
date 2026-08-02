@@ -290,12 +290,16 @@ async function verifyCustomerToken(socket, next) {
  */
 async function verifyDriverAssignment(driverId, bookingId) {
   try {
-    const { data, error } = await supabase
-      .from("bookings")
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUuid = uuidRegex.test(bookingId);
+
+    let query = supabase
+      .from("orders")
       .select("id")
-      .eq("id", bookingId)
-      .eq("driver_id", driverId)
-      .single();
+      .eq("driver_id", driverId);
+    query = isUuid ? query.eq("id", bookingId) : query.eq("order_display_id", bookingId);
+
+    const { data, error } = await query.maybeSingle();
 
     if (error || !data) return false;
     return true;
@@ -311,14 +315,16 @@ async function verifyDriverAssignment(driverId, bookingId) {
  */
 async function verifyBookingOwnership(customerId, bookingId) {
   try {
-    // Use Supabase client from existing db module
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUuid = uuidRegex.test(bookingId);
 
-    const { data, error } = await supabase
-      .from("bookings")
+    let query = supabase
+      .from("orders")
       .select("id")
-      .eq("id", bookingId)
-      .eq("customer_id", customerId)
-      .single();
+      .eq("customer_id", customerId);
+    query = isUuid ? query.eq("id", bookingId) : query.eq("order_display_id", bookingId);
+
+    const { data, error } = await query.maybeSingle();
 
     if (error || !data) return false;
     return true;
