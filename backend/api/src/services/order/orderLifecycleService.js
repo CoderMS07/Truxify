@@ -19,6 +19,7 @@ import { predictPrice } from '../ml.js';
 import { getLiveTrafficMultiplier } from '../trafficService.js';
 import { eventBus } from '../../core/events/index.js';
 import logger from '../../middleware/logger.js';
+import { supabaseAdmin } from '../../config/db.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -583,7 +584,7 @@ export class OrderLifecycleService {
         p_order_display_id: order.order_display_id,
         p_order_updates: updates,
         p_offer_updates: offerUpdates
-      });
+      }, supabaseAdmin);
 
       if (updateErr) {
         throw new DomainError(500, {
