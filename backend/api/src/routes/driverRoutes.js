@@ -165,7 +165,7 @@ function parseIntegerQuery(value) {
 }
 
 function parseCoordinate(value) {
-  if (typeof value !== 'string' || value.trim() === '') {
+  if (typeof value !== 'string' || value.trim().length === 0) {
     return null;
   }
 
