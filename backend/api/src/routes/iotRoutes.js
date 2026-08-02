@@ -1,6 +1,6 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { supabase } from '../config/db.js';
+import { supabase, supabaseAdmin } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { paramIdSchema } from '../validation/requestSchemas.js';
 import { authenticate } from '../middleware/auth.js';
@@ -61,8 +61,9 @@ router.post('/telemetry/:id', telemetryHistoryLimiter, authenticate, validatePar
       return res.status(403).json({ error: 'Access denied for this load' });
     }
 
-    // Insert telemetry
-    const { error: insertErr } = await supabase
+    // Insert telemetry (service-role client: RLS only permits service_role to
+    // write temperature_telemetry, so the backend must use supabaseAdmin).
+    const { error: insertErr } = await (supabaseAdmin ?? supabase)
       .from('temperature_telemetry')
       .insert({
         load_id: loadId,
@@ -148,7 +149,7 @@ router.get('/telemetry/:id', telemetryHistoryLimiter, authenticate, validatePara
       }
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await (supabaseAdmin ?? supabase)
       .from('temperature_telemetry')
       .select('*')
       .eq('load_id', loadId)
