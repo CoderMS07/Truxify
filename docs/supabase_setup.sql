@@ -94,8 +94,8 @@ create table if not exists driver_details (
   total_trips       int not null default 0,
   completion_rate   numeric(5,2) not null default 100.00,     -- percentage
   is_online         boolean not null default false,
-  wallet_confirmed  int not null default 0,                   -- paisa
-  wallet_pending    int not null default 0,
+  wallet_confirmed  int not null default 0 check (wallet_confirmed >= 0),   -- paisa
+  wallet_pending    int not null default 0 check (wallet_pending >= 0),
   wallet_total      int not null default 0,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now()
@@ -923,6 +923,11 @@ create policy "Drivers access own driver_details"
   using (user_id = get_profile_id())
   with check (user_id = get_profile_id());
 
+-- Only the backend (service_role) may write wallet balance columns (Issue #5723).
+-- Blocks direct PATCH /rest/v1/driver_details with wallet_* fields.
+revoke update (wallet_confirmed, wallet_pending, wallet_total)
+  on driver_details from anon, authenticated;
+
 
 -- 3. CUSTOMER STATS
 create policy "Service role full access on customer_stats"
@@ -1458,11 +1463,38 @@ create or replace function withdraw_funds_tx(
 ) returns void
 language plpgsql
 security definer
+set search_path = public, pg_temp
 as $$
 declare
   v_confirmed int;
   v_pending   int;
+  v_day_total int;
+  v_daily_cap constant int := 10000000;  -- ₹1,00,000 in paisa per UTC calendar day
 begin
+  -- Verify the caller IS the driver
+  if auth.uid() <> p_driver_id then
+    raise exception 'Unauthorized: you can only withdraw your own funds';
+  end if;
+
+  -- Reject non-positive amounts: a negative p_amount would otherwise mint
+  -- wallet_confirmed via wallet_confirmed = v_confirmed - p_amount.
+  if p_amount is null or p_amount <= 0 then
+    raise exception 'Withdrawal amount must be a positive whole number of paisa';
+  end if;
+
+  -- Enforce the per-driver per-day withdrawal cap.
+  select coalesce(sum(amount), 0)
+    into v_day_total
+    from wallet_transactions
+   where driver_id  = p_driver_id
+     and txn_type   = 'withdrawal'
+     and created_at >= date_trunc('day', now());
+
+  if v_day_total + p_amount > v_daily_cap then
+    raise exception 'Daily withdrawal cap exceeded: % of % used',
+      v_day_total + p_amount, v_daily_cap;
+  end if;
+
   -- Lock the row to prevent concurrent withdrawals
   select wallet_confirmed, wallet_pending
     into v_confirmed, v_pending
@@ -1470,9 +1502,9 @@ begin
     where user_id = p_driver_id
     for update;
 
-  if v_confirmed < p_amount then
+  if v_confirmed is null or v_confirmed < p_amount then
     raise exception 'Insufficient balance: available %, requested %',
-      v_confirmed, p_amount;
+      coalesce(v_confirmed, 0), p_amount;
   end if;
 
   -- Move funds from confirmed → pending
