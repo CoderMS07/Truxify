@@ -37,6 +37,9 @@ const ESCROW_ABI = [
   'function releasePayment(uint256 bookingId) external',
   'function cancelBooking(uint256 bookingId) external',
   'function cancelWithPenalty(uint256 bookingId, uint256 driverFee) external',
+  'function raiseDispute(uint256 bookingId) external',
+  'function resolveDispute(uint256 bookingId, uint256 driverAmount) external',
+  'function resolveDisputeTimeout(uint256 bookingId) external',
   'function bookings(uint256 bookingId) external view returns (address customer, address driver, uint256 amount, uint8 status, bool paid, uint256 createdAt)'
 ]
 
@@ -509,4 +512,116 @@ export async function releaseEscrowFunds (orderDisplayId) {
 
 export async function escrowRefund (orderDisplayId) {
   return submitEscrowRefund(orderDisplayId)
+}
+
+/**
+ * Submit an escrow dispute raise and return its hash before confirmation.
+ * Only the relayer (owner) may call raiseDispute on-chain.
+ */
+export async function submitEscrowRaiseDispute (orderDisplayId) {
+  return measureExecution('EscrowService.submitEscrowRaiseDispute', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId)
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping raiseDispute.')
+      return { txHash: null, bookingId }
+    }
+
+    let tx
+    try {
+      tx = await escrowContract.raiseDispute(bookingId)
+      logger.info(`[escrow] raiseDispute tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
+    } catch (err) {
+      logger.error(`[escrow] raiseDispute failed for booking ${orderDisplayId}: ${err.message}`)
+      return { txHash: null, bookingId, error: err.message }
+    }
+    return {
+      txHash: tx.hash,
+      bookingId,
+      waitForConfirmation: async () => {
+        const receipt = await tx.wait(1)
+        if (!receipt || receipt.status === 0) {
+          throw new Error('Escrow raiseDispute transaction reverted or was not found.')
+        }
+        logger.info(`[escrow] raiseDispute confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`)
+        return receipt
+      }
+    }
+  })
+}
+
+/**
+ * Submit a dispute resolution that splits the escrowed funds. driverAmountWei
+ * is awarded to the driver; the remainder is refunded to the customer.
+ * Only the relayer (owner) may call resolveDispute on-chain.
+ *
+ * @param {string} orderDisplayId
+ * @param {string|bigint} driverAmountWei — wei awarded to the driver
+ */
+export async function submitEscrowResolveDispute (orderDisplayId, driverAmountWei) {
+  return measureExecution('EscrowService.submitEscrowResolveDispute', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId)
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping resolveDispute.')
+      return { txHash: null, bookingId }
+    }
+
+    let tx
+    try {
+      tx = await escrowContract.resolveDispute(bookingId, driverAmountWei)
+      logger.info(`[escrow] resolveDispute tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
+    } catch (err) {
+      logger.error(`[escrow] resolveDispute failed for booking ${orderDisplayId}: ${err.message}`)
+      return { txHash: null, bookingId, error: err.message }
+    }
+    return {
+      txHash: tx.hash,
+      bookingId,
+      waitForConfirmation: async () => {
+        const receipt = await tx.wait(1)
+        if (!receipt || receipt.status === 0) {
+          throw new Error('Escrow resolveDispute transaction reverted or was not found.')
+        }
+        logger.info(`[escrow] resolveDispute confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`)
+        return receipt
+      }
+    }
+  })
+}
+
+/**
+ * Submit a dispute-timeout resolution that refunds the customer in full.
+ * Only the relayer (owner) may call resolveDisputeTimeout on-chain.
+ */
+export async function submitEscrowResolveDisputeTimeout (orderDisplayId) {
+  return measureExecution('EscrowService.submitEscrowResolveDisputeTimeout', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId)
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping resolveDisputeTimeout.')
+      return { txHash: null, bookingId }
+    }
+
+    let tx
+    try {
+      tx = await escrowContract.resolveDisputeTimeout(bookingId)
+      logger.info(`[escrow] resolveDisputeTimeout tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
+    } catch (err) {
+      logger.error(`[escrow] resolveDisputeTimeout failed for booking ${orderDisplayId}: ${err.message}`)
+      return { txHash: null, bookingId, error: err.message }
+    }
+    return {
+      txHash: tx.hash,
+      bookingId,
+      waitForConfirmation: async () => {
+        const receipt = await tx.wait(1)
+        if (!receipt || receipt.status === 0) {
+          throw new Error('Escrow resolveDisputeTimeout transaction reverted or was not found.')
+        }
+        logger.info(`[escrow] resolveDisputeTimeout confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`)
+        return receipt
+      }
+    }
+  })
 }

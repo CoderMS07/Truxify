@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { supabase } from '../../config/db.js';
 import { getRouteEstimate } from '../osrm.js';
 import { computeOrderPricing } from '../../lib/pricing.js';
@@ -7,14 +6,7 @@ import { getLiveTrafficMultiplier } from '../trafficService.js';
 import { DomainError } from './bidAcceptanceService.js';
 import logger from '../../middleware/logger.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
-
-function generateOrderDisplayId() {
-  const prefix = '#FF';
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
-  const random = crypto.randomInt(100000, 999999).toString();
-  return `${prefix}${dateStr}${random}`;
-}
+import { generateOrderDisplayId, ORDER_DISPLAY_ID_MAX_RETRIES } from '../../lib/orderDisplayId.js';
 
 export async function createOrder({ orderData, userId, user }) {
   return measureExecution('OrderCreationService.createOrder', async () => {
@@ -73,7 +65,7 @@ export async function createOrder({ orderData, userId, user }) {
     logger.warn({ err: mlErr.message }, 'Price prediction unavailable, falling back to base pricing');
   }
 
-  const MAX_ID_RETRIES = 3;
+  const MAX_ID_RETRIES = ORDER_DISPLAY_ID_MAX_RETRIES;
   let order = null;
   let orderErr = null;
   let orderDisplayId = null;

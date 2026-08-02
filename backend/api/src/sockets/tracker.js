@@ -219,6 +219,10 @@ const WS_UPGRADE_RATE_WINDOW_SECONDS = 60;
 const MAX_MSG_PER_SECOND = 10;
 const messageRateTracker = new WeakMap();
 
+// Max time a socket may stay unauthenticated while awaiting a first-frame
+// `auth` message before it is closed (issue #5739).
+const WS_AUTH_TIMEOUT_MS = 10000;
+
 // =====================================================================
 // DRIVER → ORDER CACHE (performance: avoid repeated Supabase lookups)
 // =====================================================================
@@ -318,6 +322,108 @@ export function rejectWebSocketUpgrade(socket) {
 }
 
 /**
+ * Authenticate a WebSocket connection with a bearer token.
+ *
+ * The token may arrive via the `token` query parameter or via a first-frame
+ * `auth` event (issue #5739). On success sets `ws.user`, `ws.driverId` and
+ * `ws.authenticated = true`, then restores persisted tracking subscriptions.
+ * On failure sends an error with code 4001 and closes the socket.
+ */
+async function authenticateWs(ws, token) {
+  if (!token) {
+    ws.send(JSON.stringify({ error: 'Unauthorized: No token provided', code: 4001 }));
+    ws.close(4001, 'Unauthorized: No token provided');
+    return;
+  }
+
+  try {
+    let decoded = null;
+    try {
+      decoded = jwt.decode(token);
+    } catch (err) {
+      // ignore decoding errors
+    }
+
+    const isSupabaseToken = decoded &&
+      typeof decoded === 'object' &&
+      typeof decoded.iss === 'string' &&
+      (decoded.iss.includes('supabase') || decoded.iss.includes('supabase.co'));
+    let profile = null;
+
+    if (isSupabaseToken) {
+      if (!supabase) {
+        ws.send(JSON.stringify({ error: 'Unauthorized: Supabase client is not configured', code: 4001 }));
+        ws.close(4001, 'Unauthorized: Supabase client is not configured');
+        return;
+      }
+      const response = await supabase.auth.getUser(token);
+      const user = response?.data?.user;
+      const authError = response?.error;
+      if (authError || !user) {
+        ws.send(JSON.stringify({ error: 'Unauthorized: Invalid or expired Supabase token', code: 4001 }));
+        ws.close(4001, 'Unauthorized: Invalid or expired Supabase token');
+        return;
+      }
+
+      const { data: userProfile, error } = await supabase
+        .from('profiles')
+        .select('id, firebase_uid, role')
+        .eq('id', user.id)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (error || !userProfile) {
+        ws.send(JSON.stringify({ error: 'Unauthorized: User profile not found', code: 4001 }));
+        ws.close(4001, 'Unauthorized: User profile not found');
+        return;
+      }
+      profile = userProfile;
+    } else {
+      // Firebase Verification
+      if (!firebaseAdmin) {
+        ws.send(JSON.stringify({ error: 'Unauthorized: Firebase Auth is not configured', code: 4001 }));
+        ws.close(4001, 'Unauthorized: Firebase Auth is not configured');
+        return;
+      }
+      const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
+      if (!supabase) {
+        ws.send(JSON.stringify({ error: 'Unauthorized: Profile lookup is not configured', code: 4001 }));
+        ws.close(4001, 'Unauthorized: Profile lookup is not configured');
+        return;
+      }
+
+      const { data: userProfile, error } = await supabase
+        .from('profiles')
+        .select('id, firebase_uid, role')
+        .eq('firebase_uid', decodedToken.uid)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (error || !userProfile) {
+        ws.send(JSON.stringify({ error: 'Unauthorized: User profile not found', code: 4001 }));
+        ws.close(4001, 'Unauthorized: User profile not found');
+        return;
+      }
+      profile = userProfile;
+    }
+
+    ws.user = {
+      id: profile.id,
+      uid: profile.firebase_uid,
+      role: profile.role,
+    };
+    ws.driverId = profile.id;
+    ws.authenticated = true;
+    await restoreSubscriptions(ws);
+    logger.info(`✅ WS Authenticated user: ${ws.user.id}`);
+  } catch (err) {
+    logger.error({ err }, 'WS Auth failed');
+    ws.send(JSON.stringify({ error: 'Unauthorized: Invalid token', code: 4001 }));
+    ws.close(4001, 'Unauthorized: Invalid token');
+  }
+}
+
+/**
  * Initialize WebSockets Server and bind event handlers
  */
 export function initWebSocketServer(server, orderRepository) {
@@ -354,124 +460,9 @@ export function initWebSocketServer(server, orderRepository) {
     const reqUrl = new URL(req.url, 'http://localhost');
     const token    = reqUrl.searchParams.get('token');
     const bypassAuth = process.env.BYPASS_AUTH === 'true';
-    let authenticated;
 
-    if (bypassAuth) {
-      if (process.env.NODE_ENV === 'production') {
-        ws.send(JSON.stringify({ error: 'BYPASS_AUTH is not allowed in production', code: 4003 }));
-        ws.close(4003, 'BYPASS_AUTH is not allowed in production');
-        return;
-      }
-      const devToken = reqUrl.searchParams.get('dev_access_token');
-      if (!devToken || !process.env.DEV_ACCESS_TOKEN || devToken !== process.env.DEV_ACCESS_TOKEN) {
-        ws.send(JSON.stringify({ error: 'Unauthorized: Missing or invalid dev_access_token', code: 4001 }));
-        ws.close(4001, 'Unauthorized: Missing or invalid dev_access_token');
-        return;
-      }
-      ws.driverId = reqUrl.searchParams.get('driver_id') || 'test_driver';
-      ws.user = {
-        id: reqUrl.searchParams.get('user_id') || ws.driverId,
-        role: reqUrl.searchParams.get('user_role') || 'driver',
-      };
-      logger.warn({ event: 'WS_BYPASS_AUTH_USED', driverId: ws.driverId, role: ws.user.role }, 'WS Auth bypassed via DEV_ACCESS_TOKEN');
-      authenticated = true;
-    } else {
-      if (!token) {
-        ws.send(JSON.stringify({ error: 'Unauthorized: No token provided', code: 4001 }));
-        ws.close(4001, 'Unauthorized: No token provided');
-        return;
-      }
-      try {
-        let decoded = null;
-        try {
-          decoded = jwt.decode(token);
-        } catch (err) {
-          // ignore decoding errors
-        }
-
-        const isSupabaseToken = decoded &&
-          typeof decoded === 'object' &&
-          typeof decoded.iss === 'string' &&
-          (decoded.iss.includes('supabase') || decoded.iss.includes('supabase.co'));
-        let profile = null;
-
-        if (isSupabaseToken) {
-          if (!supabase) {
-            ws.send(JSON.stringify({ error: 'Unauthorized: Supabase client is not configured', code: 4001 }));
-            ws.close(4001, 'Unauthorized: Supabase client is not configured');
-            return;
-          }
-          const response = await supabase.auth.getUser(token);
-          const user = response?.data?.user;
-          const authError = response?.error;
-          if (authError || !user) {
-            ws.send(JSON.stringify({ error: 'Unauthorized: Invalid or expired Supabase token', code: 4001 }));
-            ws.close(4001, 'Unauthorized: Invalid or expired Supabase token');
-            return;
-          }
-
-          const { data: userProfile, error } = await supabase
-            .from('profiles')
-            .select('id, firebase_uid, role')
-            .eq('id', user.id)
-            .eq('is_active', true)
-            .maybeSingle();
-
-          if (error || !userProfile) {
-            ws.send(JSON.stringify({ error: 'Unauthorized: User profile not found', code: 4001 }));
-            ws.close(4001, 'Unauthorized: User profile not found');
-            return;
-          }
-          profile = userProfile;
-        } else {
-          // Firebase Verification
-          if (!firebaseAdmin) {
-            ws.send(JSON.stringify({ error: 'Unauthorized: Firebase Auth is not configured', code: 4001 }));
-            ws.close(4001, 'Unauthorized: Firebase Auth is not configured');
-            return;
-          }
-          const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
-          if (!supabase) {
-            ws.send(JSON.stringify({ error: 'Unauthorized: Profile lookup is not configured', code: 4001 }));
-            ws.close(4001, 'Unauthorized: Profile lookup is not configured');
-            return;
-          }
-
-          const { data: userProfile, error } = await supabase
-            .from('profiles')
-            .select('id, firebase_uid, role')
-            .eq('firebase_uid', decodedToken.uid)
-            .eq('is_active', true)
-            .maybeSingle();
-
-          if (error || !userProfile) {
-            ws.send(JSON.stringify({ error: 'Unauthorized: User profile not found', code: 4001 }));
-            ws.close(4001, 'Unauthorized: User profile not found');
-            return;
-          }
-          profile = userProfile;
-        }
-
-        ws.user = {
-          id: profile.id,
-          uid: profile.firebase_uid,
-          role: profile.role,
-        };
-        ws.driverId = profile.id;
-        await restoreSubscriptions(ws);
-        logger.info(`✅ WS Authenticated user: ${ws.user.id}`);
-        authenticated = true;
-      } catch (err) {
-        logger.error({ err }, 'WS Auth failed');
-        ws.send(JSON.stringify({ error: 'Unauthorized: Invalid token', code: 4001 }));
-        ws.close(4001, 'Unauthorized: Invalid token');
-        return;
-      }
-    }
-
-    if (!authenticated) return;
-
-    logger.info('🔌 New WebSocket connection established on /ws/tracking');
+    // Register event handlers up front so a first-frame `auth` message can be
+    // processed when no token is present in the URL (issue #5739).
     ws.isAlive = true;
 
     ws.on('pong', () => {
@@ -495,6 +486,50 @@ export function initWebSocketServer(server, orderRepository) {
         await removeClientFromAllSubscriptions(ws);
       })();
     });
+
+    if (bypassAuth) {
+      if (process.env.NODE_ENV === 'production') {
+        ws.send(JSON.stringify({ error: 'BYPASS_AUTH is not allowed in production', code: 4003 }));
+        ws.close(4003, 'BYPASS_AUTH is not allowed in production');
+        return;
+      }
+      const devToken = reqUrl.searchParams.get('dev_access_token');
+      if (!devToken || !process.env.DEV_ACCESS_TOKEN || devToken !== process.env.DEV_ACCESS_TOKEN) {
+        ws.send(JSON.stringify({ error: 'Unauthorized: Missing or invalid dev_access_token', code: 4001 }));
+        ws.close(4001, 'Unauthorized: Missing or invalid dev_access_token');
+        return;
+      }
+      ws.driverId = reqUrl.searchParams.get('driver_id') || 'test_driver';
+      ws.user = {
+        id: reqUrl.searchParams.get('user_id') || ws.driverId,
+        role: reqUrl.searchParams.get('user_role') || 'driver',
+      };
+      ws.authenticated = true;
+      logger.warn({ event: 'WS_BYPASS_AUTH_USED', driverId: ws.driverId, role: ws.user.role }, 'WS Auth bypassed via DEV_ACCESS_TOKEN');
+      logger.info('🔌 New WebSocket connection established on /ws/tracking');
+      return;
+    }
+
+    if (token) {
+      await authenticateWs(ws, token);
+      if (ws.authenticated) {
+        logger.info('🔌 New WebSocket connection established on /ws/tracking');
+      }
+      return;
+    }
+
+    // No token in the URL: defer authentication until the client sends a
+    // first-frame `auth` event so credentials never leak via query strings
+    // into proxies, logs or web analytics (issue #5739).
+    ws.authenticated = false;
+    const authTimeout = setTimeout(() => {
+      if (ws.authenticated === false) {
+        ws.send(JSON.stringify({ error: 'Unauthorized: Authentication timeout', code: 4001 }));
+        ws.close(4001, 'Unauthorized: Authentication timeout');
+      }
+    }, WS_AUTH_TIMEOUT_MS);
+    ws.once('close', () => clearTimeout(authTimeout));
+    logger.info('🔌 New WebSocket connection established on /ws/tracking (awaiting first-frame auth)');
   });
 
   wsHeartbeatInterval = setInterval(() => {
@@ -551,6 +586,26 @@ export async function handleTrackingMessage(ws, message, req) {
 
     if (!event || !data) {
       return ws.send(JSON.stringify({ error: 'Invalid payload format. Must include "event" and "data" keys.' }));
+    }
+
+    // First-frame auth handshake (issue #5739): a client that connected
+    // without a `token` query parameter must present a bearer token in an
+    // `auth` event before any other message is accepted.
+    if (ws.authenticated === false) {
+      if (event === 'auth') {
+        await authenticateWs(ws, data.token);
+        if (ws.authenticated) {
+          ws.send(JSON.stringify({
+            status: 'authenticated',
+            user_id: ws.user?.id ?? ws.driverId,
+          }));
+          logger.info('🔌 New WebSocket connection established on /ws/tracking (first-frame auth)');
+        }
+        return;
+      }
+      ws.send(JSON.stringify({ error: 'Unauthorized: Authenticate first', code: 4001 }));
+      ws.close(4001, 'Unauthorized: Authenticate first');
+      return;
     }
 
     switch (event) {
