@@ -134,6 +134,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter, createStore } from '../middleware/rateLimiter.js';
 import { checkBypassEligibility } from '../services/weighStationService.js';
+import { isPayoutProviderConfigured } from '../services/wallet/payoutProvider.js';
 
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { driverOnlineSchema, withdrawSchema, uuidParamSchema, paramIdSchema, predictDriverProfitSchema, uuidSchema, driverIdParamSchema, driverStatementSchema } from '../validation/requestSchemas.js';
@@ -924,6 +925,12 @@ router.post('/wallet/withdraw', authenticate, userLimiter, requirePolicy('driver
   const { amount } = req.body; // in paisa
 
   try {
+    if (!isPayoutProviderConfigured()) {
+      return res.status(503).json({
+        error: 'Withdrawal is temporarily unavailable: no payout provider is configured.',
+      });
+    }
+
     // 5.1 Fetch driver confirmed balance
     const { data: details, error: detailsErr } = await supabase
       .from('driver_details')
