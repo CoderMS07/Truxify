@@ -567,7 +567,7 @@ router.get('/driver/statement', authenticate, requirePolicy('profile:view-statem
     if (format === 'csv') {
       // Optimize memory: construct CSV string directly using string builder/loop
       const sanitizeCsvValue = (val) => {
-        const str = String(val);
+        let str = String(val);
   if (/^[=+\-@\t\r]/.test(str)) {
     str = `'` + str;
   }
