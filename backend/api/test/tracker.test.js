@@ -57,10 +57,12 @@ describe('tracker', () => {
   });
 
   describe('isWebSocketUpgradeAllowed', () => {
-    it('allows upgrade when no Redis client', async () => {
+    it('enforces the per-IP limit in memory when no Redis client is configured (no fail-open)', async () => {
       const req = makeRequest();
-      const result = await isWebSocketUpgradeAllowed(req);
-      expect(result).toBe(true);
+      for (let i = 0; i < 5; i++) {
+        await expect(isWebSocketUpgradeAllowed(req)).resolves.toBe(true);
+      }
+      await expect(isWebSocketUpgradeAllowed(req)).resolves.toBe(false);
     });
   });
 

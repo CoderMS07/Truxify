@@ -283,22 +283,40 @@ async function invalidateDriverOrderCache(driverId) {
 }
 
 function getClientIp(request) {
-  const forwardedFor = request.headers?.['x-forwarded-for'];
-
-  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-    return forwardedFor.split(',')[0].trim();
-  }
-
+  // Trust only the TCP peer address. The X-Forwarded-For header is
+  // client-controlled and can be spoofed to rotate the per-IP rate-limit
+  // key and bypass the limit entirely (issue #5828).
   return request.socket?.remoteAddress || request.connection?.remoteAddress || 'unknown';
 }
 
-export async function isWebSocketUpgradeAllowed(request) {
-  if (!redisClient) {
-    return true;
-  }
+// Process-local fallback counter for the per-IP upgrade limit, used when Redis
+// is unavailable so the limit is still enforced instead of failing open.
+const wsUpgradeMemoryLimits = new Map();
 
+function enforceWsUpgradeMemoryLimit(ipAddress) {
+  const now = Date.now();
+  const windowMs = WS_UPGRADE_RATE_WINDOW_SECONDS * 1000;
+  let entry = wsUpgradeMemoryLimits.get(ipAddress);
+  if (!entry || now >= entry.resetAt) {
+    entry = { count: 0, resetAt: now + windowMs };
+    wsUpgradeMemoryLimits.set(ipAddress, entry);
+  }
+  entry.count++;
+  if (wsUpgradeMemoryLimits.size > 10000) {
+    for (const [key, e] of wsUpgradeMemoryLimits) {
+      if (now >= e.resetAt) wsUpgradeMemoryLimits.delete(key);
+    }
+  }
+  return entry.count <= WS_UPGRADE_RATE_LIMIT;
+}
+
+export async function isWebSocketUpgradeAllowed(request) {
   const ipAddress = getClientIp(request);
   const key = `ws:upgrade:${ipAddress}`;
+
+  if (!redisClient) {
+    return enforceWsUpgradeMemoryLimit(ipAddress);
+  }
 
   try {
     const attempts = await redisClient.incr(key);
@@ -315,7 +333,7 @@ export async function isWebSocketUpgradeAllowed(request) {
     return attempts <= WS_UPGRADE_RATE_LIMIT;
   } catch (err) {
     logger.error('Redis WebSocket upgrade rate limit error:', err.message);
-    return true;
+    return enforceWsUpgradeMemoryLimit(ipAddress);
   }
 }
 
@@ -331,10 +349,12 @@ export function rejectWebSocketUpgrade(socket) {
 /**
  * Authenticate a WebSocket connection with a bearer token.
  *
- * The token may arrive via the `token` query parameter or via a first-frame
- * `auth` event (issue #5739). On success sets `ws.user`, `ws.driverId` and
- * `ws.authenticated = true`, then restores persisted tracking subscriptions.
- * On failure sends an error with code 4001 and closes the socket.
+ * The token is accepted only via a first-frame `auth` event (issues #5739,
+ * #5828); it is never accepted from the connection URL because query-string
+ * credentials leak into proxy logs, web analytics and browser history. On
+ * success sets `ws.user`, `ws.driverId` and `ws.authenticated = true`, then
+ * restores persisted tracking subscriptions. On failure sends an error with
+ * code 4001 and closes the socket.
  */
 async function authenticateWs(ws, token) {
   if (!token) {
@@ -440,7 +460,6 @@ export function initWebSocketServer(server, orderRepository) {
   }
 
   _orderRepository = orderRepository;
-  const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD_BYTES });
   const MAX_WS_PAYLOAD_BYTES = parseInt(process.env.WS_MAX_PAYLOAD_BYTES, 10) || 4096;
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD_BYTES });
   wsServer = wss;
@@ -467,7 +486,6 @@ export function initWebSocketServer(server, orderRepository) {
   wss.on('connection', async (ws, req) => {
     ws._request = req;
     const reqUrl = new URL(req.url, 'http://localhost');
-    const token    = reqUrl.searchParams.get('token');
     const bypassAuth = process.env.BYPASS_AUTH === 'true';
 
     // Register event handlers up front so a first-frame `auth` message can be
@@ -519,17 +537,10 @@ export function initWebSocketServer(server, orderRepository) {
       return;
     }
 
-    if (token) {
-      await authenticateWs(ws, token);
-      if (ws.authenticated) {
-        logger.info('🔌 New WebSocket connection established on /ws/tracking');
-      }
-      return;
-    }
-
-    // No token in the URL: defer authentication until the client sends a
-    // first-frame `auth` event so credentials never leak via query strings
-    // into proxies, logs or web analytics (issue #5739).
+    // Tokens are never accepted from the URL query string (issue #5828).
+    // Authentication is deferred until the client sends a first-frame `auth`
+    // event so credentials never leak via query strings into proxies, logs or
+    // web analytics (issue #5739).
     ws.authenticated = false;
     const authTimeout = setTimeout(() => {
       if (ws.authenticated === false) {
@@ -684,9 +695,9 @@ export async function handleLocationPing(ws, data, req) {
     heading: typeof bearing === 'number' ? bearing : undefined,
   };
 
-  const validationErrors = validateTelemetryPayload(normalizedForValidation);
-  if (validationErrors) {
-    return ws.send(JSON.stringify({ error: 'Invalid telemetry payload.', details: validationErrors }));
+  const normalizedValidationErrors = validateTelemetryPayload(normalizedForValidation);
+  if (normalizedValidationErrors) {
+    return ws.send(JSON.stringify({ error: 'Invalid telemetry payload.', details: normalizedValidationErrors }));
   }
 
   // Schema-validate and sanitize the telemetry payload before further
