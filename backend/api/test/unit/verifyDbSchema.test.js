@@ -248,6 +248,17 @@ describe('Database Schema Constraints and RPC Upsert validation in supabase_setu
     }
   });
 
+  it('drops the orphaned public.bids table and bid_status enum in favor of load_bids', async () => {
+    const migrationSqlPath = path.resolve(
+      __dirname,
+      '../../../../supabase/migrations/20260802150000_drop_orphaned_bids_table.sql'
+    );
+    const sqlContent = await fs.readFile(migrationSqlPath, 'utf8');
+
+    expect(sqlContent).toMatch(/drop\s+table\s+if\s+exists\s+public\.bids/i);
+    expect(sqlContent).toMatch(/drop\s+type\s+if\s+exists\s+public\.bid_status/i);
+  });
+
   it('verifies that database table counts and metadata are correct and in sync', async () => {
     const setupSqlPath = path.resolve(__dirname, '../../../../docs/supabase_setup.sql');
     const schemaMdPath = path.resolve(__dirname, '../../../../docs/schema.md');
