@@ -438,8 +438,33 @@ describe('tracker WebSocket upgrade rate limiting', () => {
     });
 
     expect(allowed).toBe(true);
-    expect(incr).toHaveBeenCalledWith('ws:upgrade:203.0.113.10');
-    expect(expire).toHaveBeenCalledWith('ws:upgrade:203.0.113.10', 60);
+    // The spoofable X-Forwarded-For header must NOT be trusted for rate
+    // limiting — the TCP peer address is the key (issue #5828).
+    expect(incr).toHaveBeenCalledWith('ws:upgrade:10.0.0.2');
+    expect(expire).toHaveBeenCalledWith('ws:upgrade:10.0.0.2', 60);
+  });
+
+  it('ignores a spoofed X-Forwarded-For header when selecting the rate-limit key', async () => {
+    const incr = vi.fn().mockResolvedValue(1);
+    const expire = vi.fn().mockResolvedValue(1);
+    const ttl = vi.fn().mockResolvedValue(60);
+
+    vi.resetModules();
+    vi.doMock('../../src/config/db.js', () => ({
+      mongoDb: null,
+      redisClient: { incr, expire, ttl },
+      firebaseAdmin: null,
+      supabase: null,
+    }));
+
+    const { isWebSocketUpgradeAllowed } = await import('../../src/sockets/tracker.js');
+    await isWebSocketUpgradeAllowed({
+      headers: { 'x-forwarded-for': '1.2.3.4' },
+      socket: { remoteAddress: '198.51.100.9' },
+    });
+
+    expect(incr).toHaveBeenCalledWith('ws:upgrade:198.51.100.9');
+    expect(incr).not.toHaveBeenCalledWith('ws:upgrade:1.2.3.4');
   });
 
   it('blocks the sixth upgrade attempt for the same IP', async () => {
@@ -522,7 +547,7 @@ describe('tracker WebSocket upgrade rate limiting', () => {
     expect(expire).toHaveBeenCalledWith('ws:upgrade:198.51.100.12', 60);
   });
 
-  it('allows upgrades and logs when Redis rate limiting fails', async () => {
+  it('enforces the per-IP limit via the in-memory fallback when Redis rate limiting fails (no fail-open)', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
 
     vi.resetModules();
@@ -538,15 +563,40 @@ describe('tracker WebSocket upgrade rate limiting', () => {
     }));
 
     const { isWebSocketUpgradeAllowed } = await import('../../src/sockets/tracker.js');
-    const allowed = await isWebSocketUpgradeAllowed({
+    const request = {
       headers: {},
       socket: { remoteAddress: '203.0.113.30' },
-    });
+    };
 
-    expect(allowed).toBe(true);
+    for (let i = 0; i < 5; i++) {
+      await expect(isWebSocketUpgradeAllowed(request)).resolves.toBe(true);
+    }
+    await expect(isWebSocketUpgradeAllowed(request)).resolves.toBe(false);
+
     expect(errorSpy).toHaveBeenCalledWith('Redis WebSocket upgrade rate limit error:', 'redis down');
 
     errorSpy.mockRestore();
+  });
+
+  it('enforces the per-IP limit in memory when no Redis client is configured (no fail-open)', async () => {
+    vi.resetModules();
+    vi.doMock('../../src/config/db.js', () => ({
+      mongoDb: null,
+      redisClient: null,
+      firebaseAdmin: null,
+      supabase: null,
+    }));
+
+    const { isWebSocketUpgradeAllowed } = await import('../../src/sockets/tracker.js');
+    const request = {
+      headers: {},
+      socket: { remoteAddress: '198.51.100.40' },
+    };
+
+    for (let i = 0; i < 5; i++) {
+      await expect(isWebSocketUpgradeAllowed(request)).resolves.toBe(true);
+    }
+    await expect(isWebSocketUpgradeAllowed(request)).resolves.toBe(false);
   });
 
   it('rejects excessive upgrades with an HTTP 429 response', () => {
