@@ -466,6 +466,19 @@ describe("TruxifyEscrow", function () {
         escrow.connect(owner).cancelBooking(1)
       ).to.be.revertedWithCustomError(escrow, "EnforcedPause");
     });
+
+    it("reverts once the trip has started", async function () {
+      const { escrow, owner, customer, driver } = await loadFixture(deployEscrowFixture);
+
+      await escrow.connect(customer).createBooking(1, driver.address, {
+        value: ethers.parseEther("1.0"),
+      });
+      await escrow.connect(owner).markBookingStarted(1);
+
+      await expect(
+        escrow.connect(owner).cancelBooking(1)
+      ).to.be.revertedWith("TruxifyEscrow: Trip already started");
+    });
   });
 
   describe("cancelWithPenalty", function () {
@@ -490,6 +503,91 @@ describe("TruxifyEscrow", function () {
 
       await expect(escrow.connect(owner).cancelWithPenalty(bookingId, amount + 1n))
         .to.be.revertedWith("TruxifyEscrow: Penalty exceeds escrow");
+    });
+
+    it("reverts once the trip has started", async function () {
+      const { escrow, owner, bookingId } = await loadFixture(deployWithBookingFixture);
+
+      await escrow.connect(owner).markBookingStarted(bookingId);
+
+      await expect(escrow.connect(owner).cancelWithPenalty(bookingId, ethers.parseEther("0.1")))
+        .to.be.revertedWith("TruxifyEscrow: Trip already started");
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // markBookingStarted
+  // ═══════════════════════════════════════════════════════════════════════════
+  describe("markBookingStarted", function () {
+    it("marks an active booking as started and emits BookingStarted", async function () {
+      const { escrow, owner, driver, bookingId, amount } = await loadFixture(deployWithBookingFixture);
+
+      await expect(escrow.connect(owner).markBookingStarted(bookingId))
+        .to.emit(escrow, "BookingStarted")
+        .withArgs(bookingId, driver.address, amount);
+
+      const booking = await escrow.getBooking(bookingId);
+      expect(booking.started).to.be.true;
+    });
+
+    it("does not block delivery after the trip has started", async function () {
+      const { escrow, owner, bookingId } = await loadFixture(deployWithBookingFixture);
+
+      await escrow.connect(owner).markBookingStarted(bookingId);
+      await escrow.connect(owner).releasePayment(bookingId);
+
+      const booking = await escrow.getBooking(bookingId);
+      expect(booking.status).to.equal(1); // Delivered
+      expect(booking.paid).to.be.true;
+    });
+
+    it("reverts for non-existent booking", async function () {
+      const { escrow, owner } = await loadFixture(deployEscrowFixture);
+
+      await expect(
+        escrow.connect(owner).markBookingStarted(999)
+      ).to.be.revertedWith("TruxifyEscrow: Booking not active");
+    });
+
+    it("reverts if booking was already marked started", async function () {
+      const { escrow, owner, bookingId } = await loadFixture(deployWithBookingFixture);
+
+      await escrow.connect(owner).markBookingStarted(bookingId);
+
+      await expect(
+        escrow.connect(owner).markBookingStarted(bookingId)
+      ).to.be.revertedWith("TruxifyEscrow: Trip already started");
+    });
+
+    it("reverts if payment was already released", async function () {
+      const { escrow, owner, bookingId } = await loadFixture(deployWithBookingFixture);
+
+      await escrow.connect(owner).releasePayment(bookingId);
+
+      await expect(
+        escrow.connect(owner).markBookingStarted(bookingId)
+      ).to.be.revertedWith("TruxifyEscrow: Booking not active");
+    });
+
+    it("reverts if called by non-owner", async function () {
+      const { escrow, customer, driver } = await loadFixture(deployEscrowFixture);
+
+      await escrow.connect(customer).createBooking(1, driver.address, { value: ethers.parseEther("1") });
+
+      await expect(
+        escrow.connect(customer).markBookingStarted(1)
+      ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount")
+       .withArgs(customer.address);
+    });
+
+    it("reverts when contract is paused", async function () {
+      const { escrow, owner, bookingId } = await loadFixture(deployWithBookingFixture);
+
+      await escrow.connect(owner).pause();
+
+      await expect(
+        escrow.connect(owner).markBookingStarted(bookingId)
+      ).to.be.revertedWithCustomError(escrow, "EnforcedPause");
     });
   });
 

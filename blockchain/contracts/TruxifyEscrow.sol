@@ -38,6 +38,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
         uint256 amount;             // Locked payment amount in wei (MATIC)
         BookingStatus status;       // Current booking lifecycle status
         bool paid;                  // True after payment has been released
+        bool started;               // True after the driver has picked up the goods
         uint256 createdAt;          // Block timestamp at booking creation
         uint256 disputedAt;         // Block timestamp when dispute was raised
     }
@@ -70,6 +71,12 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
         uint256 indexed bookingId,
         address indexed customer,
         uint256 refundAmount
+    );
+
+    event BookingStarted(
+        uint256 indexed bookingId,
+        address indexed driver,
+        uint256 amount
     );
 
     event CancellationPenaltyApplied(
@@ -148,6 +155,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
             amount:    msg.value,
             status:    BookingStatus.Active,
             paid:      false,
+            started:   false,
             createdAt: block.timestamp,
             disputedAt: 0
         });
@@ -211,6 +219,34 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
     }
 
     /**
+     * @dev Record that the driver has picked up the goods and the trip has
+     *      started. Called by the Truxify backend (owner) when the shipment
+     *      reaches the "picked_up" milestone. Once started, a booking can no
+     *      longer be cancelled for a full refund — the customer must go through
+     *      the penalty/compensation path instead.
+     *
+     * @param bookingId The booking whose trip has started
+     */
+    function markBookingStarted(uint256 bookingId)
+        external
+        onlyOwner
+        whenNotPaused
+    {
+        Booking storage booking = bookings[bookingId];
+
+        require(
+            booking.customer != address(0) && booking.status == BookingStatus.Active,
+            "TruxifyEscrow: Booking not active"
+        );
+        require(!booking.paid, "TruxifyEscrow: Already paid");
+        require(!booking.started, "TruxifyEscrow: Trip already started");
+
+        booking.started = true;
+
+        emit BookingStarted(bookingId, booking.driver, booking.amount);
+    }
+
+    /**
      * @dev Cancel a booking and refund the customer.
      *      RESTRICTED to onlyOwner (backend) to ensure on-chain and off-chain
      *      state remain synchronized. The backend's cancellation flow performs
@@ -233,6 +269,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
             "TruxifyEscrow: Cannot cancel - booking not active"
         );
         require(!booking.paid, "TruxifyEscrow: Already paid");
+        require(!booking.started, "TruxifyEscrow: Trip already started");
         require(booking.amount > 0, "TruxifyEscrow: Nothing to refund");
 
         // ── EFFECTS ───────────────────────────────────────────────────────
@@ -271,6 +308,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
             "TruxifyEscrow: Cannot cancel - booking not active"
         );
         require(!booking.paid, "TruxifyEscrow: Already paid");
+        require(!booking.started, "TruxifyEscrow: Trip already started");
         require(booking.amount > 0, "TruxifyEscrow: Nothing to refund");
         require(driverFee <= booking.amount, "TruxifyEscrow: Penalty exceeds escrow");
 

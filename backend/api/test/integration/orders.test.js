@@ -97,6 +97,7 @@ function seedDriverAtDropOff(orderId, driverId) {
 
 vi.mock('../../src/sockets/tracker.js', () => ({
   initWebSocketServer: () => ({}),
+  broadcastOrderMilestone: vi.fn(),
 }));
 
 vi.mock('../../src/services/osrm.js', () => ({
@@ -2173,7 +2174,22 @@ describe('Customer actions: change-drop and cancel endpoints', () => {
     routeEstimateMock.mockResolvedValue({ distanceKm: 100 });
     submitEscrowRefundMock.mockReset();
     confirmEscrowRefundMock.mockReset();
-    mockRedis = null;
+    // Cancel/change-drop take the escrow lock (redisLock), so provide a
+    // working in-memory Redis mock instead of leaving it null.
+    const lockStore = new Map();
+    mockRedis = {
+      set: vi.fn(async (key, val) => {
+        lockStore.set(key, val);
+        return 'OK';
+      }),
+      eval: vi.fn(async (_script, _count, key, lockValue) => {
+        if (lockStore.get(key) === lockValue) {
+          lockStore.delete(key);
+          return 1;
+        }
+        return 0;
+      }),
+    };
   });
 
   it('allows customer to change drop and returns recalculated pricing', async () => {
@@ -2263,7 +2279,7 @@ describe('Customer actions: change-drop and cancel endpoints', () => {
       id: 'aaaa0004-0000-4000-8000-000000000004',
       customer_id: CUSTOMER_HEADERS['x-user-id'],
       order_display_id: 'OD-FUNDED-CANCEL',
-      status: 'in_transit',
+      status: 'assigned',
       escrow_status: 'funded',
       escrow_refund_attempts: 0,
       cancellation_fee: 500,
@@ -2297,7 +2313,7 @@ describe('Customer actions: change-drop and cancel endpoints', () => {
       id: 'aaaa0005-0000-4000-8000-000000000005',
       customer_id: CUSTOMER_HEADERS['x-user-id'],
       order_display_id: 'OD-REFUND-FAILS',
-      status: 'in_transit',
+      status: 'assigned',
       escrow_status: 'funded',
       cancellation_fee: 500,
     });
@@ -2316,6 +2332,31 @@ describe('Customer actions: change-drop and cancel endpoints', () => {
     expect(stored.status).toBe('cancelled');
     expect(stored.escrow_status).toBe('refund_failed');
     expect(stored.escrow_refund_error).toContain('Polygon unavailable');
+  });
+
+  it('rejects cancellation once the shipment has been picked up', async () => {
+    for (const status of ['picked_up', 'in_transit', 'arriving', 'arrived_dropoff']) {
+      m.store.orders = [{
+        id: 'aaaa0006-0000-4000-8000-000000000006',
+        customer_id: CUSTOMER_HEADERS['x-user-id'],
+        order_display_id: `OD-TRIP-${status}`,
+        status,
+        escrow_status: 'funded',
+      }];
+
+      const app = buildApp();
+      const res = await request(app)
+        .post('/api/orders/aaaa0006-0000-4000-8000-000000000006/cancel')
+        .set('X-Idempotency-Key', Math.random().toString())
+        .set(CUSTOMER_HEADERS)
+        .send({ reason: 'Change of plans' });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('Cannot cancel: the shipment has already been picked up and is in transit.');
+      const storedOrder = m.store.orders.find(o => o.id === 'aaaa0006-0000-4000-8000-000000000006');
+      expect(storedOrder.status).toBe(status);
+      expect(storedOrder.escrow_status).toBe('funded');
+    }
   });
 
   it('reconciles a previously submitted refund without submitting it twice', async () => {
