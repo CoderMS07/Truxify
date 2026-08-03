@@ -39,11 +39,12 @@ contract MEVProtectedEscrow is Ownable, ReentrancyGuard, Pausable {
     mapping(uint256 => Escrow) public escrows;
     mapping(address => bytes32) public userCommitments;
     mapping(bytes32 => bool) public usedCommits;
+    mapping(bytes32 => bool) public revealedCommits;
     mapping(address => uint256) public userNonces;
 
     uint256 public escrowCounter;
     uint256 public commitRevealPeriod = 10; // blocks
-    uint256 public flashbotsProtection = 1; // blocks
+    uint256 public flashbotsProtection = 1; // seconds (anti-back-running window)
 
     // MEV Protection Parameters
     uint256 public minPriorityFee = 1 gwei;
@@ -76,9 +77,9 @@ contract MEVProtectedEscrow is Ownable, ReentrancyGuard, Pausable {
     function revealCommitment(bytes32 secret) external whenNotPaused {
         bytes32 commitHash = keccak256(abi.encodePacked(secret, msg.sender));
         require(userCommitments[msg.sender] == commitHash, "Invalid commit");
-        require(!usedCommits[commitHash], "Already revealed");
+        require(!revealedCommits[commitHash], "Already revealed");
 
-        usedCommits[commitHash] = true;
+        revealedCommits[commitHash] = true;
         
         emit CommitmentRevealed(msg.sender, secret);
     }
@@ -167,8 +168,8 @@ contract MEVProtectedEscrow is Ownable, ReentrancyGuard, Pausable {
         // In production: verify Flashbots bundle signature
         // Check if transaction is front-run protected
         
-        // 1. Check block number (prevent back-running)
-        require(block.number > escrows[escrowId].createdAt + flashbotsProtection, "Too early");
+        // 1. Check block timestamp (prevent back-running)
+        require(block.timestamp > escrows[escrowId].createdAt + flashbotsProtection, "Too early");
         
         // 2. Check gas price (prevent front-running)
         require(tx.gasprice >= minPriorityFee, "Gas price too low");
