@@ -85,6 +85,7 @@ import wasiRoutes from '../../wasi/routes.js'
 import wasmRoutes from '../../wasm/routes.js'
 import snykRoutes from '../../snyk/routes.js'
 import liquibaseRoutes from '../../database/liquibase/routes.js'
+import earningsRouter from '../routes/earnings.js'
 import { initWebRTCSignaling, closeWebRTCSignaling } from './sockets/webrtc.js'
 
 // ============================================================================
@@ -358,7 +359,6 @@ if (process.env.NODE_ENV === 'production') {
   })
 }
 
-const earningsRouter = require('../routes/earnings');
 app.use('/api/earnings', earningsRouter);
 
 // Payload parsers
@@ -640,6 +640,8 @@ server.listen(PORT, () => {
 
 
   startEscrowRefundReconciliation(orderRepository)
+  startEscrowReleaseReconciliation()
+  startEscrowFundingReconciliation(orderRepository)
   startReputationReconciliation(orderRepository)
   startDlqWorker()
   startStaleOrderWorker()
@@ -648,6 +650,8 @@ server.listen(PORT, () => {
   // Register worker states for health aggregation
   globalThis.__truxify_workers = {
     escrowRefundReconciliation: true,
+    escrowReleaseReconciliation: true,
+    escrowFundingReconciliation: true,
     reputationReconciliation: true,
     dlqWorker: true,
     staleOrderWorker: true,
@@ -677,6 +681,7 @@ async function shutdown (signal) {
   // Stop background workers
   stopEscrowReleaseReconciliation()
   stopEscrowRefundReconciliation()
+  stopEscrowFundingReconciliation()
   stopReputationReconciliation()
   stopDlqWorker()
   stopDocumentExpiryWorker()

@@ -8,6 +8,7 @@ import {
   storeDeliveryOtp,
   getActiveDeliveryOtp,
   verifyDeliveryOtp,
+  verifyDeliveryOtpHash,
   sendPushNotification,
 } from "../notificationService.js";
 import {
@@ -22,19 +23,6 @@ import { escrowRelease as defaultEscrowRelease } from "../escrow.js";
 import logger from "../../middleware/logger.js";
 import { OrderTimelineService } from "./orderTimelineService.js";
 import upiPaymentService from "../payment/UpiPaymentService.js";
-
-/** Haversine great-circle distance in metres between two lat/lng points. */
-function _haversineM(lat1, lng1, lat2, lng2) {
-  const R = 6_371_000;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
 
 const orderTimelineService = new OrderTimelineService({ supabase, logger });
 
@@ -65,6 +53,7 @@ export class DeliveryVerificationService {
       storeDeliveryOtp,
       getActiveDeliveryOtp,
       verifyDeliveryOtp,
+      verifyDeliveryOtpHash,
     };
     this.escrowReleaseFn = deps.escrowReleaseFn || defaultEscrowRelease;
     this.trackingTokenService = deps.trackingTokenService || null;
@@ -119,20 +108,8 @@ export class DeliveryVerificationService {
           });
         }
 
-        const submittedHash = crypto
-          .createHash("sha256")
-          .update(String(otp))
-          .digest("hex");
-        let isMatch = false;
-        if (
-          otpRecord.otp_hash &&
-          otpRecord.otp_hash.length === submittedHash.length
-        ) {
-          isMatch = crypto.timingSafeEqual(
-            Buffer.from(otpRecord.otp_hash, "hex"),
-            Buffer.from(submittedHash, "hex"),
-          );
-        }
+        const isMatch =
+          this.notificationService.verifyDeliveryOtpHash(otp, otpRecord);
 
         if (!isMatch) {
           const count = await recordOtpFailure(orderId);
