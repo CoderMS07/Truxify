@@ -37,6 +37,7 @@ contract zkEVMBridge is Ownable, ReentrancyGuard {
         uint256 amount,
         bytes calldata proof
     ) external nonReentrant {
+        require(proof.length > 0, "Empty proof");
         // Withdraw from L2
         zkEVM.withdrawFromL2(amount, proof);
         pendingWithdrawals[msg.sender] += amount;
