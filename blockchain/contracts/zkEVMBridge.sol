@@ -13,6 +13,7 @@ interface IzkEVM {
 contract zkEVMBridge is Ownable, ReentrancyGuard {
     IzkEVM public zkEVM;
     mapping(address => uint256) public pendingWithdrawals;
+    mapping(address => uint256) public depositedAmount;
     uint256 public bridgeFee = 0.001 ether;
 
     event BridgeDeposit(address indexed user, uint256 amount, uint256 fee);
@@ -27,6 +28,8 @@ contract zkEVMBridge is Ownable, ReentrancyGuard {
         require(msg.value > bridgeFee, "Amount must be > fee");
         uint256 amount = msg.value - bridgeFee;
 
+        depositedAmount[msg.sender] += amount;
+
         // Deposit to L2
         zkEVM.depositToL2{value: amount}();
 
@@ -38,8 +41,10 @@ contract zkEVMBridge is Ownable, ReentrancyGuard {
         bytes calldata proof
     ) external nonReentrant {
         require(proof.length > 0, "Empty proof");
+        require(depositedAmount[msg.sender] >= amount, "Exceeds deposited amount");
         // Withdraw from L2
         zkEVM.withdrawFromL2(amount, proof);
+        depositedAmount[msg.sender] -= amount;
         pendingWithdrawals[msg.sender] += amount;
 
         emit BridgeWithdraw(msg.sender, amount);
@@ -61,4 +66,6 @@ contract zkEVMBridge is Ownable, ReentrancyGuard {
     function withdrawFees() external onlyOwner {
         payable(owner()).transfer(address(this).balance);
     }
+
+    receive() external payable {}
 }
