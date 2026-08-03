@@ -82,10 +82,10 @@ export function requireIdempotency(ttlSeconds = 3600) {
 
       if (redisClient) {
         const lockKey = `${key}:lock`;
-        const lockAcquired = await redisClient.set(lockKey, '1', 'NX', 'PX', 10000);
+        const lockAcquired = await redisClient.set(lockKey, '1', 'NX', 'PX', 120000);
 
         if (!lockAcquired) {
-          let retries = 50; // Poll for up to 10 seconds
+          let retries = 600; // Poll for up to 120 seconds (matches lock TTL)
           let cacheFound = false;
 
           while (retries > 0) {
