@@ -200,7 +200,7 @@ async function verifyRpcFunctions(supabaseUrl, supabaseKey) {
 }
 
 async function main() {
-  const useColor = process.stdout.isTTY && process.env.NO_COLOR == null;
+  const useColor = process.stdout.isTTY && process.env.NO_COLOR === null;
   loadEnvironment();
 
   const supabaseUrl = process.env.SUPABASE_URL;
