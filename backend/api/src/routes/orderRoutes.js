@@ -992,6 +992,152 @@ router.post('/:id/verify-delivery', authenticate, userLimiter, requirePolicy('de
 });
 
 // ============================================================================
+// 13b. GPS GEOFENCE AUTO-CONFIRM DELIVERY (DRIVER)
+// ============================================================================
+/**
+ * @openapi
+ * /api/orders/{id}/geofence-confirm:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Auto-confirm delivery via GPS geofence
+ *     description: |
+ *       If the driver's GPS position is within 500m of the drop location,
+ *       automatically confirms delivery and releases escrow payment without
+ *       requiring the customer to share an OTP. Falls back gracefully if
+ *       the driver is too far away (returns autoConfirmed: false).
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [driver_lat, driver_lng]
+ *             properties:
+ *               driver_lat:
+ *                 type: number
+ *               driver_lng:
+ *                 type: number
+ *               geofence_radius_m:
+ *                 type: number
+ *                 description: Override default 500m geofence radius
+ *     responses:
+ *       200:
+ *         description: Auto-confirm result (check autoConfirmed field)
+ *       409:
+ *         description: Order not in arriving status
+ */
+router.post(
+  '/:id/geofence-confirm',
+  authenticate,
+  userLimiter,
+  requirePolicy('delivery:verify'),
+  validateParams(paramIdSchema),
+  async (req, res) => {
+    try {
+      const { driver_lat, driver_lng, geofence_radius_m } = req.body;
+
+      if (!driver_lat || !driver_lng) {
+        return res.status(400).json({ error: 'driver_lat and driver_lng are required.' });
+      }
+
+      const lat = parseFloat(driver_lat);
+      const lng = parseFloat(driver_lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return res.status(400).json({ error: 'driver_lat and driver_lng must be valid numbers.' });
+      }
+
+      const result = await orderLifecycleService.deliveryVerification.geofenceAutoConfirm({
+        orderId: req.params.id,
+        driverId: req.user.id,
+        driverLat: lat,
+        driverLng: lng,
+        geofenceRadiusM: geofence_radius_m ? parseFloat(geofence_radius_m) : 500,
+      });
+
+      return res.json(result);
+    } catch (err) {
+      if (err instanceof DomainError) {
+        return res.status(err.status).json(err.payload);
+      }
+      logger.error('[geofence-confirm] Exception:', err.message);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+  }
+);
+
+// ============================================================================
+// 13c. DRIVER OTP CONFIRM ALIAS — POST /api/deliveries/:id/confirm-otp
+// ============================================================================
+/**
+ * Friendly alias of /:id/verify-delivery for the driver app.
+ * Accepts the same body { otp } and delegates to the same pipeline.
+ * Mounted on the *orders* router but exposed as /api/deliveries/:id/confirm-otp
+ * via the separate deliveryRoutes mount in index.js (see below).
+ *
+ * This keeps the driver app URL surface clean while reusing identical logic.
+ */
+router.post(
+  '/:id/confirm-otp',
+  authenticate,
+  userLimiter,
+  requirePolicy('delivery:verify'),
+  auditLog({ action: 'delivery:verify', resourceType: 'delivery_verification' }),
+  verifyDeliveryLimiter,
+  requireIdempotency(86400),
+  validateParams(paramIdSchema),
+  validateBody(verifyDeliverySchema),
+  async (req, res) => {
+    try {
+      const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(
+        req.params.id,
+        req.user.id,
+        req.body.otp
+      );
+
+      // Fetch the released amount to include in the response
+      const { data: order } = await orderRepository.findOrderByIdOrDisplayId(
+        req.params.id,
+        'total_amount, order_display_id'
+      );
+      const amountInr = order?.total_amount
+        ? (order.total_amount / 100).toFixed(0)
+        : null;
+
+      if (escrowUpdateFailed) {
+        return res.status(202).json({
+          message: 'Delivery confirmed. Escrow payout requires reconciliation.',
+          payment_released: true,
+          escrow_status: 'released',
+          amount_inr: amountInr,
+        });
+      }
+
+      return res.json({
+        message: 'Delivery confirmed! Payment released to driver.',
+        payment_released: true,
+        escrow_status: 'released',
+        amount_inr: amountInr,
+        order_display_id: order?.order_display_id,
+      });
+    } catch (err) {
+      if (err instanceof DomainError) {
+        return res.status(err.status).json(err.payload);
+      }
+      logger.error('[confirm-otp] Exception:', err.message);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+  }
+);
+
+// ============================================================================
 // 14. RESEND DELIVERY OTP (DRIVER)
 // ============================================================================
 /**
