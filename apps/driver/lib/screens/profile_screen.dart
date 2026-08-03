@@ -51,6 +51,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _fetchReputation();
   }
 
+  bool _initializedLanguage = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_initializedLanguage) {
+      final controller = TruxifyScope.of(context);
+      _currentLanguage = _nameForLanguageCode(controller.locale.languageCode);
+      _initializedLanguage = true;
+    }
+  }
+
+  String _nameForLanguageCode(String code) {
+    switch (code) {
+      case 'en': return 'English';
+      case 'hi': return 'Hindi';
+      case 'ta': return 'Tamil';
+      case 'kn': return 'Kannada';
+      case 'mr': return 'Marathi';
+      default: return 'English';
+    }
+  }
+
+  String _langCodeForName(String name) {
+    switch (name) {
+      case 'English': return 'en';
+      case 'Hindi': return 'hi';
+      case 'Tamil': return 'ta';
+      case 'Kannada': return 'kn';
+      case 'Marathi': return 'mr';
+      default: return 'en';
+    }
+  }
+
   @override
   void dispose() {
     super.dispose();
@@ -383,12 +417,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   const SizedBox(height: 16),
                   PrimaryButton(
                     label: AppLocalizations.of(context)!.applyLanguage,
-                    onPressed: () {
-                      setState(() {
-                        _currentLanguage = selectedLang;
-                      });
-                      Navigator.of(context).pop();
-                      ScaffoldMessenger.of(context).showSnackBar(
+                    onPressed: () async {
+                      final controller = TruxifyScope.of(context);
+                      final langCode = _langCodeForName(selectedLang);
+                      await controller.setLocale(langCode);
+                      if (mounted) {
+                        setState(() {
+                          _currentLanguage = selectedLang;
+                        });
+                        Navigator.of(context).pop();
+                        ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content:
                               Text(AppLocalizations.of(context)!.languageSwitched),

@@ -168,6 +168,12 @@ if (process.env.BYPASS_AUTH === 'true' && process.env.NODE_ENV !== 'development'
   logger.fatal('BYPASS_AUTH is enabled outside development. This is a severe security misconfiguration. Set BYPASS_AUTH=false (or unset it), and set NODE_ENV=development if you need local testing.')
   process.exit(1)
 }
+// ENABLE_TEST_AUTH allows plaintext x-user-id/x-user-role header impersonation
+// and must never be active outside a dedicated test harness (NODE_ENV=test).
+if (process.env.ENABLE_TEST_AUTH === 'true' && process.env.NODE_ENV !== 'test') {
+  logger.fatal('ENABLE_TEST_AUTH is enabled outside a test harness. This is a severe security misconfiguration — it trusts client-supplied identity headers. Only set it in NODE_ENV=test processes.')
+  process.exit(1)
+}
 if (process.env.NODE_ENV === 'production' && !process.env.ML_API_KEY) {
   logger.fatal('ML_API_KEY is not set. ML engine calls will fail with 401 errors. Set ML_API_KEY and restart.')
   process.exit(1)
@@ -354,6 +360,9 @@ if (process.env.NODE_ENV === 'production') {
     next()
   })
 }
+
+const earningsRouter = require('../routes/earnings');
+app.use('/api/earnings', earningsRouter);
 
 // Payload parsers
 const jsonBodyLimit =

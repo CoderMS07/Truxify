@@ -41,4 +41,30 @@ describe('rateLimiter - normalizeIp & IPv6 Subnet Masking', () => {
     const reqAnon = { ip: '1.2.3.4' };
     expect(userKeyGenerator(reqAnon)).toBe('1.2.3.4');
   });
+
+  it('distinct forwarded client IPs produce distinct rate-limit keys when trust proxy resolves req.ip', () => {
+    // With app.set('trust proxy', 1) Express populates req.ip from the
+    // X-Forwarded-For header, so two different clients behind the same
+    // reverse proxy must be keyed separately rather than collapsed into a
+    // single shared bucket.
+    const reqClientA = {
+      ip: '203.0.113.5',
+      headers: { 'x-forwarded-for': '203.0.113.5' },
+      socket: { remoteAddress: '10.0.0.1' },
+    };
+    const reqClientB = {
+      ip: '203.0.113.9',
+      headers: { 'x-forwarded-for': '203.0.113.9' },
+      socket: { remoteAddress: '10.0.0.1' },
+    };
+
+    const keyA = safeIpKeyGenerator(reqClientA);
+    const keyB = safeIpKeyGenerator(reqClientB);
+
+    expect(keyA).toBe('203.0.113.5');
+    expect(keyB).toBe('203.0.113.9');
+    expect(keyA).not.toBe(keyB);
+    // Both clients shared the same immediate peer, but must not share a bucket.
+    expect(keyA).not.toBe(safeIpKeyGenerator({ ip: '10.0.0.1' }));
+  });
 });
