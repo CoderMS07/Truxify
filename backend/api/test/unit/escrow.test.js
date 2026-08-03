@@ -21,7 +21,10 @@ import {
   ESCROW_MATIC_PER_PAISA,
   paisaToMaticWei,
   validateEscrowSetup,
-  isEscrowEnabled
+  isEscrowEnabled,
+  submitEscrowRaiseDispute,
+  submitEscrowResolveDispute,
+  submitEscrowResolveDisputeTimeout
 } from '../../src/services/escrow.js'
 
 describe('escrow service — getEscrowBookingId', () => {
@@ -286,6 +289,51 @@ describe('escrow service \u2014 submitEscrowRefund (contract unconfigured)', () 
   it('returns the same bookingId as getEscrowBookingId', async () => {
     const result = await submitEscrowRefund('#FF20260530')
     const expected = getEscrowBookingId('#FF20260530')
+    expect(result.bookingId).toBe(expected)
+  })
+})
+
+describe('escrow service \u2014 submitEscrowRaiseDispute (contract unconfigured)', () => {
+  it('returns txHash: null and a valid bookingId when contract is not initialised', async () => {
+    const result = await submitEscrowRaiseDispute('#FF20260601')
+    expect(result.txHash).toBeNull()
+    expect(typeof result.bookingId).toBe('string')
+    expect(result.bookingId.startsWith('0x')).toBe(true)
+  })
+
+  it('returns the same bookingId as getEscrowBookingId', async () => {
+    const result = await submitEscrowRaiseDispute('#FF20260602')
+    const expected = getEscrowBookingId('#FF20260602')
+    expect(result.bookingId).toBe(expected)
+  })
+})
+
+describe('escrow service \u2014 submitEscrowResolveDispute (contract unconfigured)', () => {
+  it('returns txHash: null and a valid bookingId when contract is not initialised', async () => {
+    const result = await submitEscrowResolveDispute('#FF20260603', '600000000000000000')
+    expect(result.txHash).toBeNull()
+    expect(typeof result.bookingId).toBe('string')
+    expect(result.bookingId.startsWith('0x')).toBe(true)
+  })
+
+  it('returns the same bookingId as getEscrowBookingId', async () => {
+    const result = await submitEscrowResolveDispute('#FF20260604', 0)
+    const expected = getEscrowBookingId('#FF20260604')
+    expect(result.bookingId).toBe(expected)
+  })
+})
+
+describe('escrow service \u2014 submitEscrowResolveDisputeTimeout (contract unconfigured)', () => {
+  it('returns txHash: null and a valid bookingId when contract is not initialised', async () => {
+    const result = await submitEscrowResolveDisputeTimeout('#FF20260605')
+    expect(result.txHash).toBeNull()
+    expect(typeof result.bookingId).toBe('string')
+    expect(result.bookingId.startsWith('0x')).toBe(true)
+  })
+
+  it('returns the same bookingId as getEscrowBookingId', async () => {
+    const result = await submitEscrowResolveDisputeTimeout('#FF20260606')
+    const expected = getEscrowBookingId('#FF20260606')
     expect(result.bookingId).toBe(expected)
   })
 })

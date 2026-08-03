@@ -49,7 +49,7 @@ export async function verifyAuthToken(token) {
     if (!firebaseAdmin) {
       throw new Error('Firebase Auth verification is not configured on this server.');
     }
-    const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
+    const decodedToken = await firebaseAdmin.auth().verifyIdToken(token, true);
     firebaseUid = decodedToken.uid;
 
     if (!supabase) {
@@ -84,17 +84,26 @@ export async function verifyAuthToken(token) {
 }
 
 export async function authenticate(req, res, next) {
+  const bypassAuth = process.env.BYPASS_AUTH === 'true';
+  // Header-based test impersonation is an explicit opt-in (ENABLE_TEST_AUTH),
+  // independent of NODE_ENV, so a stray NODE_ENV=test deployment cannot
+  // silently turn plaintext x-user-id/x-user-role headers into a full
+  // impersonation primitive.
+  const testAuthEnabled = process.env.ENABLE_TEST_AUTH === 'true';
+
   // ── Production header sanitization (defense in depth) ──────────────
   // Strip dev-only authentication headers before any logic runs.
   // This ensures they cannot be used even if BYPASS_AUTH is accidentally
   // enabled or a proxy misconfiguration exposes them.
-  if (process.env.NODE_ENV === 'production' || !process.env.BYPASS_AUTH) {
+  if (
+    process.env.NODE_ENV === 'production' ||
+    !bypassAuth ||
+    (process.env.NODE_ENV === 'test' && !testAuthEnabled)
+  ) {
     delete req.headers['x-user-id'];
     delete req.headers['x-user-role'];
     delete req.headers['x-user-name'];
   }
-
-  const bypassAuth = process.env.BYPASS_AUTH === 'true';
 
   // Support local development bypass mode using DEV_ACCESS_TOKEN
   if (bypassAuth) {
@@ -104,8 +113,9 @@ export async function authenticate(req, res, next) {
       });
     }
 
-    // In test mode, allow x-user-id header directly without DEV_ACCESS_TOKEN
-    if (process.env.NODE_ENV === 'test') {
+    // Header-based test bypass is only reachable with the explicit
+    // ENABLE_TEST_AUTH opt-in, which the dedicated test harness sets.
+    if (testAuthEnabled) {
       const testUserId = req.headers['x-user-id'];
       const testUserRole = req.headers['x-user-role'] || 'customer';
       const testFullName = req.headers['x-user-name'] || 'Test User';
@@ -226,7 +236,7 @@ export async function authenticate(req, res, next) {
       if (!firebaseAdmin) {
         return res.status(500).json({ error: 'Firebase Auth verification is not configured on this server.' });
       }
-      const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
+      const decodedToken = await firebaseAdmin.auth().verifyIdToken(token, true);
       firebaseUid = decodedToken.uid;
 
       // Check Redis cache first.

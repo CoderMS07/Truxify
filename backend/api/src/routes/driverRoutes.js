@@ -134,6 +134,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter, createStore } from '../middleware/rateLimiter.js';
 import { checkBypassEligibility } from '../services/weighStationService.js';
+import { isPayoutProviderConfigured } from '../services/wallet/payoutProvider.js';
 
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { driverOnlineSchema, withdrawSchema, uuidParamSchema, paramIdSchema, predictDriverProfitSchema, uuidSchema, driverIdParamSchema, driverStatementSchema } from '../validation/requestSchemas.js';
@@ -165,7 +166,7 @@ function parseIntegerQuery(value) {
 }
 
 function parseCoordinate(value) {
-  if (typeof value !== 'string' || value.trim() === '') {
+  if (typeof value !== 'string' || value.trim().length === 0) {
     return null;
   }
 
@@ -383,13 +384,13 @@ router.get('/wallet/history', authenticate, userLimiter, requirePolicy('driver:v
     const limit = parseIntegerQuery(req.query.limit) ?? 20;
 
     // Validation
-    if (isNaN(page) || page < 1) {
+    if (Number.isNaN(page) || page < 1) {
       return res.status(400).json({
         error: 'page must be greater than or equal to 1'
       });
     }
 
-    if (isNaN(limit) || limit < 1 || limit > 100) {
+    if (Number.isNaN(limit) || limit < 1 || limit > 100) {
       return res.status(400).json({
         error: 'limit must be between 1 and 100'
       });
@@ -565,12 +566,29 @@ router.get('/trips', authenticate, userLimiter, requirePolicy('driver:view-trips
     const { data: trips, error, count } = await query.order('trip_date', { ascending: false }).range(from, to);
 
     if (error) return res.status(500).json({ error: 'Failed to fetch trips.', details: error.message });
+
+    // Enrich trips with escrow_status from orders
+    const tripDisplayIds = (trips || []).map(t => t.trip_display_id).filter(Boolean);
+    let escrowMap = {};
+    if (tripDisplayIds.length > 0) {
+      const { data: orders } = await supabase
+        .from('orders')
+        .select('order_display_id, escrow_status')
+        .in('order_display_id', tripDisplayIds);
+      escrowMap = Object.fromEntries((orders || []).map(o => [o.order_display_id, o.escrow_status]));
+    }
+
+    const enrichedTrips = (trips || []).map(t => ({
+      ...t,
+      escrow_status: escrowMap[t.trip_display_id] || 'pending'
+    }));
+
     res.json({
       page,
       limit,
       total: count || 0,
       totalPages: Math.ceil((count || 0) / limit),
-      trips: trips || []
+      trips: enrichedTrips
     });
   } catch (err) {
     logger.error('Driver trips fetch error:', err);
@@ -924,6 +942,12 @@ router.post('/wallet/withdraw', authenticate, userLimiter, requirePolicy('driver
   const { amount } = req.body; // in paisa
 
   try {
+    if (!isPayoutProviderConfigured()) {
+      return res.status(503).json({
+        error: 'Withdrawal is temporarily unavailable: no payout provider is configured.',
+      });
+    }
+
     // 5.1 Fetch driver confirmed balance
     const { data: details, error: detailsErr } = await supabase
       .from('driver_details')
@@ -947,7 +971,7 @@ router.post('/wallet/withdraw', authenticate, userLimiter, requirePolicy('driver
     }
 
     // 5.2 Execute atomically via Supabase RPC
-    const userClient = req.token ? createUserClient(req.token) : supabase;
+    const userClient = createUserClient(req.token);
     const { error: rpcErr } = await userClient.rpc('withdraw_funds_tx', {
       p_driver_id: req.user.id,
       p_amount:    amount
@@ -1378,7 +1402,7 @@ router.get('/ltl/optimize-route', authenticate, userLimiter, requireDriverRole, 
     const lat = parseFloat(req.query.lat);
     const lng = parseFloat(req.query.lng);
 
-    if (isNaN(lat) || isNaN(lng)) {
+    if (Number.isNaN(lat) || Number.isNaN(lng)) {
       return res.status(400).json({ error: 'Valid lat and lng query parameters are required.' });
     }
 
@@ -1498,7 +1522,7 @@ router.get('/:id/earnings', authenticate, userLimiter, requirePolicy('driver:vie
     let totalKm = 0;
     trips.forEach(trip => {
       if (trip.distance) {
-        const distanceNum = parseInt(String(trip.distance).replace(/[^0-9]/g, '')) || 0;
+        const distanceNum = parseInt(String(trip.distance, 10).replace(/[^0-9]/g, '')) || 0;
         totalKm += distanceNum;
       }
     });

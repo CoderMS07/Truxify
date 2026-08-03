@@ -1,4 +1,5 @@
 import kafka, { TOPICS, CONSUMER_GROUPS } from '../config/kafka.config.js';
+import processedEventRepository from '../repositories/processedEvent.repository.js';
 import logger from '../api/src/middleware/logger.js';
 
 class OrderConsumer {
@@ -79,6 +80,23 @@ class OrderConsumer {
     const handlers = this.handlers;
 
     const messageHandler = async (topic, message, rawMessage) => {
+      // Idempotency claim: only the first delivery of an event may apply side
+      // effects. Kafka redelivers messages on restarts/rebalances, so without
+      // this guard PAYMENT_CONFIRMED / TRIP_COMPLETED / ESCROW_RELEASED would
+      // be processed (and credit wallets) more than once.
+      const eventId = message?.metadata?.eventId || rawMessage?.key?.toString() || null;
+      if (eventId) {
+        const isNew = await processedEventRepository.claimProcessed(
+          topic,
+          eventId,
+          message?.orderId || message?.payload?.orderId || null
+        );
+        if (!isNew) {
+          logger.info(`[OrderConsumer] Skipping duplicate event ${eventId} on ${topic}`);
+          return;
+        }
+      }
+
       if (handlers.has(topic)) {
         const topicHandlers = handlers.get(topic);
         for (const handler of topicHandlers) {
@@ -92,11 +110,19 @@ class OrderConsumer {
 
       if (this._eventBus) {
         const eventType = topic.replace(/\./g, '_').toUpperCase();
-        this._eventBus.publish(eventType, message, {
-          adapters: [],
-          deduplicate: false,
-          source: `kafka:${groupId}`,
-        });
+        if (message && typeof message === 'object' && message.metadata) {
+          // Object form reuses the original event id so the in-process
+          // EventBus deduplication window applies to redelivered messages.
+          this._eventBus.publish(message, {
+            adapters: [],
+            source: `kafka:${groupId}`,
+          });
+        } else {
+          this._eventBus.publish(eventType, message, {
+            adapters: [],
+            source: `kafka:${groupId}`,
+          });
+        }
       }
     };
 

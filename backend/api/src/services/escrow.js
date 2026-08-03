@@ -34,10 +34,15 @@ import { measureExecution } from '../core/performanceMetrics.js'
 
 const ESCROW_ABI = [
   'function createBooking(uint256 bookingId, address payable driver) external payable',
+  'function lockPayment(uint256 bookingId, address payable customer, address payable driver) external payable',
   'function releasePayment(uint256 bookingId) external',
   'function cancelBooking(uint256 bookingId) external',
   'function cancelWithPenalty(uint256 bookingId, uint256 driverFee) external',
-  'function bookings(uint256 bookingId) external view returns (address customer, address driver, uint256 amount, uint8 status, bool paid, uint256 createdAt)'
+  'function markBookingStarted(uint256 bookingId) external',
+  'function raiseDispute(uint256 bookingId) external',
+  'function resolveDispute(uint256 bookingId, uint256 driverAmount) external',
+  'function resolveDisputeTimeout(uint256 bookingId) external',
+  'function bookings(uint256 bookingId) external view returns (address customer, address driver, uint256 amount, uint8 status, bool paid, bool started, uint256 createdAt)'
 ]
 
 const rpcUrl            = process.env.POLYGON_RPC_URL;
@@ -45,7 +50,7 @@ const contractAddress   = process.env.ESCROW_CONTRACT_ADDRESS;
 const relayerPrivateKey = process.env.RELAYER_WALLET_PRIVATE_KEY;
 function parseEnvFloat(raw, defaultVal, name) {
   const val = parseFloat(raw || defaultVal);
-  if (isNaN(val) || val <= 0) {
+  if (Number.isNaN(val) || val <= 0) {
     throw new Error(`Invalid ${name}: "${raw}" — must be a positive number`);
   }
   return val;
@@ -440,33 +445,33 @@ export async function confirmEscrowRefund (txHash) {
   });
 }
 
-/**
- * Read a booking's on-chain state (used by the escrow funding reconciliation
- * worker to decide whether a 'funding' order was actually funded).
- * @param {string} bookingId - bytes32 booking id
- * @returns {Promise<{customer: string, driver: string, amount: bigint, status: bigint, paid: boolean, createdAt: bigint} | null>}
- */
-export async function getEscrowBooking (bookingId) {
-  if (!escrowContract || !bookingId) {
-    return null
-  }
-  try {
-    const booking = await escrowContract.bookings(bookingId)
-    if (!booking) {
-      return null
+export async function escrowLockPayment(orderDisplayId, customerWalletAddress, driverWalletAddress, amountWei) {
+  return measureExecution('EscrowService.escrowLockPayment', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId);
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping lockPayment.');
+      return { txHash: null, bookingId };
     }
-    return {
-      customer: booking.customer,
-      driver: booking.driver,
-      amount: booking.amount,
-      status: booking.status,
-      paid: booking.paid,
-      createdAt: booking.createdAt,
+
+    try {
+      const tx = await escrowContract.lockPayment(
+        bookingId,
+        customerWalletAddress,
+        driverWalletAddress,
+        {
+          value: amountWei
+        }
+      );
+      logger.info(`[escrow] lockPayment tx submitted: ${tx.hash} for booking ${orderDisplayId}`);
+      const receipt = await tx.wait(1);
+      logger.info(`[escrow] lockPayment confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`);
+      return { txHash: receipt.hash, bookingId };
+    } catch (err) {
+      logger.error(`[escrow] lockPayment failed for booking ${orderDisplayId}: ${err.message}`);
+      return { txHash: null, bookingId, error: err.message };
     }
-  } catch (err) {
-    logger.warn(`[escrow] Failed to read booking ${bookingId}: ${err.message}`)
-    return null
-  }
+  });
 }
 
 export function bookingIdFromUuid (orderId) {
@@ -509,4 +514,116 @@ export async function releaseEscrowFunds (orderDisplayId) {
 
 export async function escrowRefund (orderDisplayId) {
   return submitEscrowRefund(orderDisplayId)
+}
+
+/**
+ * Submit an escrow dispute raise and return its hash before confirmation.
+ * Only the relayer (owner) may call raiseDispute on-chain.
+ */
+export async function submitEscrowRaiseDispute (orderDisplayId) {
+  return measureExecution('EscrowService.submitEscrowRaiseDispute', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId)
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping raiseDispute.')
+      return { txHash: null, bookingId }
+    }
+
+    let tx
+    try {
+      tx = await escrowContract.raiseDispute(bookingId)
+      logger.info(`[escrow] raiseDispute tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
+    } catch (err) {
+      logger.error(`[escrow] raiseDispute failed for booking ${orderDisplayId}: ${err.message}`)
+      return { txHash: null, bookingId, error: err.message }
+    }
+    return {
+      txHash: tx.hash,
+      bookingId,
+      waitForConfirmation: async () => {
+        const receipt = await tx.wait(1)
+        if (!receipt || receipt.status === 0) {
+          throw new Error('Escrow raiseDispute transaction reverted or was not found.')
+        }
+        logger.info(`[escrow] raiseDispute confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`)
+        return receipt
+      }
+    }
+  })
+}
+
+/**
+ * Submit a dispute resolution that splits the escrowed funds. driverAmountWei
+ * is awarded to the driver; the remainder is refunded to the customer.
+ * Only the relayer (owner) may call resolveDispute on-chain.
+ *
+ * @param {string} orderDisplayId
+ * @param {string|bigint} driverAmountWei — wei awarded to the driver
+ */
+export async function submitEscrowResolveDispute (orderDisplayId, driverAmountWei) {
+  return measureExecution('EscrowService.submitEscrowResolveDispute', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId)
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping resolveDispute.')
+      return { txHash: null, bookingId }
+    }
+
+    let tx
+    try {
+      tx = await escrowContract.resolveDispute(bookingId, driverAmountWei)
+      logger.info(`[escrow] resolveDispute tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
+    } catch (err) {
+      logger.error(`[escrow] resolveDispute failed for booking ${orderDisplayId}: ${err.message}`)
+      return { txHash: null, bookingId, error: err.message }
+    }
+    return {
+      txHash: tx.hash,
+      bookingId,
+      waitForConfirmation: async () => {
+        const receipt = await tx.wait(1)
+        if (!receipt || receipt.status === 0) {
+          throw new Error('Escrow resolveDispute transaction reverted or was not found.')
+        }
+        logger.info(`[escrow] resolveDispute confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`)
+        return receipt
+      }
+    }
+  })
+}
+
+/**
+ * Submit a dispute-timeout resolution that refunds the customer in full.
+ * Only the relayer (owner) may call resolveDisputeTimeout on-chain.
+ */
+export async function submitEscrowResolveDisputeTimeout (orderDisplayId) {
+  return measureExecution('EscrowService.submitEscrowResolveDisputeTimeout', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId)
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping resolveDisputeTimeout.')
+      return { txHash: null, bookingId }
+    }
+
+    let tx
+    try {
+      tx = await escrowContract.resolveDisputeTimeout(bookingId)
+      logger.info(`[escrow] resolveDisputeTimeout tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
+    } catch (err) {
+      logger.error(`[escrow] resolveDisputeTimeout failed for booking ${orderDisplayId}: ${err.message}`)
+      return { txHash: null, bookingId, error: err.message }
+    }
+    return {
+      txHash: tx.hash,
+      bookingId,
+      waitForConfirmation: async () => {
+        const receipt = await tx.wait(1)
+        if (!receipt || receipt.status === 0) {
+          throw new Error('Escrow resolveDisputeTimeout transaction reverted or was not found.')
+        }
+        logger.info(`[escrow] resolveDisputeTimeout confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`)
+        return receipt
+      }
+    }
+  })
 }

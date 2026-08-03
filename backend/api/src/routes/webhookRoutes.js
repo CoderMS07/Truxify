@@ -14,8 +14,10 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
  */
 function verifyWebhookSignature(req, res, next) {
   if (!WEBHOOK_SECRET) {
-    logger.warn('[Webhook] WEBHOOK_SECRET not set — skipping signature verification');
-    return next();
+    // Fail closed: never accept unsigned webhook traffic when the shared
+    // secret is missing from the environment.
+    logger.error('[Webhook] WEBHOOK_SECRET not set — rejecting webhook request');
+    return res.status(500).json({ error: 'Webhook secret not configured' });
   }
 
   const signature = req.headers['x-webhook-signature'];
@@ -24,6 +26,11 @@ function verifyWebhookSignature(req, res, next) {
   }
 
   const rawBody = req.rawBody;
+  if (!rawBody) {
+    logger.error('[Webhook] rawBody missing — cannot verify signature, rejecting request');
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+
   const expectedSignature = crypto
     .createHmac('sha256', WEBHOOK_SECRET)
     .update(rawBody)

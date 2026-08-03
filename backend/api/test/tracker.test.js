@@ -57,10 +57,12 @@ describe('tracker', () => {
   });
 
   describe('isWebSocketUpgradeAllowed', () => {
-    it('allows upgrade when no Redis client', async () => {
+    it('enforces the per-IP limit in memory when no Redis client is configured (no fail-open)', async () => {
       const req = makeRequest();
-      const result = await isWebSocketUpgradeAllowed(req);
-      expect(result).toBe(true);
+      for (let i = 0; i < 5; i++) {
+        await expect(isWebSocketUpgradeAllowed(req)).resolves.toBe(true);
+      }
+      await expect(isWebSocketUpgradeAllowed(req)).resolves.toBe(false);
     });
   });
 
@@ -131,6 +133,26 @@ describe('tracker', () => {
     it('subscribes to driver_id when authorized', async () => {
       const ws = makeWs();
       await handleSubscribe(ws, { driver_id: 'driver-1' });
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"status":"subscribed"'));
+    });
+
+    it('rejects non-driver without an active order for the target driver', async () => {
+      const ws = makeWs({ user: { id: 'customer-1', role: 'customer' } });
+      await handleSubscribe(ws, { driver_id: 'driver-2' });
+      expect(ws.send).toHaveBeenCalledWith(JSON.stringify({
+        error: 'Forbidden: You are not authorized to subscribe to this tracking target.',
+      }));
+    });
+
+    it('allows a customer with an active order for the target driver', async () => {
+      __testing.setOrderRepository({
+        findActiveOrderForDriverByCustomer: vi.fn().mockResolvedValue({
+          data: { id: 'order-1', order_display_id: 'OD-1' },
+          error: null,
+        }),
+      });
+      const ws = makeWs({ user: { id: 'customer-1', role: 'customer' } });
+      await handleSubscribe(ws, { driver_id: 'driver-2' });
       expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"status":"subscribed"'));
     });
   });

@@ -1,12 +1,17 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,11 +31,8 @@ type TelemetryPing struct {
 
 // GeofenceCheckResponse represents geofence status result
 type GeofenceCheckResponse struct {
-	DriverID        string  `json:"driver_id"`
-	WithinGeofence  bool    `json:"within_geofence"`
-	DistanceMeters  float64 `json:"distance_meters"`
-	TargetLatitude  float64 `json:"target_latitude"`
-	TargetLongitude float64 `json:"target_longitude"`
+	DriverID       string `json:"driver_id"`
+	WithinGeofence bool   `json:"within_geofence"`
 }
 
 // IngestionStats holds global telemetry throughput metrics
@@ -43,10 +45,47 @@ type IngestionStats struct {
 }
 
 var (
-	pingCounter     uint64
-	activeDrivers   sync.Map
-	serviceStartTime = time.Now()
+	pingCounter         uint64
+	activeDrivers       sync.Map
+	geofenceRateLimit   sync.Map
+	geofenceRateTracked uint64
+	pingRateLimit       sync.Map
+	serviceStartTime    = time.Now()
+	jwtSecret           []byte
+	bypassAuth          bool
+	driverTTL           = 5 * time.Minute
+	maxActiveDrivers    = 100000
+	maxPingsPerSec      = 10
+	maxGeofencePerSec   = 10
+	maxRateTracked      = 100000
 )
+
+// driverEntry is a cached ping plus its last-seen time so stale drivers can be evicted.
+type driverEntry struct {
+	ping     TelemetryPing
+	lastSeen time.Time
+}
+
+// rateEntry holds a sliding window of request timestamps for one driver.
+type rateEntry struct {
+	mu     sync.Mutex
+	stamps []time.Time
+}
+
+// jwtClaims holds the subset of JWT claims the telemetry service needs.
+type jwtClaims struct {
+	Sub  string `json:"sub"`
+	Role string `json:"role"`
+}
+
+// operatorRoles are roles allowed to query a driver's location. Drivers may
+// only ever query their own location; there are no operator roles in the
+// current profiles schema, but the allowlist keeps the check future-proof.
+var operatorRoles = map[string]bool{
+	"admin":      true,
+	"operator":   true,
+	"dispatcher": true,
+}
 
 // Calculate Haversine distance in meters between two lat/lng points
 func haversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
@@ -63,10 +102,303 @@ func haversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	return earthRadiusMeters * c
 }
 
+// envInt reads an integer from the environment with a default fallback.
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+// envDuration reads a duration from the environment with a default fallback.
+func envDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return def
+}
+
+// parseDriverToken verifies an HS256 JWT with JWT_SECRET and returns its claims.
+func parseDriverToken(token string) (jwtClaims, error) {
+	var claims jwtClaims
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return claims, fmt.Errorf("malformed token")
+	}
+
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return claims, fmt.Errorf("malformed token")
+	}
+
+	mac := hmac.New(sha256.New, jwtSecret)
+	mac.Write([]byte(parts[0] + "." + parts[1]))
+	if !hmac.Equal(sig, mac.Sum(nil)) {
+		return claims, fmt.Errorf("invalid token signature")
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return claims, fmt.Errorf("malformed token")
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return claims, fmt.Errorf("malformed token")
+	}
+
+	return claims, nil
+}
+
+// authenticate extracts and verifies the caller's bearer JWT, returning the
+// decoded claims. In BYPASS_AUTH local development the subject is taken from
+// the X-Driver-ID header.
+func authenticate(w http.ResponseWriter, r *http.Request) (jwtClaims, bool) {
+	var claims jwtClaims
+
+	if bypassAuth {
+		claims.Sub = r.Header.Get("X-Driver-ID")
+		claims.Role = r.Header.Get("X-Driver-Role")
+		if claims.Sub == "" {
+			claims.Sub = "dev-driver"
+		}
+		if claims.Role == "" {
+			claims.Role = "driver"
+		}
+		return claims, true
+	}
+
+	if len(jwtSecret) == 0 {
+		http.Error(w, "authentication is not configured", http.StatusServiceUnavailable)
+		return claims, false
+	}
+
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return claims, false
+	}
+
+	var err error
+	claims, err = parseDriverToken(strings.TrimPrefix(auth, "Bearer "))
+	if err != nil {
+		http.Error(w, "invalid token", http.StatusUnauthorized)
+		return claims, false
+	}
+
+	return claims, true
+}
+
+// authorizeGeofence checks that the caller may query the given driver's location.
+func authorizeGeofence(claims jwtClaims, driverID string) bool {
+	if claims.Role == "driver" {
+		return claims.Sub == driverID
+	}
+	return operatorRoles[claims.Role]
+}
+
+// authenticateDriver extracts and verifies the caller's bearer JWT, requiring
+// the driver role. On success it returns the authenticated subject (driver id).
+func authenticateDriver(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if bypassAuth {
+		return r.Header.Get("X-Driver-ID"), true
+	}
+
+	if len(jwtSecret) == 0 {
+		http.Error(w, "authentication is not configured", http.StatusServiceUnavailable)
+		return "", false
+	}
+
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return "", false
+	}
+
+	claims, err := parseDriverToken(strings.TrimPrefix(auth, "Bearer "))
+	if err != nil {
+		http.Error(w, "invalid token", http.StatusUnauthorized)
+		return "", false
+	}
+
+	if claims.Role != "driver" {
+		http.Error(w, "forbidden: driver role required", http.StatusForbidden)
+		return "", false
+	}
+
+	return claims.Sub, true
+}
+
+// validatePing checks that a ping payload is plausible before it is accepted.
+func validatePing(ping *TelemetryPing) error {
+	if ping.DriverID == "" {
+		return fmt.Errorf("driver_id is required")
+	}
+	if math.IsNaN(ping.Latitude) || math.IsNaN(ping.Longitude) ||
+		ping.Latitude < -90 || ping.Latitude > 90 ||
+		ping.Longitude < -180 || ping.Longitude > 180 {
+		return fmt.Errorf("latitude or longitude out of plausible bounds")
+	}
+	if ping.SpeedKMH < 0 {
+		return fmt.Errorf("speed_kmh cannot be negative")
+	}
+	if ping.Heading < 0 || ping.Heading > 360 {
+		return fmt.Errorf("heading_deg must be between 0 and 360")
+	}
+	if ping.FuelLevel < 0 || ping.FuelLevel > 100 {
+		return fmt.Errorf("fuel_level_pct must be between 0 and 100")
+	}
+	if ping.Timestamp.IsZero() {
+		ping.Timestamp = time.Now()
+	}
+	if ping.Timestamp.After(time.Now().Add(time.Minute)) {
+		return fmt.Errorf("timestamp too far in the future")
+	}
+	return nil
+}
+
+// allowGeofence enforces a per-driver sliding-window rate limit.
+func allowGeofence(driverID string) bool {
+	v, loaded := geofenceRateLimit.LoadOrStore(driverID, &rateEntry{})
+	if !loaded {
+		atomic.AddUint64(&geofenceRateTracked, 1)
+	}
+	e := v.(*rateEntry)
+
+	e.mu.Lock()
+
+	cutoff := time.Now().Add(-time.Second)
+	kept := e.stamps[:0]
+	for _, t := range e.stamps {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	e.stamps = kept
+
+	if len(e.stamps) >= maxGeofencePerSec {
+		e.mu.Unlock()
+		return false
+	}
+
+	e.stamps = append(e.stamps, time.Now())
+	e.mu.Unlock()
+
+	// Opportunistically shed empty tracking entries so the map stays bounded.
+	if !loaded && atomic.LoadUint64(&geofenceRateTracked) > uint64(maxRateTracked) {
+		pruneGeofenceRateEntries()
+	}
+
+	return true
+}
+
+// pruneGeofenceRateEntries removes empty rate entries once the tracker grows
+// beyond its cap, keeping the in-memory map bounded.
+func pruneGeofenceRateEntries() {
+	geofenceRateLimit.Range(func(key, value interface{}) bool {
+		e := value.(*rateEntry)
+		e.mu.Lock()
+		empty := len(e.stamps) == 0
+		e.mu.Unlock()
+		if empty {
+			geofenceRateLimit.Delete(key)
+			atomic.AddUint64(&geofenceRateTracked, ^uint64(0))
+		}
+		return true
+	})
+}
+
+// allowPing enforces a per-driver sliding-window rate limit.
+func allowPing(driverID string) bool {
+	v, _ := pingRateLimit.LoadOrStore(driverID, &rateEntry{})
+	e := v.(*rateEntry)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	cutoff := time.Now().Add(-time.Second)
+	kept := e.stamps[:0]
+	for _, t := range e.stamps {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	e.stamps = kept
+
+	if len(e.stamps) >= maxPingsPerSec {
+		return false
+	}
+
+	e.stamps = append(e.stamps, time.Now())
+	return true
+}
+
+// countActiveDrivers returns the current number of cached drivers.
+func countActiveDrivers() int {
+	count := 0
+	activeDrivers.Range(func(key, value interface{}) bool {
+		count++
+		return true
+	})
+	return count
+}
+
+// storePing caches a ping for a driver, enforcing the max-map-size cap.
+func storePing(driverID string, ping TelemetryPing) bool {
+	now := time.Now()
+
+	if _, ok := activeDrivers.Load(driverID); ok {
+		activeDrivers.Store(driverID, driverEntry{ping: ping, lastSeen: now})
+		return true
+	}
+
+	if countActiveDrivers() >= maxActiveDrivers {
+		sweepDrivers()
+		if countActiveDrivers() >= maxActiveDrivers {
+			return false
+		}
+	}
+
+	activeDrivers.Store(driverID, driverEntry{ping: ping, lastSeen: now})
+	return true
+}
+
+// sweepDrivers removes drivers whose last ping is older than the TTL and drops
+// empty rate-limit entries.
+func sweepDrivers() {
+	now := time.Now()
+
+	activeDrivers.Range(func(key, value interface{}) bool {
+		if now.Sub(value.(driverEntry).lastSeen) > driverTTL {
+			activeDrivers.Delete(key)
+		}
+		return true
+	})
+
+	pingRateLimit.Range(func(key, value interface{}) bool {
+		e := value.(*rateEntry)
+		e.mu.Lock()
+		empty := len(e.stamps) == 0
+		e.mu.Unlock()
+		if empty {
+			pingRateLimit.Delete(key)
+		}
+		return true
+	})
+}
+
 // Handle Single Telemetry Ping
 func handlePing(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	callerID, ok := authenticateDriver(w, r)
+	if !ok {
 		return
 	}
 
@@ -76,18 +408,27 @@ func handlePing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if ping.DriverID == "" || ping.Latitude == 0 || ping.Longitude == 0 {
-		http.Error(w, "driver_id, latitude, and longitude are required", http.StatusBadRequest)
+	if err := validatePing(&ping); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid telemetry payload: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	if ping.Timestamp.IsZero() {
-		ping.Timestamp = time.Now()
+	if callerID != "" && callerID != ping.DriverID {
+		http.Error(w, "driver_id does not match authenticated caller", http.StatusForbidden)
+		return
+	}
+
+	if !allowPing(ping.DriverID) {
+		http.Error(w, "Too many telemetry requests", http.StatusTooManyRequests)
+		return
 	}
 
 	// Update atomic stats & active driver cache
 	atomic.AddUint64(&pingCounter, 1)
-	activeDrivers.Store(ping.DriverID, ping)
+	if !storePing(ping.DriverID, ping) {
+		http.Error(w, "Active driver capacity reached", http.StatusServiceUnavailable)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -106,6 +447,11 @@ func handleGeofence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	claims, ok := authenticate(w, r)
+	if !ok {
+		return
+	}
+
 	var req struct {
 		DriverID  string  `json:"driver_id"`
 		TargetLat float64 `json:"target_latitude"`
@@ -118,13 +464,30 @@ func handleGeofence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !authorizeGeofence(claims, req.DriverID) {
+		http.Error(w, "forbidden: cannot query another driver's location", http.StatusForbidden)
+		return
+	}
+
+	if !allowGeofence(req.DriverID) {
+		http.Error(w, "Too many telemetry requests", http.StatusTooManyRequests)
+		return
+	}
+
 	val, ok := activeDrivers.Load(req.DriverID)
 	if !ok {
 		http.Error(w, "Driver telemetry not found", http.StatusNotFound)
 		return
 	}
 
-	ping := val.(TelemetryPing)
+	entry := val.(driverEntry)
+	if time.Since(entry.lastSeen) > driverTTL {
+		activeDrivers.Delete(req.DriverID)
+		http.Error(w, "Driver telemetry not found", http.StatusNotFound)
+		return
+	}
+
+	ping := entry.ping
 	radius := req.RadiusM
 	if radius == 0 {
 		radius = 500.0 // Default 500 meters geofence
@@ -135,11 +498,8 @@ func handleGeofence(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(GeofenceCheckResponse{
-		DriverID:        req.DriverID,
-		WithinGeofence:  within,
-		DistanceMeters:  math.Round(dist*100) / 100,
-		TargetLatitude:  req.TargetLat,
-		TargetLongitude: req.TargetLng,
+		DriverID:       req.DriverID,
+		WithinGeofence: within,
 	})
 }
 
@@ -172,6 +532,26 @@ func main() {
 	if port == "" {
 		port = "8085"
 	}
+
+	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
+	bypassAuth = os.Getenv("BYPASS_AUTH") == "true" && os.Getenv("NODE_ENV") != "production"
+	driverTTL = envDuration("TELEMETRY_DRIVER_TTL", 5*time.Minute)
+	maxActiveDrivers = envInt("TELEMETRY_MAX_ACTIVE_DRIVERS", 100000)
+	maxPingsPerSec = envInt("TELEMETRY_MAX_PINGS_PER_SEC", 10)
+	maxGeofencePerSec = envInt("TELEMETRY_GEOFENCE_MAX_PER_SEC", 10)
+	maxRateTracked = envInt("TELEMETRY_GEOFENCE_MAX_TRACKED", 100000)
+	if driverTTL <= 0 {
+		driverTTL = time.Second
+	}
+
+	// Periodically evict stale drivers so the in-memory map stays bounded.
+	go func() {
+		ticker := time.NewTicker(driverTTL / 2)
+		defer ticker.Stop()
+		for range ticker.C {
+			sweepDrivers()
+		}
+	}()
 
 	http.HandleFunc("/api/v1/telemetry/ping", handlePing)
 	http.HandleFunc("/api/v1/telemetry/geofence", handleGeofence)

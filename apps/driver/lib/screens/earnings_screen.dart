@@ -583,7 +583,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                 maxY: maxVal * 1.1,
                 barTouchData: BarTouchData(
                   touchTooltipData: BarTouchTooltipData(
-                    getTooltipColor: (_) => TruxifyColors.accentDark,
+                    tooltipBgColor: TruxifyColors.accentDark,
                     getTooltipItem: (group, groupIndex, rod, rodIndex) {
                       final item = chartData[group.x] as Map;
                       return BarTooltipItem(

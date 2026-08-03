@@ -198,7 +198,7 @@ async def get_model_status():
 
 @router.post("/model/save")
 async def save_model(path: str = "models/gnn_route.pth"):
-    path = os.path.join("models", os.path.basename(path)):
+    path = os.path.join("models", os.path.basename(path))
     """Save GNN model"""
     try:
         optimizer.save_model(path)
@@ -215,7 +215,7 @@ async def save_model(path: str = "models/gnn_route.pth"):
 
 @router.post("/model/load")
 async def load_model(path: str = "models/gnn_route.pth"):
-    path = os.path.join("models", os.path.basename(path)):
+    path = os.path.join("models", os.path.basename(path))
     """Load GNN model"""
     try:
         optimizer.load_model(path)

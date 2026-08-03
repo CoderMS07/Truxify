@@ -64,7 +64,7 @@ $$;
 create table if not exists profiles (
   id            uuid primary key default gen_random_uuid(),
   firebase_uid  text unique not null,                         -- Firebase Auth UID
-  role          text not null check (role in ('customer', 'driver')),
+  role          text not null check (role in ('customer', 'driver', 'admin')),
   full_name     text not null,
   phone         text not null,
   email         text,
@@ -73,6 +73,7 @@ create table if not exists profiles (
   language      text not null default 'en',
   dark_mode     boolean not null default false,
   is_active     boolean not null default true,
+  is_digilocker_verified boolean not null default false,
   polygon_wallet_address text,                                  -- Polygon wallet address for escrow deposits
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
@@ -511,6 +512,7 @@ create table if not exists trips (
   id                uuid primary key default gen_random_uuid(),
   trip_display_id   text unique not null,                     -- '#TX20241205'
   driver_id         uuid not null,                            -- profiles.id
+  order_id          uuid,                                     -- orders.id (the order this trip serves)
   route_label       text not null,                            -- 'Surat → Jaipur'
 
   status            text not null default 'active'
@@ -537,10 +539,16 @@ create table if not exists trips (
   updated_at        timestamptz not null default now()
 );
 
+alter table trips
+  add constraint trips_order_id_fkey
+  foreign key (order_id) references orders(id)
+  on update cascade on delete set null;
+
 create index if not exists idx_trips_driver     on trips (driver_id);
 create index if not exists idx_trips_status     on trips (status);
 create index if not exists idx_trips_date       on trips (trip_date);
 create index if not exists idx_trips_display_id on trips (trip_display_id);
+create index if not exists idx_trips_order_id   on trips (order_id);
 create unique index if not exists idx_trips_one_active_per_driver on trips (driver_id) where (status = 'active');
 
 
@@ -1652,17 +1660,23 @@ $$;
 -- RPC 4: complete_trip_tx (overload) — Atomically verify delivery and release payment
 -- ────────────────────────────────────────────────────────────────────────────
 drop function if exists complete_trip_tx(uuid);
+drop function if exists complete_trip_tx(uuid, uuid);
+drop function if exists complete_trip_tx(uuid, uuid, text);
 
-create or replace function complete_trip_tx(p_order_id uuid, p_otp_id uuid)
-returns void
+create or replace function complete_trip_tx(
+  p_order_id uuid,
+  p_otp_id uuid,
+  p_release_tx_hash text default null
+)
+returns table(driver_id uuid)
 language plpgsql
 security definer
 as $$
 declare
   v_order record;
   v_trip_display_id text;
-  v_active_trip_count int;
   v_updated_count int;
+  v_otp_updated int;
 begin
   -- Use FOR UPDATE to lock the order row and prevent concurrent modifications
   select * into v_order from orders where id = p_order_id for update;
@@ -1677,6 +1691,8 @@ begin
 
   -- Idempotency guard: check if the order status is already payment_released
   if v_order.status = 'payment_released' then
+    driver_id := v_order.driver_id;
+    return next;
     return;
   end if;
 
@@ -1691,6 +1707,8 @@ begin
   get diagnostics v_otp_updated = row_count;
   if v_otp_updated <> 1 then
     raise exception 'Delivery OTP is invalid, expired, or already verified';
+  end if;
+
   -- Check if the order was cancelled
   if v_order.status = 'cancelled' then
     raise exception 'Order has been cancelled — cannot complete trip';
@@ -1701,44 +1719,43 @@ begin
     raise exception 'Order has already been delivered';
   end if;
 
-  -- Safe lookup for the driver's active trip
-  select count(*) into v_active_trip_count
+  -- Finalize the active trip that actually served THIS order
+  select trip_display_id into v_trip_display_id
   from trips
-  where driver_id = v_order.driver_id and status = 'active';
+  where order_id = p_order_id and status = 'active'
+  order by created_at
+  limit 1;
 
-  if v_active_trip_count > 1 then
-    raise exception 'Multiple active trips found for driver %', v_order.driver_id;
+  if v_trip_display_id is null then
+    raise exception 'No active trip found for this order — cannot complete trip';
   end if;
 
-  if v_active_trip_count = 1 then
-    select trip_display_id into v_trip_display_id
-    from trips
-    where driver_id = v_order.driver_id and status = 'active';
+  -- Update trip record
+  update trips
+  set status = 'completed',
+      end_time = to_char(now(), 'HH24:MI'),
+      updated_at = now()
+  where trip_display_id = v_trip_display_id;
 
-    -- Update trip record
-    update trips
-    set status = 'completed',
-        end_time = to_char(now(), 'HH24:MI'),
-        updated_at = now()
-    where trip_display_id = v_trip_display_id;
+  -- Update trip items to delivered
+  update trip_items
+  set is_delivered = true
+  where trip_display_id = v_trip_display_id;
 
-    -- Update trip items to delivered
-    update trip_items
-    set is_delivered = true
-    where trip_display_id = v_trip_display_id;
+  -- Update trip stops to completed/delivered
+  update trip_stops
+  set is_completed = true,
+      is_current = false,
+      status_label = 'Delivered',
+      updated_at = now()
+  where trip_display_id = v_trip_display_id;
 
-    -- Update trip stops to completed/delivered
-    update trip_stops
-    set is_completed = true,
-        is_current = false,
-        status_label = 'Delivered',
-        updated_at = now()
-    where trip_display_id = v_trip_display_id;
-  end if;
-
-  -- Update order status to payment_released with defensive WHERE guards
+  -- Update order status and escrow details
   update orders
   set status = 'payment_released',
+      escrow_status = 'released',
+      escrow_released_at = now(),
+      blockchain_tx_hash = coalesce(p_release_tx_hash, blockchain_tx_hash),
       updated_at = now()
   where id = p_order_id
     and status != 'cancelled'
@@ -1784,6 +1801,9 @@ begin
   do update set
     amount = earnings_daily.amount + excluded.amount,
     trip_count = earnings_daily.trip_count + 1;
+
+  driver_id := v_order.driver_id;
+  return next;
 end;
 $$;
 

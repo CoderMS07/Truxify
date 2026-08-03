@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { DomainError } from './domainError.js';
 import { DeliveryVerificationService } from './deliveryVerificationService.js';
 import { expireDeliveryOtps, sendPushNotification } from '../notificationService.js';
@@ -20,24 +19,39 @@ import { predictPrice } from '../ml.js';
 import { getLiveTrafficMultiplier } from '../trafficService.js';
 import { eventBus } from '../../core/events/index.js';
 import logger from '../../middleware/logger.js';
-import { supabaseAdmin } from '../../config/db.js';
+import { CircuitBreaker } from '../../lib/circuitBreaker.js';
+
+const osrmCircuitBreaker = new CircuitBreaker('osrmRouting', {
+  failureThreshold: 3,
+  resetTimeoutMs: 15000,
+  requestTimeoutMs: 5000,
+});
+
+const mlPriceCircuitBreaker = new CircuitBreaker('mlPricePrediction', {
+  failureThreshold: 3,
+  resetTimeoutMs: 15000,
+  requestTimeoutMs: 5000,
+});
+import { generateOrderDisplayId, ORDER_DISPLAY_ID_MAX_RETRIES } from '../../lib/orderDisplayId.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function generateOrderDisplayId() {
-  const prefix = '#FF';
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
-  const random = crypto.randomInt(100000, 999999).toString();
-  return `${prefix}${dateStr}${random}`;
-}
-
 export class OrderLifecycleService {
-  constructor({ orderRepository, orderTimelineService, bidAcceptanceService, deliveryVerificationService }) {
+  constructor({ orderRepository, orderTimelineService, bidAcceptanceService, deliveryVerificationService, trackingTokenService }) {
     this.orderRepository = orderRepository;
     this.orderTimelineService = orderTimelineService;
     this.bidAcceptanceService = bidAcceptanceService;
     this.deliveryVerification = deliveryVerificationService || new DeliveryVerificationService(orderRepository);
+    this.trackingTokenService = trackingTokenService || null;
+  }
+
+  async revokeTrackingTokensForOrder(orderDisplayId) {
+    if (!this.trackingTokenService || !orderDisplayId) return;
+    try {
+      await this.trackingTokenService.revokeAllForOrder(orderDisplayId);
+    } catch (error) {
+      logger.error(`[OrderLifecycleService] Failed to revoke tracking tokens for order ${orderDisplayId}:`, error);
+    }
   }
 
   async createOrder(customerId, customerName, body) {
@@ -63,12 +77,12 @@ export class OrderLifecycleService {
 
     let pricing;
     try {
-      const routeEstimate = await getRouteEstimate({
+      const routeEstimate = await osrmCircuitBreaker.execute(() => getRouteEstimate({
         pickupLat: Number(pickup_lat),
         pickupLng: Number(pickup_lng),
         dropLat: Number(drop_lat),
         dropLng: Number(drop_lng),
-      });
+      }));
       pricing = computeOrderPricing({
         pickupLat: Number(pickup_lat),
         pickupLng: Number(pickup_lng),
@@ -90,19 +104,19 @@ export class OrderLifecycleService {
     try {
       const trafficMultiplier = await getLiveTrafficMultiplier(pickup_lat, pickup_lng);
 
-      const mlResult = await predictPrice({
+      const mlResult = await mlPriceCircuitBreaker.execute(() => predictPrice({
         distanceKm: pricing.distanceKm,
         cargoWeightKg: Number(weight_tonnes) * 1000,
         routeOrigin: pickup_address,
         routeDestination: drop_address,
         trafficMultiplier,
-      });
+      }));
       estimatedPrice = mlResult.estimatedPricePaisa;
     } catch (mlErr) {
       logger.warn({ err: mlErr.message }, 'Price prediction unavailable, falling back to base pricing');
     }
 
-    const MAX_ID_RETRIES = 3;
+    const MAX_ID_RETRIES = ORDER_DISPLAY_ID_MAX_RETRIES;
     let order = null;
     let orderErr = null;
     let orderDisplayId = null;
@@ -470,7 +484,7 @@ export class OrderLifecycleService {
     });
   }
 
-  async verifyDeliveryFn(orderId, driverId, otp) {
+  async verifyDeliveryFn(orderId, driverId, otp, userClient) {
     return measureExecution('OrderLifecycleService.verifyDeliveryFn', async () => {
       const lockKey = `escrow_lock:${orderId}`;
       const lockValue = await acquireLock(lockKey, 120000);
@@ -479,7 +493,7 @@ export class OrderLifecycleService {
       }
 
       try {
-        return await this.deliveryVerification.verifyDelivery({ orderId, driverId, otp });
+        return await this.deliveryVerification.verifyDelivery({ orderId, driverId, otp }, userClient);
       } finally {
         await releaseLock(lockKey, lockValue);
       }
@@ -503,7 +517,7 @@ export class OrderLifecycleService {
     });
   }
 
-  async changeDrop(orderId, customerId, body) {
+  async changeDrop(orderId, customerId, body, userClient) {
     return measureExecution('OrderLifecycleService.changeDrop', async () => {
     const { drop_address, drop_lat, drop_lng } = body;
 
@@ -523,9 +537,10 @@ export class OrderLifecycleService {
       if (!order) throw new DomainError(404, { error: 'Order not found.' });
 
       if (order.customer_id !== customerId) throw new DomainError(403, { error: 'Access Denied: You do not own this order.' });
-      if (order.escrow_status === 'funded' || order.status !== 'pending') {
-        const reason = order.escrow_status === 'funded'
-          ? 'after escrow has been funded'
+      const escrowInFlight = order.escrow_status === 'funding' || order.escrow_status === 'funded';
+      if (escrowInFlight || order.status !== 'pending') {
+        const reason = escrowInFlight
+          ? `after escrow ${order.escrow_status === 'funding' ? 'funding has been initiated' : 'has been funded'}`
           : `after order status is '${order.status}'`;
         throw new DomainError(409, {
           error: `Drop location cannot be changed ${reason}.`,
@@ -585,7 +600,7 @@ export class OrderLifecycleService {
         p_order_display_id: order.order_display_id,
         p_order_updates: updates,
         p_offer_updates: offerUpdates
-      }, supabaseAdmin);
+      }, userClient ?? supabaseAdmin);
 
       if (updateErr) {
         throw new DomainError(500, {
@@ -642,6 +657,13 @@ export class OrderLifecycleService {
         throw new DomainError(409, { error: 'Cannot cancel: delivery OTP has already been verified.' });
       }
 
+      // The driver has already started the trip — a full-refund cancellation is
+      // no longer possible. On-chain, cancelBooking / cancelWithPenalty revert
+      // once the booking has been marked as started, so reject here first.
+      if (['picked_up', 'in_transit', 'arriving', 'arrived_dropoff'].includes(currentOrder.status)) {
+        throw new DomainError(409, { error: 'Cannot cancel: the shipment has already been picked up and is in transit.' });
+      }
+
       const requiresRefund = ['funded', 'refund_pending', 'refund_failed'].includes(currentOrder.escrow_status);
       const penaltyBps = currentOrder.status === 'assigned'
         ? 1000
@@ -655,6 +677,7 @@ export class OrderLifecycleService {
       const driverFeeWei = (escrowAmountWei * BigInt(penaltyBps)) / 10_000n;
 
       if (currentOrder.status === 'cancelled' && (!requiresRefund || currentOrder.escrow_status === 'refunded')) {
+        await this.revokeTrackingTokensForOrder(currentOrder.order_display_id);
         return {
           status: 200,
           body: {
@@ -755,6 +778,7 @@ export class OrderLifecycleService {
 
           await this.orderTimelineService.insertCancelEvent(currentOrder.order_display_id);
           await expireDeliveryOtps(currentOrder.id);
+          await this.revokeTrackingTokensForOrder(currentOrder.order_display_id);
 
           return {
             status: 200,
@@ -815,6 +839,7 @@ export class OrderLifecycleService {
 
       await this.orderTimelineService.insertCancelEvent(currentOrder.order_display_id);
       await expireDeliveryOtps(currentOrder.id);
+      await this.revokeTrackingTokensForOrder(currentOrder.order_display_id);
 
       return {
         status: 200,
@@ -826,7 +851,7 @@ export class OrderLifecycleService {
     });
   }
 
-  async confirmDeposit(orderId, userId, txHash) {
+  async confirmDeposit(orderId, userId, txHash, userClient) {
     return measureExecution('OrderLifecycleService.confirmDeposit', async () => {
     const lockKey = `escrow_lock:${orderId}`;
     const lockValue = await acquireLock(lockKey, 30000);
@@ -889,7 +914,7 @@ export class OrderLifecycleService {
           p_order_display_id: pending.order_display_id,
           p_expected_version: pending.version,
           p_escrow_booking_id: bookingId,
-        }, supabaseAdmin ?? undefined);
+        }, userClient ?? supabaseAdmin);
         if (acceptErr) {
           logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
           try {
@@ -921,7 +946,7 @@ export class OrderLifecycleService {
     });
   }
 
-  async submitRating(orderId, customerId, stars, comment) {
+  async submitRating(orderId, customerId, stars, comment, userClient) {
     return measureExecution('OrderLifecycleService.submitRating', async () => {
     const { data: order, error: orderErr } = await this.orderRepository.findOrderById(
       orderId, 'id, order_display_id, customer_id, driver_id, status'
@@ -946,7 +971,7 @@ export class OrderLifecycleService {
       p_driver_id: order.driver_id,
       p_stars: stars,
       p_comment: comment,
-    });
+    }, userClient ?? supabaseAdmin);
 
     if (rpcErr) throw new DomainError(500, { error: 'Failed to submit rating.', details: rpcErr.message });
 

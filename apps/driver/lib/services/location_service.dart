@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:truxify_shared/truxify_shared.dart';
 
 import 'battery_service.dart';
+import 'secure_storage.dart';
 
 class LocationService {
   LocationService._privateConstructor();
@@ -37,13 +38,15 @@ class LocationService {
   String? _activeOrderId;
   String? _activeOrderDisplayId;
   int? _lastCloseCode;
+  String? _authToken;
   Position? _lastSentPosition;
   DateTime? _lastSentTime;
   String? _lastTriggeredMilestone;
 
-  // Throttling configuration: send ping if moved 15m+ OR 30 seconds passed
-  static const double _minDistanceMeters = 15.0;
-  static const Duration _maxInterval = Duration(seconds: 30);
+  // Throttling configuration: send ping if moved 10m+ OR 5 seconds passed
+  // (Issue: Driver app must emit GPS updates every 5 seconds during active trip)
+  static const double _minDistanceMeters = 10.0;
+  static const Duration _maxInterval = Duration(seconds: 5);
   static const List<String> _activeOrderStatuses = [
     'truck_assigned',
     'en_route_pickup',
@@ -55,7 +58,22 @@ class LocationService {
 
   bool get isTracking => _isTracking;
 
-  Future<void> startTracking() async {
+  // ── Connection status stream ──────────────────────────────────────────────
+  final StreamController<WsConnectionStatus> _statusController =
+      StreamController<WsConnectionStatus>.broadcast();
+
+  /// Broadcast stream of WebSocket connection state changes.
+  Stream<WsConnectionStatus> get connectionStatus => _statusController.stream;
+
+  void _emitStatus(WsConnectionStatus status) {
+    if (!_statusController.isClosed) _statusController.add(status);
+  }
+
+  /// Start GPS tracking for a given [tripId] (order display ID).
+  /// If [tripId] is provided it is cached immediately so the first ping
+  /// can include the correct order context without waiting for a Supabase
+  /// lookup — reducing initial latency.
+  Future<void> startTracking({String? tripId}) async {
     _assertNotLocalhost();
     if (_isTracking) return;
 
@@ -73,7 +91,14 @@ class LocationService {
       throw Exception('Location permissions are permanently denied. Please enable in app settings.');
     }
 
+    // Pre-seed active order display ID if the caller already knows it.
+    if (tripId != null && tripId.isNotEmpty) {
+      _activeOrderDisplayId = tripId;
+      debugPrint('[LocationService] Pre-seeded active order display ID: $tripId');
+    }
+
     _isTracking = true;
+    _emitStatus(WsConnectionStatus.connecting);
     debugPrint('[LocationService] Starting driver location tracking...');
     _startPositionSubscription();
   }
@@ -91,6 +116,7 @@ class LocationService {
     _activeOrderId = null;
     _activeOrderDisplayId = null;
     _closeWebSocket();
+    _emitStatus(WsConnectionStatus.disconnected);
   }
 
   void _startPositionSubscription() {
@@ -300,9 +326,17 @@ class LocationService {
   }
 
   /// Builds the WebSocket URI for the tracking endpoint.
+  ///
+  /// Auth tokens are deliberately NOT included in the URL — they are sent via
+  /// a first-frame `auth` handshake after the socket connects (issue #5739) —
+  /// so they never leak into proxies, logs or web analytics.
   Uri _buildWsUri() {
     final session = Supabase.instance.client.auth.currentSession;
-    final token = session?.accessToken ?? '';
+    final token = session?.accessToken;
+    if (token != null && token.isNotEmpty) {
+      _authToken = token;
+      unawaited(AuthTokenStore.persist(token));
+    }
     final driverId = Supabase.instance.client.auth.currentUser?.id ?? '';
 
     final baseUri = Uri.parse(defaultApiBaseUrl);
@@ -319,7 +353,6 @@ class LocationService {
       port: baseUri.hasPort ? baseUri.port : null,
       path: wsPath,
       queryParameters: {
-        if (token.isNotEmpty) 'token': token,
         'driver_id': driverId,
       },
     );
@@ -329,7 +362,7 @@ class LocationService {
       _channel = WebSocketChannel.connect(wsUri);
       _reconnectAttempts = 0;
       _lastCloseCode = null;
-      
+      _emitStatus(WsConnectionStatus.connected);
       _startHeartbeat();
 
       _socketSubscription = _channel!.stream.listen(
@@ -339,52 +372,50 @@ class LocationService {
           try {
             final parsed = jsonDecode(message.toString());
             if (parsed is Map && parsed['code'] != null) {
-              _lastCloseCode = (parsed['code'] as num?)?.toInt();
+              _lastCloseCode = parsed['code'] as int;
             }
           } catch (_) {}
         },
         onDone: () {
           debugPrint('[LocationService] WebSocket closed (code: $_lastCloseCode)');
+          _emitStatus(WsConnectionStatus.disconnected);
           if (_lastCloseCode == 4001 || _lastCloseCode == 4003) {
             debugPrint('[LocationService] Auth rejected (code $_lastCloseCode) — not reconnecting');
-            stopTracking();
+            _isTracking = false;
             return;
           }
           _scheduleReconnect();
         },
         onError: (error) {
           debugPrint('[LocationService] WebSocket error: $error');
+          _emitStatus(WsConnectionStatus.disconnected);
           _scheduleReconnect();
         },
       );
     } catch (e) {
       debugPrint('[LocationService] Error connecting to WebSocket: $e');
+      _emitStatus(WsConnectionStatus.disconnected);
       _scheduleReconnect();
     }
   }
 
-  /// Creates a [ResilientWebSocket] and subscribes to its message stream.
-  ///
-  /// The resilient wrapper handles reconnection with exponential backoff,
-  /// periodic heartbeat pings, and cleanup — replacing the manual
-  /// [_scheduleReconnect] and [_startHeartbeat] that were needed before.
-  Future<void> _connectWebSocket() async {
-    if (_resilientWs != null) return;
+  /// Resolves the auth token used for the WS handshake, preferring the live
+  /// Supabase session and falling back to the token persisted in OS-backed
+  /// secure storage (issue #5739).
+  Future<String?> _resolveAuthToken() async {
+    final session = Supabase.instance.client.auth.currentSession;
+    final token = session?.accessToken;
+    if (token != null && token.isNotEmpty) {
+      await AuthTokenStore.persist(token);
+      return token;
+    }
+    return AuthTokenStore.read();
+  }
 
-    final wsUri = _buildWsUri();
-    final redactedUrl = wsUri.toString().replaceAll(RegExp(r'token=[^&]+'), 'token=[REDACTED]');
-    debugPrint('[LocationService] Connecting to WebSocket at: $redactedUrl');
-
-    // urlFactory returns a fresh URI on each reconnect so short-lived auth
-    // tokens are automatically refreshed.
-    _resilientWs = ResilientWebSocket(
-      wsUri.toString(),
-      urlFactory: () => _buildWsUri().toString(),
-      onConnect: () {
-        _lastCloseCode = null;
-        debugPrint('[LocationService] WebSocket connected');
-      },
-    );
+    _emitStatus(WsConnectionStatus.reconnecting);
+    final delay = Duration(seconds: _reconnectAttempts == 0 ? 2 : 2 * _reconnectAttempts);
+    final capped = delay > const Duration(seconds: 30) ? const Duration(seconds: 30) : delay;
+    _reconnectAttempts++;
 
     _socketSubscription = _resilientWs!.stream.listen(
       (message) {
@@ -428,4 +459,19 @@ class LocationService {
     _resilientWs?.close();
     _resilientWs = null;
   }
+
+  /// Call once when the app is permanently shutting down to close the status
+  /// stream and prevent resource leaks.
+  void dispose() {
+    stopTracking();
+    _statusController.close();
+  }
+}
+
+/// WebSocket connection state emitted by [LocationService.connectionStatus].
+enum WsConnectionStatus {
+  connecting,
+  connected,
+  reconnecting,
+  disconnected,
 }

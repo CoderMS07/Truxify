@@ -9,7 +9,7 @@ interface IVerifier {
         uint[2] memory a,
         uint[2][2] memory b,
         uint[2] memory c,
-        uint[] memory input
+        uint[2] memory input
     ) external view returns (bool);
 }
 
@@ -152,13 +152,8 @@ contract zkEVM is Ownable, ReentrancyGuard, Pausable {
         require(transactionsData.length > 0, "Empty batch");
         require(transactionsData.length <= MAX_BATCH_SIZE, "Batch too large");
 
-        // Verify proof
-        require(IVerifier(verifier).verifyProof(
-            [uint(0), uint(0)],
-            [[uint(0), uint(0)], [uint(0), uint(0)]],
-            [uint(0), uint(0)],
-            new uint[](0)
-        ), "Invalid proof");
+        // Verify proof; zero, empty, and malformed proofs are rejected
+        require(_verifyProof(proof), "Invalid proof");
 
         // Process transactions
         bytes32[] memory txHashes = new bytes32[](transactionsData.length);
@@ -233,13 +228,8 @@ contract zkEVM is Ownable, ReentrancyGuard, Pausable {
         require(amount > 0, "Amount must be > 0");
         require(currentState.balances[msg.sender] >= amount, "Insufficient balance");
 
-        // Verify withdrawal proof
-        require(IVerifier(verifier).verifyProof(
-            [uint(0), uint(0)],
-            [[uint(0), uint(0)], [uint(0), uint(0)]],
-            [uint(0), uint(0)],
-            new uint[](0)
-        ), "Invalid proof");
+        // Verify withdrawal proof; zero, empty, and malformed proofs are rejected
+        require(_verifyProof(proof), "Invalid proof");
 
         currentState.balances[msg.sender] -= amount;
         payable(msg.sender).transfer(amount);
@@ -302,6 +292,13 @@ contract zkEVM is Ownable, ReentrancyGuard, Pausable {
     }
 
     // ============ Internal Functions ============
+
+    function _verifyProof(bytes calldata proof) internal view returns (bool) {
+        require(proof.length > 0, "Empty proof");
+        (uint[2] memory a, uint[2][2] memory b, uint[2] memory c, uint[2] memory input) =
+            abi.decode(proof, (uint[2], uint[2][2], uint[2], uint[2]));
+        return IVerifier(verifier).verifyProof(a, b, c, input);
+    }
 
     function _verifySignature(
         bytes32 hash,

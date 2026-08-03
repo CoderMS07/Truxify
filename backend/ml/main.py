@@ -1,11 +1,10 @@
 import asyncio
-import hmac
 import logging
 import os
 import time
 import numpy as np
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Header, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -16,7 +15,11 @@ from app.models.demand_forecast import (
     train_demand_forecast_model,
     FEATURE_NAMES,
 )
-from app.models.price_prediction import predict_price, train_price_model
+from app.models.price_prediction import (
+    predict_price,
+    train_price_model,
+    PriceModelDataUnavailableError,
+)
 from app.models.bilateral_matcher import match_bilateral
 from app.models.driver_profit import driver_profit_predictor
 from app.models.bin_packing import optimise_packing
@@ -27,7 +30,7 @@ from app.models.mid_trip_reoptimiser import find_mid_trip_loads
 from app.models.base import model_exists
 from app.models.demand_forecast import MODEL_NAME as DEMAND_MODEL_NAME
 from app.models.price_prediction import MODEL_NAME as PRICE_MODEL_NAME
-from routes import register_ml_routers
+from routes import register_ml_routers, verify_api_key
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,21 +41,13 @@ logger = logging.getLogger(__name__)
 # Track loaded models for health reporting
 loaded_models: set[str] = set()
 
-async def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
-    ml_api_key = os.environ.get("ML_API_KEY")
-    if not ml_api_key:
-        logger.warning("ML_API_KEY not set - ML engine is unavailable (503)")
-        raise HTTPException(status_code=503, detail="ML engine not configured: missing ML_API_KEY")
-    if not x_api_key or not hmac.compare_digest(x_api_key, ml_api_key):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-
 app = FastAPI(
     title="Truxify ML Engine",
     description="ML prediction service for load matching, pricing, ETA, and route optimization",
     version="1.0.0",
-    docs_url="/docs",      # Swagger UI at /docs
-    redoc_url="/redoc", 
+    # Swagger/ReDoc interactive docs are disabled in production.
+    docs_url=None if os.environ.get("ENVIRONMENT") == "production" else "/docs",
+    redoc_url=None if os.environ.get("ENVIRONMENT") == "production" else "/redoc",
 )
 
 
@@ -429,9 +424,17 @@ async def predict_price_endpoint(input: PricePredictInput, _auth=Depends(verify_
             fuel_price=input.fuel_price,
             cargo_type=input.cargo_type,
         )
+        if result is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Price model unavailable: no model trained on real historical data. "
+                       "Train via POST /train/price once completed trips exist.",
+            )
         return PricePredictOutput(**result)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Price prediction failed: %s", e)
         raise HTTPException(status_code=500, detail="Price prediction failed")
@@ -631,6 +634,9 @@ async def train_price_endpoint(_auth=Depends(verify_api_key)):
             timeout=timeout,
         )
         return TrainResponse(status="success", metrics=metrics)
+    except PriceModelDataUnavailableError as e:
+        logger.warning("Price model training skipped: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
     except asyncio.TimeoutError:
         logger.error("Price model training timed out after %d seconds", timeout)
         raise HTTPException(status_code=504, detail="Training timed out")

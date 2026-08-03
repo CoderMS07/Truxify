@@ -155,7 +155,7 @@ export function convertToPaisa(priceInInr) {
   if (typeof priceInInr !== 'number' || !Number.isFinite(priceInInr)) {
     return null;
   }
-  return Math.round(priceInInr * 100);
+  return Math.round(priceInInr * 100 + Number.EPSILON);
 }
 
 function reject(reason, detail) {

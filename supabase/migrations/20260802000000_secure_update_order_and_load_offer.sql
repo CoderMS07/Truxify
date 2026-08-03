@@ -48,7 +48,10 @@ BEGIN
   END IF;
 
   -- Ownership guard: an authenticated caller may only update their own order.
-  IF auth.uid() IS NOT NULL AND auth.uid() <> v_customer_id THEN
+  -- get_profile_id() maps the Firebase JWT sub to profiles.id, which is what
+  -- orders.customer_id actually stores (auth.uid() is the Firebase UID and
+  -- would never match).
+  IF auth.uid() IS NOT NULL AND get_profile_id() <> v_customer_id THEN
     RAISE EXCEPTION 'Unauthorized: you can only update your own orders';
   END IF;
 

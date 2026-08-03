@@ -4,14 +4,14 @@ import express from 'express';
 import crypto from 'crypto';
 
 // ---------------------------------------------------------------------------
-// Tests WITHOUT WEBHOOK_SECRET (verification skipped in non-production)
+// Tests WITHOUT WEBHOOK_SECRET (verification fails closed)
 // ---------------------------------------------------------------------------
 import webhookRoutes from '../../src/routes/webhookRoutes.js';
 import { dlqService } from '../../src/services/webhook/dlqService.js';
 
 function buildApp(webhookRouter) {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
   app.use('/api/webhooks', webhookRouter);
   return app;
 }
@@ -24,7 +24,7 @@ describe('Webhook Routes', () => {
   describe('POST /api/webhooks/escrow (no WEBHOOK_SECRET)', () => {
     const app = buildApp(webhookRoutes);
 
-    it('returns 200 on successful processing', async () => {
+    it('rejects requests when WEBHOOK_SECRET is unset', async () => {
       const enqueueSpy = vi.spyOn(dlqService, 'enqueueFailure').mockResolvedValue(true);
       const res = await request(app)
         .post('/api/webhooks/escrow')
@@ -34,12 +34,12 @@ describe('Webhook Routes', () => {
           txHash: '0x123'
         });
 
-      expect(res.status).toBe(200);
-      expect(res.body.received).toBe(true);
+      expect(res.status).toBe(500);
+      expect(res.body.error).toBe('Webhook secret not configured');
       expect(enqueueSpy).not.toHaveBeenCalled();
     });
 
-    it('returns 202 and enqueues to DLQ on processing failure', async () => {
+    it('rejects requests when WEBHOOK_SECRET is unset even on processing failure', async () => {
       const enqueueSpy = vi.spyOn(dlqService, 'enqueueFailure').mockResolvedValue(true);
       const res = await request(app)
         .post('/api/webhooks/escrow')
@@ -50,16 +50,9 @@ describe('Webhook Routes', () => {
           simulateFailure: true
         });
 
-      expect(res.status).toBe(202);
-      expect(res.body.received).toBe(true);
-      expect(res.body.status).toBe('queued_for_retry');
-
-      expect(enqueueSpy).toHaveBeenCalledWith(
-        'escrow',
-        'EscrowRefunded',
-        expect.any(Object),
-        expect.any(Error)
-      );
+      expect(res.status).toBe(500);
+      expect(res.body.error).toBe('Webhook secret not configured');
+      expect(enqueueSpy).not.toHaveBeenCalled();
     });
 
     it('returns 404 for unknown webhook paths', async () => {

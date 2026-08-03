@@ -3,6 +3,14 @@ import { corsMiddleware } from './middleware/cors.js'
 import helmet from 'helmet' // 🔒 ADDED HELMET IMPORT FOR ISSUES #361 & #944
 import http from 'http'
 import dotenv from 'dotenv'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+
+dotenv.config({ path: path.resolve(__dirname, '../.env') })
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') })
 import hppProtection from './middleware/hppProtection.js';
 
 import { globalLimiter, authLimiter, healthLimiter } from './middleware/rateLimiter.js'
@@ -44,7 +52,8 @@ import lookupRoutes from './routes/lookupRoutes.js'
 import { getRoot, notFound } from './controllers/rootController.js'
 import webhookRoutes from './routes/webhookRoutes.js'
 import auditRoutes from './routes/auditRoutes.js'
-import voiceRoutes from './routes/voiceRoutes.js'
+import paymentRoutes from './routes/paymentRoutes.js'
+import userRoutes from './routes/userRoutes.js'
 import demandRoutes from './routes/demandRoutes.js'
 
 // ============================================================================
@@ -161,6 +170,12 @@ if (process.env.BYPASS_AUTH === 'true' && process.env.NODE_ENV !== 'development'
   logger.fatal('BYPASS_AUTH is enabled outside development. This is a severe security misconfiguration. Set BYPASS_AUTH=false (or unset it), and set NODE_ENV=development if you need local testing.')
   process.exit(1)
 }
+// ENABLE_TEST_AUTH allows plaintext x-user-id/x-user-role header impersonation
+// and must never be active outside a dedicated test harness (NODE_ENV=test).
+if (process.env.ENABLE_TEST_AUTH === 'true' && process.env.NODE_ENV !== 'test') {
+  logger.fatal('ENABLE_TEST_AUTH is enabled outside a test harness. This is a severe security misconfiguration — it trusts client-supplied identity headers. Only set it in NODE_ENV=test processes.')
+  process.exit(1)
+}
 if (process.env.NODE_ENV === 'production' && !process.env.ML_API_KEY) {
   logger.fatal('ML_API_KEY is not set. ML engine calls will fail with 401 errors. Set ML_API_KEY and restart.')
   process.exit(1)
@@ -171,6 +186,22 @@ if (process.env.NODE_ENV === 'production' && (!process.env.POLYGON_RPC_URL || !p
 }
 if (!process.env.DRIVER_LOGIN_OTP) {
   logger.warn('DRIVER_LOGIN_OTP is not set. Driver OTP login will be disabled until it is configured in production.')
+}
+if (!process.env.WEBHOOK_SECRET) {
+  logger.fatal('WEBHOOK_SECRET is not set. Escrow webhook signature verification cannot run and webhook requests will be rejected. Set WEBHOOK_SECRET and restart.')
+  process.exit(1)
+}
+
+// ============================================================================
+// 🆕 WEBHOOK VALIDATION
+// ============================================================================
+if (!process.env.WEBHOOK_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    logger.fatal('WEBHOOK_SECRET is not set. POST /api/webhooks/escrow would fail closed and reject all incoming webhooks. Set WEBHOOK_SECRET and restart.')
+    process.exit(1)
+  } else {
+    logger.warn('⚠️ WEBHOOK_SECRET is not set. Webhook requests will be rejected (fail-closed) until it is configured.')
+  }
 }
 
 // ============================================================================
@@ -258,3 +289,525 @@ validateEscrowSetup().then((valid) => {
     logger.warn('⚠️ Escrow setup validation failed. On-chain escrow features may not work correctly.')
   }
 }).catch(err => console.error(err))
+
+const app = express()
+const server = http.createServer(app)
+app.use(headerSizeMonitor);
+// Trust proxy required for rate-limiting behind load balancers/Docker.
+// TRUST_PROXY env var allows each deployment to set the correct proxy count:
+//   - Production (behind Nginx/ALB/Cloudflare) → 1 (default)
+//   - Docker Compose (no proxy)                 → 0
+//   - Multiple proxy hops (e.g. Cloudflare→Nginx) → 2
+const trustProxy = process.env.TRUST_PROXY !== undefined ? Number(process.env.TRUST_PROXY) : 1
+app.set('trust proxy', trustProxy)
+
+// ============================================================================
+// 🔒 ADVANCED SECURITY HEADERS (HELMET CONFIGURATION)
+// Resolves missing security headers from Issues #361 and #944
+// ============================================================================
+app.use(securityHeaderDuplicates);
+app.use(helmet({
+  // Content Security Policy (CSP) - Prevents XSS and data injection
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"], // Strict CSP enforced
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: []
+    }
+  },
+  // HTTP Strict Transport Security (HSTS) - Enforces HTTPS
+  hsts: {
+    maxAge: 31536000, // 1 year
+    includeSubDomains: true,
+    preload: true
+  },
+  // X-Frame-Options - Prevents clickjacking by disabling iframes
+  frameguard: {
+    action: 'deny'
+  },
+  // X-Content-Type-Options - Prevents MIME-sniffing
+  noSniff: true,
+  // Additional modern security headers
+  crossOriginEmbedderPolicy: false, // Set false if breaking third-party images/maps
+  crossOriginOpenerPolicy: { policy: 'same-origin' },
+  crossOriginResourcePolicy: { policy: 'cross-origin' }, // Allows Flutter app to fetch resources
+  dnsPrefetchControl: { allow: false },
+  hidePoweredBy: true, // Removes X-Powered-By: Express
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  permissionsPolicy: {
+    features: {
+      camera: [],
+      microphone: [],
+      geolocation: [],
+      payment: [],
+      usb: [],
+      fullscreen: ['self']
+    }
+  },
+  xssFilter: true
+}))
+
+app.use(corsMiddleware)
+
+// ── Production header sanitization (defense in depth) ────────────────
+// Even if a proxy or misconfiguration lets dev auth headers through,
+// strip them before they reach any route handler in production.
+if (process.env.NODE_ENV === 'production') {
+  app.use((req, res, next) => {
+    delete req.headers['x-user-id']
+    delete req.headers['x-user-role']
+    delete req.headers['x-user-name']
+    next()
+  })
+}
+
+const earningsRouter = require('../routes/earnings');
+app.use('/api/earnings', earningsRouter);
+
+// Payload parsers
+const jsonBodyLimit =
+  process.env.JSON_BODY_LIMIT || '1mb';
+const urlEncodedBodyLimit =
+  process.env.URLENCODED_BODY_LIMIT || '1mb';
+
+app.use(
+  express.json({
+    limit: jsonBodyLimit,
+    strict: true,
+    verify: (req, _res, buf) => {
+      req.rawBody = buf.toString('utf8');
+    },
+  })
+);
+
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: urlEncodedBodyLimit,
+  })
+);
+
+// ============================================================================
+// 🆕 OPENTELEMETRY TRACING MIDDLEWARE
+// ============================================================================
+app.use(tracingMiddleware)
+
+// Track request start time
+app.use((req, res, next) => {
+  req._startTime = Date.now()
+  next()
+})
+
+// ============================================================================
+// CORRELATION ID + REQUEST ID + REQUEST LOGGER
+// Registered before all routes and rate limiters so that every incoming
+// request (including rate-limited or 404) is logged with a correlation ID.
+// 1. correlationIdMiddleware — sets up AsyncLocalStorage so all downstream
+//    log calls automatically include the correlationId (via logger Proxy).
+// 2. requestIdMiddleware   — adds X-Request-Id header & req.requestId.
+// 3. requestLogger         — logs request start / finish metadata.
+// ============================================================================
+app.use(correlationIdMiddleware)
+app.use(requestIdMiddleware)
+app.use(requestLogger)
+
+app.use(hppProtection)
+app.use(suspiciousRequests)
+
+// Enforce a known request content-type on mutating requests (POST/PUT/PATCH).
+// `requireJsonContent` only rejects unrecognized media types; the three
+// allowed types match the parsers registered above.
+app.use(requireJsonContent)
+
+// ============================================================================
+// 🆕 FRAUD DETECTION MIDDLEWARE (Global)
+// ============================================================================
+app.use(fraudDetectionMiddleware)
+app.use(networkAnalysisMiddleware)
+
+// ============================================================================
+// RATE LIMITING
+// ============================================================================
+app.use('/api/health', healthLimiter)
+app.use('/api/health', healthRoutes)
+app.use('/api/v1/health', healthLimiter)
+app.use('/api/v1/health', healthRoutes)
+app.use('/api/', globalLimiter)
+app.use('/api/v1/trips', tripRoutes)
+
+// ============================================================================
+// REQUEST-SCOPED CACHE — created per-request, destroyed after response.
+// Registers before all routes so every request handler benefits.
+// ============================================================================
+app.use('/api', requestCacheMiddleware)
+
+// ============================================================================
+// REST API ROUTING
+// ============================================================================
+app.use('/api/orders', orderRoutes)
+app.use('/api/payments', paymentRoutes)
+app.use('/api/driver', deadheadRoutes)
+app.use('/api/orders', trackingRoutes)
+app.use('/api/driver', driverRoutes)
+app.use('/api/loads', loadRoutes)
+app.use('/api/support', supportRoutes)
+app.use('/api/profile', profileRoutes)
+app.use('/api/users', userRoutes)
+app.use('/api/devices', deviceRoutes)
+app.use('/api/driver/documents', documentRoutes)
+app.use('/api/maintenance', maintenancePhotoRoutes)
+app.use('/api/trucks', truckRoutes)
+app.use('/api/v1', lookupRoutes)
+app.use('/api/public', publicTrackingRoutes)
+app.use('/api/auth', authLimiter, authRoutes)
+app.use('/api/v1/admin', adminRoutes)
+app.use('/api/v1/admin/audit-logs', auditRoutes)
+app.use('/api/voice', voiceRoutes)
+app.use('/api/demand-heatmap', demandRoutes)
+
+// ============================================================================
+// WEBHOOK ROUTES
+// ============================================================================
+app.use('/api/webhooks', webhookRoutes)
+
+// ============================================================================
+// 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
+// ============================================================================
+app.use('/api/verify', verificationRoutes)
+app.use('/api/oracle', oracleRoutes)
+
+// 🆕 Oracle Health Check Endpoint
+app.get('/api/oracle/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    version: '1.0.0',
+    oracleEnabled: true,
+    consensusThreshold: process.env.ORACLE_CONSENSUS_THRESHOLD || 2,
+    providers: {
+      chainlink: process.env.CHAINLINK_ENABLED === 'true',
+      customVerifier: true,
+      backupOracle: process.env.BACKUP_ORACLE_ENABLED === 'true'
+    },
+    timestamp: new Date().toISOString()
+  })
+})
+
+// ============================================================================
+// 🆕 GEOGRAPHIC SHARDING ROUTES
+// ============================================================================
+app.use('/api', shardRoutes)
+
+// 🆕 Shard Health Check Endpoint
+app.get('/api/shard/health', async (req, res) => {
+  try {
+    const status = await shardManager.healthCheck();
+    res.json({
+      status: 'healthy',
+      shards: status,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      error: error.message
+    });
+  }
+})
+
+
+// ============================================================================
+// 🆕 WEBRTC P2P MESH NETWORK ROUTES
+// ============================================================================
+app.use('/api', webrtcRoutes)
+
+// ============================================================================
+// 🆕 ROOT SUBSYSTEM ROUTES (eBPF, WASI, WASM, Snyk, Liquibase)
+// ============================================================================
+app.use('/api', ebpfRoutes)
+app.use('/api', wasiRoutes)
+app.use('/api', wasmRoutes)
+app.use('/api', snykRoutes)
+app.use('/api', liquibaseRoutes)
+
+// 🆕 WebRTC Health Check Endpoint
+app.get('/api/webrtc/status', (req, res) => {
+  res.json({
+    status: 'healthy',
+    signaling: true,
+    version: '1.0.0',
+    websocketPath: '/webrtc',
+    timestamp: new Date().toISOString()
+  })
+})
+
+// ============================================================================
+// 🆕 FRAUD DETECTION ROUTES
+// ============================================================================
+app.use('/api', fraudRoutes)
+
+// 🆕 Fraud Health Check Endpoint
+app.get('/api/fraud/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    version: '1.0.0',
+    threshold: process.env.FRAUD_THRESHOLD || 0.7,
+    behavioralAnalytics: process.env.BEHAVIORAL_ANALYTICS_ENABLED !== 'false',
+    networkAnalysis: process.env.NETWORK_ANALYSIS_ENABLED !== 'false',
+    timestamp: new Date().toISOString()
+  })
+})
+
+
+// ============================================================================
+// 🆕 ZK-PROOFS FOR DRIVER KYC ROUTES
+// ============================================================================
+app.use('/api', zkpRoutes)
+
+// 🆕 ZK-Proof Health Check Endpoint
+app.get('/api/zkp/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    version: '1.0.0',
+    service: 'zk-snarks',
+    verifierContract: process.env.KYC_VERIFIER_CONTRACT || 'not-set',
+    timestamp: new Date().toISOString()
+  })
+})
+
+
+
+// ============================================================================
+// 🆕 MULTI-CLOUD DISASTER RECOVERY ROUTES
+// ============================================================================
+app.use('/api', drRoutes)
+
+// 🆕 DR Health Check Endpoint
+app.get('/api/dr/health', async (req, res) => {
+  try {
+    const health = await multiCloudService.checkHealth();
+    res.json({
+      status: 'healthy',
+      data: health,
+      activeCloud: multiCloudService.activeCloud,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      error: error.message
+    });
+  }
+})
+
+// ============================================================================
+// 🆕 OPENTELEMETRY HEALTH CHECK
+// ============================================================================
+app.get('/api/tracing/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    service: 'opentelemetry',
+    version: '1.0.0',
+    isEnabled: tracing.isInitialized,
+    timestamp: new Date().toISOString()
+  })
+})
+
+
+// Setup Swagger Documentation
+setupSwagger(app)
+
+// Root route
+app.get('/', getRoot)
+
+app.use(responseSanitizer)
+
+// Handling 404 Route Not Found
+app.use(notFound)
+// Sentry error handler must come before the generic error handler;
+// it captures the exception automatically so we don't call captureException here.
+app.use(sentryErrorHandler())
+
+// Error handling middleware
+app.use(errorHandler)
+
+// ============================================================================
+// WEBSOCKET SERVER INIT (wait for MongoDB before accepting WebSocket connections)
+// ============================================================================
+await waitForMongoDb()
+initWebSocketServer(server, orderRepository)
+initLocationServer(server)
+
+// Expose WebSocket state for health aggregation
+globalThis.__truxify_wsState = wsTesting.getShutdownState()
+
+// ============================================================================
+// 🆕 WEBRTC SIGNALING SERVER INIT
+// ============================================================================
+initWebRTCSignaling(server)
+logger.info('🆕 WebRTC Signaling Server initialized at /webrtc')
+
+// ============================================================================
+// START SERVER
+// ============================================================================
+const PORT = process.env.PORT || 5000
+
+server.listen(PORT, () => {
+  logger.info(`Truxify API listening on port ${PORT}`)
+  logger.info(`🆕 OpenTelemetry Tracing enabled (Jaeger: http://localhost:16686)`)
+  logger.info(`🆕 Oracle Service enabled with threshold: ${process.env.ORACLE_CONSENSUS_THRESHOLD || 2}`)
+  logger.info(`🆕 Verification endpoints available at /api/verify and /api/oracle`)
+  logger.info(`🆕 Geographic Sharding enabled with 4 shards (North, South, East, West)`)
+
+  logger.info(`🆕 WebRTC P2P Mesh Network available at ws://localhost:${PORT}/webrtc`)
+  logger.info(`🆕 Fraud Detection enabled with threshold: ${process.env.FRAUD_THRESHOLD || 0.7}`)
+
+  logger.info(`🆕 ZK-Proof KYC Verification enabled with contract: ${process.env.KYC_VERIFIER_CONTRACT || 'not-deployed'}`)
+
+
+  startEscrowRefundReconciliation(orderRepository)
+  startReputationReconciliation(orderRepository)
+  startDlqWorker()
+  startStaleOrderWorker()
+  startDocumentExpiryWorker()
+
+  // Register worker states for health aggregation
+  globalThis.__truxify_workers = {
+    escrowRefundReconciliation: true,
+    reputationReconciliation: true,
+    dlqWorker: true,
+    staleOrderWorker: true,
+    documentExpiryWorker: true,
+  }
+})
+
+// ============================================================================
+// GRACEFUL SHUTDOWN
+// ============================================================================
+const SHUTDOWN_TIMEOUT_MS = 10_000
+
+/** @type {boolean} */
+let shuttingDown = false
+
+async function shutdown (signal) {
+  // Guard against recursive shutdown calls (e.g. an error inside shutdown
+  // triggering uncaughtException while we're already shutting down).
+  if (shuttingDown) {
+    logger.warn(`[shutdown] ${signal} received but shutdown already in progress — forcing immediate exit.`)
+    process.exit(1)
+  }
+  shuttingDown = true
+
+  logger.info('Received shutdown signal, initiating graceful shutdown...');
+
+  // Stop background workers
+  stopEscrowReleaseReconciliation()
+  stopEscrowRefundReconciliation()
+  stopReputationReconciliation()
+  stopDlqWorker()
+  stopDocumentExpiryWorker()
+  fraudDetection.destroy()
+  CacheManager.shutdown()
+
+  const forceExit = setTimeout(() => {
+    logger.error('[shutdown] Timeout exceeded — forcing exit.')
+    process.exit(1)
+  }, SHUTDOWN_TIMEOUT_MS)
+  forceExit.unref() // Don't let this timer keep the process alive
+
+  let exitCode = 0
+
+  try {
+    // 1. Stop accepting new HTTP requests; wait for in-flight ones to finish
+    await new Promise((resolve, reject) =>
+      server.close(err => (err ? reject(err) : resolve()))
+    )
+    logger.info('[shutdown] HTTP server closed.')
+
+    // 2. Flush buffered telemetry and close WebSocket resources
+    await closeWebSocketServer()
+    await closeLocationServer()
+    logger.info('[shutdown] WebSocket resources closed.')
+
+    // 3. Close shard connections
+    await shardManager.closeAllConnections()
+    logger.info('[shutdown] Shard connections closed.')
+
+    // 4. Close WebRTC signaling server
+    await closeWebRTCSignaling()
+    logger.info('[shutdown] WebRTC signaling server closed.')
+
+    // 5. Close OpenTelemetry tracing
+    await tracing.shutdown()
+    logger.info('[shutdown] OpenTelemetry tracing shut down.')
+
+    // 6. Close database/cache connections
+    await closeDbConnections()
+
+    logger.info('[shutdown] Clean exit.')
+  } catch (err) {
+    logger.error({ err }, '[shutdown] Error during shutdown')
+    exitCode = 1
+  } finally {
+    clearTimeout(forceExit)
+    process.exit(exitCode)
+  }
+}
+
+// Handle uncaught exceptions and unhandled rejections.
+// Both handlers route through shutdown() so that connections are drained
+// before exit. The forceExit timer inside shutdown() catches hangs.
+process.on('uncaughtException', async (err) => {
+  logger.fatal({ err }, 'Uncaught exception — exiting')
+  await flushSentry(2000)
+  await shutdown('uncaughtException')
+})
+
+process.on('unhandledRejection', async (reason) => {
+  logger.error({ reason }, 'Unhandled promise rejection')
+  await shutdown('unhandledRejection')
+})
+
+process.on('SIGTERM', () => shutdown('SIGTERM')) // Docker / Kubernetes stop
+process.on('SIGINT', () => shutdown('SIGINT')) // Ctrl+C in dev
+
+app.use((err, req, res, next) => {
+  if (err?.type === 'entity.too.large') {
+    logger.warn(
+      {
+        requestId: req.requestId,
+        ip: req.ip,
+        method: req.method,
+        path: req.originalUrl,
+      },
+      'Request payload exceeded configured limit'
+    );
+
+    return res.status(413).json({
+      error: 'Payload too large',
+    });
+  }
+
+  if (
+    err instanceof SyntaxError &&
+    err.status === 400 &&
+    'body' in err
+  ) {
+    logger.warn(
+      {
+        requestId: req.requestId,
+        ip: req.ip,
+        method: req.method,
+        path: req.originalUrl,
+      },
+      'Malformed JSON payload received'
+    );
+
+    return res.status(400).json({
+      error: 'Malformed JSON payload',
+    });
+  }
+
+  next(err);
+});

@@ -84,11 +84,10 @@ class AtomicSwapService {
     }
 
     async executeSwap(swapId, secret) {
-        try {
-            const hashLock = this.generateHashLock(secret);
-            const tx = await this.swap.executeSwap(swapId, hashLock, {
-                gasLimit: 150000
-            });
+    try {
+        const tx = await this.swap.executeSwap(swapId, secret, {
+            gasLimit: 150000
+        });
             const receipt = await tx.wait();
 
             await this.updateSwapStatus(swapId, 'executed', receipt.hash);
@@ -180,11 +179,10 @@ class AtomicSwapService {
     }
 
     async executeCrossChainSwap(swapId, secret, proof) {
-        try {
-            const hashLock = this.generateHashLock(secret);
-            const tx = await this.swap.executeCrossChainSwap(swapId, hashLock, proof, {
-                gasLimit: 200000
-            });
+    try {
+        const tx = await this.swap.executeCrossChainSwap(swapId, secret, proof, {
+            gasLimit: 200000
+        });
             const receipt = await tx.wait();
 
             await this.updateCrossChainSwapStatus(swapId, 'executed', receipt.hash);

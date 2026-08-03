@@ -20,7 +20,7 @@ async function _publishProfileInvalidation(eventOpts) {
   }
 }
 
-export const TTL_SECONDS = parseInt(process.env.REDIS_CACHE_TTL || '900', 10); // 15 minutes default
+export const TTL_SECONDS = parseInt(process.env.REDIS_CACHE_TTL || '120', 10); // 2 minutes default so role/status changes (suspension, demotion) propagate quickly
 export const TOMBSTONE_TTL_SECONDS = 30; // 30 seconds
 
 let cacheHits = 0;

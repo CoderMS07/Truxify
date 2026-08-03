@@ -65,6 +65,9 @@ function createMockSupabase(store = {}) {
                   rows = rows.filter(r => r[f.col] === f.val);
                 }
               }
+              if (this._maybeSingle) {
+                return resolve({ data: rows[0] || null, error: null });
+              }
               if (this._single) {
                 return resolve({ data: rows[0] || null, error: rows[0] ? null : { message: 'not found' } });
               }
