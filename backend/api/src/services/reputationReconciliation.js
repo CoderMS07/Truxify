@@ -103,19 +103,21 @@ export async function reconcileFailedReputationUpdates() {
     }
 
     if (lockAcquired && redisClient) {
-      await redisClient.del(LOCK_KEY).catch((err) => {
+      try {
+        await redisClient.del(LOCK_KEY);
+        logger.debug('[reputation-reconciliation] Lock released successfully');
+      } catch (err) {
         logger.error(
           { err, lockKey: LOCK_KEY },
-          '[reputation-reconciliation] Failed to release Redis lock.'
+          'Failed to release reputation reconciliation lock'
         );
-      });
+      }
     }
 
     // Always reset running flag so fallback/single-instance logic doesn't permanently deadlock
     reconciliationRunning = false;
   }
 }
-
 export function startReputationReconciliation() {
   if (reconciliationTimer) return;
 

@@ -196,15 +196,27 @@ export async function processDocumentExpiryBatch() {
     }
 
     if (lockAcquired && redisClient) {
-      await redisClient
-        .eval(RELEASE_LOCK_SCRIPT, 1, LOCK_KEY, lockToken)
-        .catch((err) => {
-          logger.error(
-            { err, lockKey: LOCK_KEY },
-            '[document-expiry] Failed to release Redis lock.'
-          );
-        });
-    }
+
+try {
+  const released = await redisClient.eval(
+    RELEASE_LOCK_SCRIPT,
+    1,
+    LOCK_KEY,
+    lockToken
+  );
+
+  if (!released) {
+    logger.warn(
+      { lockKey: LOCK_KEY, lockToken },
+      'Document expiry lock release returned 0 - lock may have been released by another process'
+    );
+  }
+} catch (err) {
+  logger.error(
+    { err, lockKey: LOCK_KEY, lockToken },
+    'Failed to release document expiry worker lock'
+  );
+}    }
 
     if (!lockAcquired) {
       workerRunning = false;

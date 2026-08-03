@@ -138,13 +138,12 @@ export function subscribeToInvalidation(namespace, handler) {
 
       if (handlers.size === 0) {
         listeners.delete(namespace);
-
         subscriber.unsubscribe(channel).catch((err) => {
-          logger.error(
-            { err, channel },
-            '[CachePublisher] Failed to unsubscribe from channel.'
+          logger.warn(
+            { err, channel, namespace },
+            'Failed to unsubscribe from Redis channel'
           );
-        });
+        });        
       }
     }
   };

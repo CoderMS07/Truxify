@@ -268,31 +268,30 @@ contract TruxifyUpgradeable is
         return escrowId;
     }
 
-    function releaseEscrow(uint256 escrowId) external nonReentrant whenNotPaused {
-        Escrow storage escrow = escrows[escrowId];
-        require(escrow.customer != address(0), "Escrow not found");
-        require(!escrow.released, "Already released");
-        require(msg.sender == escrow.driver || msg.sender == escrow.customer, "Not authorized");
-        require(!escrow.disputed, "Escrow disputed");
+    function releaseEscrow(uint256 escrowId) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant whenNotPaused {
+    Escrow storage escrow = escrows[escrowId];
+    require(escrow.customer != address(0), "Escrow not found");
+    require(!escrow.released, "Already released");
+    require(!escrow.disputed, "Escrow disputed");
 
-        escrow.released = true;
-        escrow.releasedAt = block.timestamp;
+    escrow.released = true;
+    escrow.releasedAt = block.timestamp;
 
-        (bool success, ) = payable(escrow.driver).call{value: escrow.amount}("");
-        require(success, "Transfer failed");
+    (bool success, ) = payable(escrow.driver).call{value: escrow.amount}("");
+    require(success, "Transfer failed");
 
-        emit EscrowReleased(escrowId, escrow.driver, escrow.amount);
-    }
+    emit EscrowReleased(escrowId, escrow.driver, escrow.amount);
+}
 
-    function disputeEscrow(uint256 escrowId) external whenNotPaused {
-        Escrow storage escrow = escrows[escrowId];
-        require(escrow.customer != address(0), "Escrow not found");
-        require(msg.sender == escrow.customer, "Only customer can dispute");
-        require(!escrow.disputed, "Already disputed");
+function disputeEscrow(uint256 escrowId) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant whenNotPaused {
+    Escrow storage escrow = escrows[escrowId];
+    require(escrow.customer != address(0), "Escrow not found");
+    require(!escrow.disputed, "Already disputed");
+    require(!escrow.released, "Already released");
 
-        escrow.disputed = true;
-        emit EscrowDisputed(escrowId, msg.sender);
-    }
+    escrow.disputed = true;
+    emit EscrowDisputed(escrowId, msg.sender);
+}
 
     // ============ DAO Governance ============
     function createProposal(
