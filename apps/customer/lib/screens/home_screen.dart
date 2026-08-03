@@ -18,9 +18,12 @@ import '../services/profile_service.dart';
 import '../l10n/app_localizations.dart';
 import 'live_tracking_screen.dart';
 import 'notifications_screen.dart';
+import '../utils/driver_utils.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final OrderService? orderService;
+  final ProfileService? profileService;
+  const HomeScreen({super.key, this.orderService, this.profileService});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -28,8 +31,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final CacheManager _cacheManager = CacheManager();
-  final OrderService _orderService = OrderService();
-  final ProfileService _profileService = ProfileService();
+  late final OrderService _orderService;
+  late final ProfileService _profileService;
   bool _isOffline = false;
   bool _isLoading = true;
   String? _error;
@@ -42,6 +45,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _orderService = widget.orderService ?? OrderService();
+    _profileService = widget.profileService ?? ProfileService();
     _loadData();
   }
 
@@ -158,7 +163,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   ShipmentCardData? _buildShipmentFromOrder(Map<String, dynamic> order) {
     final route = '${order['pickup_city'] ?? '?'} \u2192 ${order['drop_city'] ?? '?'}';
-    final driverName = order['driver_name']?.toString() ?? '';
+    final rawDriverName = order['driver_name']?.toString() ?? '';
+    final hasDriver = DriverUtils.isValidDriverName(rawDriverName);
+    final driverName = hasDriver ? rawDriverName : '';
     final truckNum = order['truck_number']?.toString() ?? '';
     final driver = driverName.isNotEmpty ? '$driverName | $truckNum' : (truckNum.isNotEmpty ? truckNum : 'Assigning driver');
     final status = order['status']?.toString() ?? 'Active';

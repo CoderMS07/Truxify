@@ -14,14 +14,24 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/offline/websocket/resilient_websocket.dart';
 import '../theme/app_theme.dart';
 import '../constants/supabase_config.dart';
+import '../services/supabase_service.dart';
 import '../widgets/common_widgets.dart';
 import '../widgets/timeline_connector.dart';
 import '../widgets/timeline_milestone.dart';
 
 class LiveTrackingScreen extends StatefulWidget {
-  const LiveTrackingScreen({super.key, required this.orderId});
-
   final String orderId;
+  final OrderService? orderService;
+  final TrackingService? trackingService;
+  final ResilientWebSocket? trackingWebSocket;
+
+  const LiveTrackingScreen({
+    super.key,
+    required this.orderId,
+    this.orderService,
+    this.trackingService,
+    this.trackingWebSocket,
+  });
 
   @override
   State<LiveTrackingScreen> createState() => _LiveTrackingScreenState();
@@ -63,8 +73,8 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   void initState() {
     super.initState();
 
-    _orderService = OrderService();
-    _trackingService = TrackingService();
+    _orderService = widget.orderService ?? OrderService();
+    _trackingService = widget.trackingService ?? TrackingService();
     _movementController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1500),
@@ -77,8 +87,10 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
       _routeRefreshInterval,
       (_) => _loadRoute(),
     );
-    if (SupabaseConfig.isConfigured) {
-      _subscribeToOrderUpdates();
+    if (SupabaseConfig.isConfigured || widget.trackingWebSocket != null) {
+      if (SupabaseConfig.isConfigured || SupabaseService.mockClient != null) {
+        _subscribeToOrderUpdates();
+      }
       _subscribeToTracking();
     } else {
       debugPrint('[LiveTracking] Supabase not configured — real-time updates disabled');
@@ -89,12 +101,12 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   void dispose() {
     _routeRefreshTimer?.cancel();
     _movementController.dispose();
-    if (SupabaseConfig.isConfigured) {
+    if (SupabaseConfig.isConfigured || SupabaseService.mockClient != null) {
       if (_ordersChannel != null) {
-        Supabase.instance.client.removeChannel(_ordersChannel!);
+        SupabaseService.client.removeChannel(_ordersChannel!);
       }
       if (_supabaseRealtimeChannel != null) {
-        Supabase.instance.client.removeChannel(_supabaseRealtimeChannel!);
+        SupabaseService.client.removeChannel(_supabaseRealtimeChannel!);
       }
     }
     _trackingSubscription?.cancel();
@@ -114,7 +126,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
     wsPath = '$wsPath/ws/tracking';
 
     String buildUrl() {
-      final session = Supabase.instance.client.auth.currentSession;
+      final session = SupabaseService.client.auth.currentSession;
       final token = session?.accessToken ?? '';
       final wsUri = Uri(
         scheme: wsScheme,
@@ -130,19 +142,23 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
     final redactedUrl = initialWsUrl.replaceAll(RegExp(r'token=[^&]+'), 'token=[REDACTED]');
     debugPrint('Connecting to tracking WebSocket at: $redactedUrl');
 
-    _trackingWebSocket = ResilientWebSocket(
-      initialWsUrl,
-      urlFactory: buildUrl,
-      onConnect: () {
-        debugPrint('WebSocket connected, subscribing to order updates...');
-        _trackingWebSocket?.send({
-          'event': 'subscribe_tracking',
-          'data': {
-            'order_display_id': widget.orderId,
-          },
-        });
-      },
-    );
+    if (widget.trackingWebSocket != null) {
+      _trackingWebSocket = widget.trackingWebSocket;
+    } else {
+      _trackingWebSocket = ResilientWebSocket(
+        initialWsUrl,
+        urlFactory: buildUrl,
+        onConnect: () {
+          debugPrint('WebSocket connected, subscribing to order updates...');
+          _trackingWebSocket?.send({
+            'event': 'subscribe_tracking',
+            'data': {
+              'order_display_id': widget.orderId,
+            },
+          });
+        },
+      );
+    }
 
     _trackingSubscription = _trackingWebSocket!.stream.listen((message) {
       debugPrint('Tracking WebSocket message received: $message');
@@ -284,7 +300,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
 
     debugPrint('Subscribing to Supabase Realtime channel driver-location:$orderUuid');
 
-    _supabaseRealtimeChannel = Supabase.instance.client
+    _supabaseRealtimeChannel = SupabaseService.client
         .channel('driver-location:$orderUuid');
 
     _supabaseRealtimeChannel!.onBroadcast(
@@ -745,7 +761,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   }
 
   void _subscribeToOrderUpdates() {
-    _ordersChannel = Supabase.instance.client
+    _ordersChannel = SupabaseService.client
         .channel('order_updates_${widget.orderId}')
         .onPostgresChanges(
           event: PostgresChangeEvent.update,
