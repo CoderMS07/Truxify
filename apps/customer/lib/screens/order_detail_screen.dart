@@ -496,7 +496,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                 const SizedBox(height: 8),
                 Text('Date: ${_currentOrder.date}', style: Theme.of(context).textTheme.bodyMedium),
                 const SizedBox(height: 8),
-                if (_currentOrder.requiresRefrigeration) ...[
+                if (_currentOrder.requiresRefrigeration ?? false) ...[
                   Row(
                     children: [
                       const Icon(Icons.ac_unit_rounded, size: 16, color: Colors.blue),

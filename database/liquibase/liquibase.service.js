@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../../backend/api/src/middleware/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,9 +34,13 @@ function runLiquibase(args, password) {
 class LiquibaseService {
     constructor() {
         this.liquibasePath = path.join(__dirname, '../../database/liquibase');
-        this.dbUrl = process.env.DATABASE_URL || 'jdbc:postgresql://localhost:5432/truxify';
-        this.username = process.env.DB_USERNAME || 'postgres';
-        this.password = process.env.DB_PASSWORD || 'password';
+        this.dbUrl = process.env.DATABASE_URL;
+        this.username = process.env.DB_USERNAME;
+        this.password = process.env.DB_PASSWORD;
+
+        if (!this.dbUrl || !this.username || !this.password) {
+            throw new Error('DATABASE_URL, DB_USERNAME, and DB_PASSWORD environment variables are required');
+        }
         
         logger.info('✅ Liquibase Service initialized');
     }
@@ -71,8 +75,7 @@ class LiquibaseService {
                 `--changeLogFile=${this.liquibasePath}/changelog-master.xml`,
                 `--url=${this.dbUrl}`,
                 `--username=${this.username}`,
-                `rollbackCount`,
-                `${rollbackCount}`,
+                `--rollbackCount=${rollbackCount}`,
             ];
 
             const { stdout, stderr } = await runLiquibase(args, this.password);

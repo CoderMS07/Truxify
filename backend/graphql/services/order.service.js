@@ -18,19 +18,6 @@ function isAdmin(user) {
     return ADMIN_ROLES.has(user?.role);
 }
 
-const ADMIN_ROLES = new Set(['ADMIN', 'admin']);
-
-function requireUser(user) {
-    if (!user?.id) {
-        throw new Error('Authentication required');
-    }
-    return user;
-}
-
-function isAdmin(user) {
-    return ADMIN_ROLES.has(user?.role);
-}
-
 function mapOrder(row) {
     if (!row) return row;
 

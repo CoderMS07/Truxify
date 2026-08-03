@@ -73,6 +73,12 @@ class ApiClient {
   final String _baseUrl;
   final Duration _timeout;
 
+  void close() {
+    if (_isClientOwned) {
+      _http.close();
+    }
+  }
+
   static String _getBaseUrl(String? overrideUrl) {
     if (overrideUrl != null) return overrideUrl;
     const envUrl = String.fromEnvironment('TRUXIFY_API_BASE_URL');
@@ -315,7 +321,7 @@ class ApiClient {
         ...?headers,
       };
       request.headers.addAll(authHeaders);
-      fields.forEach(request.fields.add);
+      request.fields.addAll(fields);
       for (final f in files) {
         request.files.add(http.MultipartFile.fromBytes(
           f.fieldName,

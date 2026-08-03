@@ -1,7 +1,7 @@
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:truxify_shared/truxify_shared.dart';
+import 'package:truxify_shared/truxify_shared.dart' hide NotificationsScreen;
 
 import '../controllers/app_controller.dart';
 import '../core/offline/cache/cache_manager.dart';
@@ -317,7 +317,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       const SizedBox(height: 24),
                       SectionHeader(
                         title: AppLocalizations.of(context)!.yourUsualRoutes,
-                        actionLabel: _usualRoutes.isNotEmpty ? AppLocalizations.of(context)!.viewAllOrders : null,
+                        actionLabel: _usualRoutes.isNotEmpty ? 'View All' : null,
                         onActionTap: _usualRoutes.isNotEmpty ? () => controller.openOrders(tabIndex: 1) : null,
                       ),
                       const SizedBox(height: 8),
@@ -330,7 +330,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 Icon(Icons.route_rounded, size: 36, color: TruxifyColors.adaptiveSecondaryText(context)),
                                 const SizedBox(height: 8),
                                 Text(
-                                  AppLocalizations.of(context)!.noRoutesFound,
+                                  'No usual routes yet',
                                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: TruxifyColors.adaptiveSecondaryText(context)),
                                 ),
                               ],
@@ -347,13 +347,13 @@ class _HomeScreenState extends State<HomeScreen> {
                                 draft: RouteDraft(
                                   pickup: route.pickup,
                                   drop: route.drop,
-                                  dateLabel: 'Tomorrow, 6:00 AM',
-                                  goodsType: 'Textile',
-                                  weightTonnes: '3',
-                                  dimensions: '12 × 6 × 6',
-                                  stacked: true,
+                                  dateLabel: '',
+                                  goodsType: '',
+                                  weightTonnes: '',
+                                  dimensions: '',
+                                  stacked: false,
                                   fragile: false,
-                                  requirements: const ['Temperature control', 'Loading help needed'],
+                                  requirements: const [],
                                   pickupLat: route.pickupLat,
                                   pickupLng: route.pickupLng,
                                   dropLat: route.dropLat,
@@ -369,7 +369,6 @@ class _HomeScreenState extends State<HomeScreen> {
                         onPressed: () => controller.openFindTrucks(),
                       ),
                     ],
-                    ),
                   ),
                 ),
               ),

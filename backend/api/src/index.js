@@ -12,13 +12,22 @@ import documentRoutes from './routes/documentRoutes.js'
 import securityHeaderDuplicates from './middleware/securityHeaderDuplicates.js';
 import maintenancePhotoRoutes from './routes/maintenancePhotoRoutes.js'
 
-import { closeDbConnections, waitForMongoDb, validateConfig } from './config/db.js'
+import { closeDbConnections, waitForMongoDb, validateConfig, redisClient } from './config/db.js'
 import { orderRepository } from './core/container.js'
-import { closeWebSocketServer, initWebSocketServer } from './sockets/tracker.js'
+import { CacheManager } from './cache/CacheManager.js'
+import { closeWebSocketServer, initWebSocketServer, __testing as wsTesting } from './sockets/tracker.js'
 import { initLocationServer, closeLocationServer } from './sockets/locationServer.js'
 import { startEscrowReleaseReconciliation, stopEscrowReleaseReconciliation } from './services/escrowReleaseReconciliation.js'
 import { validateEscrowSetup } from './services/escrow.js'
 
+
+import {
+  requestIdMiddleware,
+  requestLogger,
+  securityHeaders,
+  suspiciousRequests,
+  responseSanitizer,
+} from "./middleware/index.js";
 // Load REST routes
 import orderRoutes from './routes/orderRoutes.js'
 import driverRoutes from './routes/driverRoutes.js'
@@ -28,9 +37,11 @@ import loadRoutes from './routes/loadRoutes.js'
 import deadheadRoutes from './routes/deadheadRoutes.js'
 import truckRoutes from './routes/truckRoutes.js'
 import authRoutes from './routes/authRoutes.js'
+import routeRoutes from './routes/routeRoutes.js'
 import healthRoutes from './routes/healthRoutes.js'
 import adminRoutes from './routes/adminRoutes.js'
 import lookupRoutes from './routes/lookupRoutes.js'
+import { getRoot, notFound } from './controllers/rootController.js'
 import webhookRoutes from './routes/webhookRoutes.js'
 import auditRoutes from './routes/auditRoutes.js'
 import paymentRoutes from './routes/paymentRoutes.js'
@@ -90,13 +101,10 @@ import multiCloudService from '../../dr/multi-cloud.service.js'
 // ============================================================================
 import tracing from './tracing/tracing.js'
 import { tracingMiddleware } from './middleware/tracingMiddleware.js'
-
-
 import logger from './middleware/logger.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { setupSwagger } from './config/swagger.js'
 import { correlationIdMiddleware } from './middleware/correlationId.js'
-import { requestIdMiddleware, requestLogger } from './middleware/requestId.js'
 import { requestCacheMiddleware } from './middleware/requestCacheMiddleware.js'
 import { requireJsonContent } from './middleware/contentType.js'
 import { initSentry, flushSentry, sentryErrorHandler } from './middleware/sentry.js'
@@ -104,6 +112,10 @@ import {
   startEscrowRefundReconciliation,
   stopEscrowRefundReconciliation
 } from './services/escrowRefundReconciliation.js'
+import {
+  startEscrowFundingReconciliation,
+  stopEscrowFundingReconciliation
+} from './services/escrowFundingReconciliation.js'
 import {
   startReputationReconciliation,
   stopReputationReconciliation,
@@ -137,6 +149,11 @@ try {
 }
 
 // ============================================================================
+// INITIALIZE DISTRIBUTED CACHE MANAGER
+// ============================================================================
+CacheManager.init(redisClient)
+
+// ============================================================================
 // STARTUP VALIDATION — crash fast, not at request time
 // ============================================================================
 if (process.env.BYPASS_AUTH === 'true' && process.env.NODE_ENV !== 'development') {
@@ -153,6 +170,22 @@ if (process.env.NODE_ENV === 'production' && (!process.env.POLYGON_RPC_URL || !p
 }
 if (!process.env.DRIVER_LOGIN_OTP) {
   logger.warn('DRIVER_LOGIN_OTP is not set. Driver OTP login will be disabled until it is configured in production.')
+}
+if (!process.env.WEBHOOK_SECRET) {
+  logger.fatal('WEBHOOK_SECRET is not set. Escrow webhook signature verification cannot run and webhook requests will be rejected. Set WEBHOOK_SECRET and restart.')
+  process.exit(1)
+}
+
+// ============================================================================
+// 🆕 WEBHOOK VALIDATION
+// ============================================================================
+if (!process.env.WEBHOOK_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    logger.fatal('WEBHOOK_SECRET is not set. POST /api/webhooks/escrow would fail closed and reject all incoming webhooks. Set WEBHOOK_SECRET and restart.')
+    process.exit(1)
+  } else {
+    logger.warn('⚠️ WEBHOOK_SECRET is not set. Webhook requests will be rejected (fail-closed) until it is configured.')
+  }
 }
 
 // ============================================================================
@@ -178,6 +211,11 @@ if (!process.env.CHAINLINK_ENABLED && !process.env.BACKUP_ORACLE_ENABLED) {
 if (!process.env.SHARD_NORTH_HOST || !process.env.SHARD_SOUTH_HOST || 
     !process.env.SHARD_EAST_HOST || !process.env.SHARD_WEST_HOST) {
   logger.warn('⚠️ Shard hosts not fully configured. Using localhost defaults.')
+}
+
+if (!process.env.SHARD_NORTH_PASSWORD || !process.env.SHARD_SOUTH_PASSWORD || 
+    !process.env.SHARD_EAST_PASSWORD || !process.env.SHARD_WEST_PASSWORD) {
+  logger.warn('⚠️ Shard passwords not fully configured. Ensure all SHARD_*_PASSWORD env vars are set.')
 }
 
 
@@ -231,16 +269,10 @@ if (!process.env.ACTIVE_CLOUD) {
 // Validate escrow contract deployment — log warning if validation fails,
 // but don't crash (non-escrow functionality should still work).
 validateEscrowSetup().then((valid) => {
-  if (valid) {
-    logger.info('✅ Escrow contract deployment validated.')
-  } else {
-    logger.warn(
-      '⚠️  Escrow contract validation failed. Escrow operations will return ' +
-      '{ txData: null } and orders will proceed without on-chain protection. ' +
-      'Check ESCROW_CONTRACT_ADDRESS and the deployed contract.'
-    )
+  if (!valid) {
+    logger.warn('⚠️ Escrow setup validation failed. On-chain escrow features may not work correctly.')
   }
-})
+}).catch(err => console.error(err))
 
 const app = express()
 const server = http.createServer(app)
@@ -318,7 +350,6 @@ if (process.env.NODE_ENV === 'production') {
 // Payload parsers
 const jsonBodyLimit =
   process.env.JSON_BODY_LIMIT || '1mb';
-
 const urlEncodedBodyLimit =
   process.env.URLENCODED_BODY_LIMIT || '1mb';
 
@@ -326,6 +357,9 @@ app.use(
   express.json({
     limit: jsonBodyLimit,
     strict: true,
+    verify: (req, _res, buf) => {
+      req.rawBody = buf.toString('utf8');
+    },
   })
 );
 
@@ -359,6 +393,9 @@ app.use((req, res, next) => {
 app.use(correlationIdMiddleware)
 app.use(requestIdMiddleware)
 app.use(requestLogger)
+
+app.use(hppProtection)
+app.use(suspiciousRequests)
 
 // Enforce a known request content-type on mutating requests (POST/PUT/PATCH).
 // `requireJsonContent` only rejects unrecognized media types; the three
@@ -407,6 +444,13 @@ app.use('/api/public', publicTrackingRoutes)
 app.use('/api/auth', authLimiter, authRoutes)
 app.use('/api/v1/admin', adminRoutes)
 app.use('/api/v1/admin/audit-logs', auditRoutes)
+app.use('/api/voice', voiceRoutes)
+app.use('/api/demand-heatmap', demandRoutes)
+
+// ============================================================================
+// WEBHOOK ROUTES
+// ============================================================================
+app.use('/api/webhooks', webhookRoutes)
 
 // ============================================================================
 // 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
@@ -555,17 +599,12 @@ app.get('/api/tracing/health', (req, res) => {
 setupSwagger(app)
 
 // Root route
-app.get('/', (req, res) => {
-  const wsHost = req.hostname || 'localhost'
-  const wsPort = process.env.PORT || 5000
-  res.send(`<h1>Truxify Backend API is running.</h1><p>Use WebSockets at <code>ws://${wsHost}:${wsPort}/ws/tracking</code></p>`)
-})
+app.get('/', getRoot)
+
+app.use(responseSanitizer)
 
 // Handling 404 Route Not Found
-app.use((req, res) => {
-  res.status(404).json({ error: 'Endpoint resource not found.' })
-})
-
+app.use(notFound)
 // Sentry error handler must come before the generic error handler;
 // it captures the exception automatically so we don't call captureException here.
 app.use(sentryErrorHandler())
@@ -579,6 +618,9 @@ app.use(errorHandler)
 await waitForMongoDb()
 initWebSocketServer(server, orderRepository)
 initLocationServer(server)
+
+// Expose WebSocket state for health aggregation
+globalThis.__truxify_wsState = wsTesting.getShutdownState()
 
 // ============================================================================
 // 🆕 WEBRTC SIGNALING SERVER INIT
@@ -609,6 +651,15 @@ server.listen(PORT, () => {
   startDlqWorker()
   startStaleOrderWorker()
   startDocumentExpiryWorker()
+
+  // Register worker states for health aggregation
+  globalThis.__truxify_workers = {
+    escrowRefundReconciliation: true,
+    reputationReconciliation: true,
+    dlqWorker: true,
+    staleOrderWorker: true,
+    documentExpiryWorker: true,
+  }
 })
 
 // ============================================================================
@@ -637,6 +688,7 @@ async function shutdown (signal) {
   stopDlqWorker()
   stopDocumentExpiryWorker()
   fraudDetection.destroy()
+  CacheManager.shutdown()
 
   const forceExit = setTimeout(() => {
     logger.error('[shutdown] Timeout exceeded — forcing exit.')

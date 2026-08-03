@@ -10,6 +10,13 @@ const router = express.Router();
 
 const trackingTokenService = new TrackingTokenService({ supabase, logger });
 
+function parseFiniteCoordinate(value) {
+  if (value === null || value === undefined || value === '') return null;
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 // Rate limiter — generous for public consumers, strict per IP
 const publicLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
@@ -155,11 +162,20 @@ router.get(
         return res.status(404).json({ error: 'Order not found' });
       }
 
+      const pickupLat = parseFiniteCoordinate(order.pickup_lat);
+      const pickupLng = parseFiniteCoordinate(order.pickup_lng);
+      const dropLat = parseFiniteCoordinate(order.drop_lat);
+      const dropLng = parseFiniteCoordinate(order.drop_lng);
+
+      if ([pickupLat, pickupLng, dropLat, dropLng].some((value) => value === null)) {
+        return res.status(422).json({ error: 'Route coordinates are not available for this order' });
+      }
+
       // Return simple pickup-to-drop route for public view
       // Full OSRM route is only available to authenticated users
       const coordinates = [
-        [order.pickup_lng, order.pickup_lat],
-        [order.drop_lng, order.drop_lat],
+        [pickupLng, pickupLat],
+        [dropLng, dropLat],
       ];
 
       return res.json({

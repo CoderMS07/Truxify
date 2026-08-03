@@ -12,7 +12,6 @@ import '../repositories/payment_repository.dart';
 import '../services/auth_service.dart';
 import '../services/profile_service.dart';
 import '../l10n/app_localizations.dart';
-import '../widgets/truxify_button.dart';
 import '../services/fcm_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_page_route.dart';
@@ -713,7 +712,7 @@ class _ThemeModeTile extends StatelessWidget {
                     ),
                   ),
                 ),
-                segments: const [
+                segments: [
                   ButtonSegment<ThemeMode>(
                     value: ThemeMode.light,
                     label: Text(AppLocalizations.of(context)!.lightTheme),
