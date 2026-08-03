@@ -1,3 +1,6 @@
+process.env.BYPASS_AUTH = 'true';
+process.env.ENABLE_TEST_AUTH = 'true';
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import express from 'express';
@@ -65,8 +68,30 @@ vi.mock('../../src/core/container.js', () => ({
   verificationService: mockVerificationService,
 }));
 
+const mockDigilockerService = {
+  exchangeCode: vi.fn().mockResolvedValue({ access_token: 'mock_token', digilocker_id: 'mock_id' }),
+  verifyDocuments: vi.fn().mockResolvedValue({ verified: true, is_digilocker_verified: true }),
+};
+
+vi.mock('../../src/services/verification/DigilockerService.js', () => ({
+  default: mockDigilockerService,
+}));
+
+const mockSupabase = {
+  from: () => ({
+    select: () => ({
+      eq: () => ({
+        maybeSingle: async () => ({
+          data: { id: VALID_ORDER_ID, customer_id: 'user-1', driver_id: 'driver-1' },
+          error: null,
+        }),
+      }),
+    }),
+  }),
+};
+
 vi.mock('../../src/config/db.js', () => ({
-  supabase: null,
+  supabase: mockSupabase,
   firebaseAdmin: null,
   redisClient: null,
   mongoDb: null,
@@ -342,6 +367,42 @@ describe('Verification Routes — Authentication', () => {
       .post('/api/verify/documents/check')
       .set(DRIVER_HEADERS)
       .send({ driverId: VALID_DRIVER_ID });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  it('POST /digilocker/token returns 401 without auth headers', async () => {
+    const app = buildVerifyApp();
+    const res = await request(app)
+      .post('/api/verify/digilocker/token')
+      .send({ code: 'valid_code' });
+    expect(res.status).toBe(401);
+  });
+
+  it('POST /digilocker/token returns 200 with valid auth and code', async () => {
+    const app = buildVerifyApp();
+    const res = await request(app)
+      .post('/api/verify/digilocker/token')
+      .set(USER_HEADERS)
+      .send({ code: 'valid_code' });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  it('POST /digilocker/verify returns 401 without auth headers', async () => {
+    const app = buildVerifyApp();
+    const res = await request(app)
+      .post('/api/verify/digilocker/verify')
+      .send({ accessToken: 'mock_token' });
+    expect(res.status).toBe(401);
+  });
+
+  it('POST /digilocker/verify returns 200 with valid auth and accessToken', async () => {
+    const app = buildVerifyApp();
+    const res = await request(app)
+      .post('/api/verify/digilocker/verify')
+      .set(USER_HEADERS)
+      .send({ accessToken: 'mock_token' });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });

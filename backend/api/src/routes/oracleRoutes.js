@@ -15,6 +15,7 @@ const oracleVerificationLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
+  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:oracle-verification:'),
   message: { error: 'Rate limit exceeded', retryAfter: 900 },
 });

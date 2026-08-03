@@ -16,7 +16,30 @@ const orderVerificationLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
+  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:order-verification:'),
+  message: { error: 'Rate limit exceeded', retryAfter: 900 },
+});
+
+const documentCheckLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: safeIpKeyGenerator,
+  validate: { keyGeneratorIpFallback: false },
+  store: createStore('rl:document-check:'),
+  message: { error: 'Rate limit exceeded', retryAfter: 900 },
+});
+
+const digilockerLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: safeIpKeyGenerator,
+  validate: { keyGeneratorIpFallback: false },
+  store: createStore('rl:digilocker:'),
   message: { error: 'Rate limit exceeded', retryAfter: 900 },
 });
 
@@ -73,7 +96,7 @@ router.get('/order/:orderId', orderVerificationLimiter, authenticate, validatePa
   }
 });
 
-router.post('/documents/check', authenticate, validateBody(documentCheckSchema), async (req, res) => {
+router.post('/documents/check', documentCheckLimiter, authenticate, validateBody(documentCheckSchema), async (req, res) => {
   try {
     const { driverId } = req.body;
     const result = await verificationService.checkDocumentIntegrity(driverId);
@@ -90,7 +113,7 @@ router.post('/documents/check', authenticate, validateBody(documentCheckSchema),
   }
 });
 
-router.post('/digilocker/token', authenticate, async (req, res) => {
+router.post('/digilocker/token', digilockerLimiter, authenticate, async (req, res) => {
   try {
     const { code } = req.body;
     if (!code) {
@@ -109,7 +132,7 @@ router.post('/digilocker/token', authenticate, async (req, res) => {
   }
 });
 
-router.post('/digilocker/verify', authenticate, async (req, res) => {
+router.post('/digilocker/verify', digilockerLimiter, authenticate, async (req, res) => {
   try {
     const { accessToken, userId: bodyUserId } = req.body;
     const userId = req.user?.id || bodyUserId;

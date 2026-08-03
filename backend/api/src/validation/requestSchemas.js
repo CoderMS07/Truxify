@@ -124,7 +124,7 @@ export const withdrawSchema = z.object({
     .number()
     .int({ message: 'Amount must be a whole number (paisa)' })
     .positive({ message: 'Amount must be greater than 0' })
-    .safeInteger({ message: 'Amount must be a safe integer' }),
+    .safe({ message: 'Amount must be a safe integer' }),
 }).strict();
 
 export const submitRatingSchema = z.object({
