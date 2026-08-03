@@ -1,4 +1,16 @@
 services:
+  gateway:
+    image: nginx:alpine
+    container_name: truxify-gateway
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+      - ml-engine
+    restart: unless-stopped
+
   api:
     build:
       context: ./backend/api
