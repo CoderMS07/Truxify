@@ -36,6 +36,21 @@ function _haversineM(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+/** Haversine great-circle distance in metres between two lat/lng points. */
+function _haversineM(lat1, lng1, lat2, lng2) {
+  const R = 6_371_000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+const orderTimelineService = new OrderTimelineService({ supabase, logger });
+
 const DELIVERY_OTP_READY_STATUSES = new Set(['arriving']);
 
 const DELIVERY_GEOFENCE_RADIUS_KM = Number(process.env.DELIVERY_GEOFENCE_RADIUS_KM) || 0.5;
