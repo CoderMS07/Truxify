@@ -4,6 +4,7 @@ import logger from '../middleware/logger.js';
 import { OrderRepository } from '../repositories/orderRepository.js';
 import OracleService from '../oracle/OracleService.js';
 import VerificationService from '../services/verification/VerificationService.js';
+import { TrackingTokenService } from '../services/trackingTokenService.js';
 
 import { OrderTimelineService } from '../services/order/orderTimelineService.js';
 import { OrderValidationService } from '../services/order/orderValidationService.js';
@@ -38,19 +39,25 @@ const bidAcceptanceService = new BidAcceptanceService({
   logger,
 });
 
-const deliveryVerificationService = new DeliveryVerificationService(orderRepository);
+const trackingTokenService = new TrackingTokenService({ supabase, logger });
+
+const deliveryVerificationService = new DeliveryVerificationService(orderRepository, {
+  trackingTokenService,
+});
 
 const orderMilestoneService = new OrderMilestoneService({
   orderRepository,
   orderValidationService,
   orderTimelineService,
   orderNotificationService,
+  trackingTokenService,
 });
 
 const orderLifecycleService = new OrderLifecycleService({
   orderRepository,
   orderTimelineService,
   bidAcceptanceService,
+  trackingTokenService,
 });
 
 export {
@@ -69,6 +76,7 @@ export {
   orderMilestoneService,
   orderNotificationService,
   bidAcceptanceService,
+  trackingTokenService,
   deliveryVerificationService,
   orderLifecycleService,
 

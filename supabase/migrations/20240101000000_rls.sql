@@ -12,7 +12,7 @@
 -- ─── Helper: map Firebase JWT sub → profiles.id ───
 CREATE OR REPLACE FUNCTION get_profile_id()
 RETURNS UUID
-LANGUAGE SQL STABLE SECURITY DEFINER
+LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = public, pg_temp
 AS $$
   SELECT id FROM profiles WHERE firebase_uid = (auth.jwt() ->> 'sub') LIMIT 1;
 $$;

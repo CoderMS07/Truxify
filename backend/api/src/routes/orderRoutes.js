@@ -153,19 +153,11 @@ import { scanDocument } from '../lib/malwareScanner.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { z } from 'zod';
 import {
-  createOrderSchema,
-  submitBidSchema,
-  submitRatingSchema,
-  paramIdSchema,
-  acceptBidParamsSchema,
-  updateMilestoneSchema,
-  verifyDeliverySchema,
-  predictDemandSchema,
-  changeDropSchema,
-  cancelOrderSchema,
+  createOrderSchema, submitBidSchema, submitRatingSchema, paramIdSchema, acceptBidParamsSchema,
+  updateMilestoneSchema, verifyDeliverySchema, predictDemandSchema, changeDropSchema, cancelOrderSchema,
 } from '../validation/requestSchemas.js';
 import { awardReputationPoints } from '../services/reputation.js';
-import { expireDeliveryOtps } from '../services/notificationService.js';
+import { expireDeliveryOtps, sendPushNotification } from '../services/notificationService.js';
 import { DomainError } from '../services/order/domainError.js';
 import { predictDemand, predictPrice, matchEnRouteLoads } from '../services/ml.js';
 import { requireIdempotency } from '../middleware/idempotency.js';
@@ -185,9 +177,9 @@ import {
   confirmEscrowRefund,
   escrowRefund,
 } from '../core/container.js';
+import { getEscrowBookingId } from '../services/escrow.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
 import { computeOrderPricing } from '../lib/pricing.js';
-import { getEscrowBookingId } from '../services/escrow.js';
 
 const router = express.Router();
 router.use(userLimiter);
@@ -377,7 +369,7 @@ router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
 
     res.json(offers);
   } catch (err) {
-    logger.error("[orderRoutes] Failed to fetch load offers:", err.message);
+    logger.error('Fetch load offers exception:', err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -493,20 +485,15 @@ router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) 
  */
 router.get('/history', authenticate, userLimiter, requirePolicy('order:view-history'), async (req, res) => {
   try {
-    const pageParam = req.query.page ?? '1';
+    const cursor = req.query.cursor;
     const limitParam = req.query.limit ?? '10';
-    const page = typeof pageParam === 'string' ? Number(pageParam) : NaN;
     const limit = typeof limitParam === 'string' ? Number(limitParam) : NaN;
-
-    if (!Number.isInteger(page) || page < 1) {
-      return res.status(400).json({ error: 'page must be greater than or equal to 1' });
-    }
 
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       return res.status(400).json({ error: 'limit must be between 1 and 100' });
     }
 
-    const result = await orderLifecycleService.getOrderHistory(req.user.id, page, limit);
+    const result = await orderLifecycleService.getOrderHistory(req.user.id, cursor, limit);
     res.json(result);
   } catch (err) {
     if (err instanceof DomainError) {
@@ -544,7 +531,6 @@ router.get('/history', authenticate, userLimiter, requirePolicy('order:view-hist
  */
 router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
-
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, '*');
     orderValidationService.assertOrderFound(order);
@@ -601,7 +587,6 @@ router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), asy
  */
 router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
-
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'customer_id, driver_id, order_display_id');
     orderValidationService.assertOrderFound(order);
@@ -934,7 +919,7 @@ router.put('/:id/milestones', authenticate, userLimiter, requirePolicy('mileston
     if (err instanceof DomainError) {
       return res.status(err.status).json(err.payload);
     }
-    logger.error("[orderRoutes] Milestone update error:", err.message);
+    logger.error(err, "[orderRoutes] Milestone update error:");
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -969,7 +954,7 @@ router.put('/:id/milestones', authenticate, userLimiter, requirePolicy('mileston
  */
 router.post('/:id/verify-delivery', authenticate, userLimiter, requirePolicy('delivery:verify'), auditLog({ action: 'delivery:verify', resourceType: 'delivery_verification' }), verifyDeliveryLimiter, requireIdempotency(86400), validateParams(paramIdSchema), validateBody(verifyDeliverySchema), async (req, res) => {
   try {
-    const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(req.params.id, req.user.id, req.body.otp);
+    const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(req.params.id, req.user.id, req.body.otp, req.token ? createUserClient(req.token) : undefined);
 
     if (escrowUpdateFailed) {
       return res.status(202).json({
@@ -1258,10 +1243,7 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       updated_at: new Date().toISOString(),
     };
 
-    const { data: updatedOrder, error: updateErr } = await orderRepository.updateOrder(order.id, updates);
-    if (updateErr) return res.status(500).json({ error: 'Failed to update order.', details: updateErr.message });
-
-    const { error: offerUpdateErr } = await orderRepository.updateLoadOffer(order.order_display_id, {
+    const offerUpdates = {
       drop_address,
       drop_lat: Number(drop_lat),
       drop_lng: Number(drop_lng),
@@ -1271,10 +1253,18 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       toll_cost: pricing.tollEstimate,
       net_profit: pricing.netProfit,
       extra_distance_km: pricing.distanceKm,
-    });
+    };
 
-    if (offerUpdateErr) {
-      logger.error('Load offer update failed for change-drop:', offerUpdateErr.message);
+    const { data: updatedOrder, error: updateErr } = await orderRepository.executeRpc('update_order_and_load_offer', {
+      p_order_id: order.id,
+      p_order_display_id: order.order_display_id,
+      p_order_updates: updates,
+      p_offer_updates: offerUpdates
+    }, req.token ? createUserClient(req.token) : undefined);
+
+    if (updateErr) {
+      logger.error('Order and load offer atomic update failed for change-drop:', updateErr.message);
+      return res.status(500).json({ error: 'Failed to update order atomically.', details: updateErr.message });
     }
 
     try {
@@ -1383,7 +1373,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
   }
 
   try {
-    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status');
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet, pending_bid_acceptance');
     orderValidationService.assertOrderFound(order);
     orderValidationService.assertCustomerOwnership(order, req.user.id);
     orderValidationService.assertEscrowState(order, ['funding'], 'Order is not in funding state');
@@ -1391,26 +1381,79 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
 
     const { data: customerProfile } = await orderRepository.findCustomerWallet(req.user.id);
     const customerWallet = customerProfile?.polygon_wallet_address ?? null;
-    const bookingId = order.escrow_booking_id || (order.order_display_id ? `escrow:${order.order_display_id}` : orderId);
-    const result = await recordDepositTx(bookingId, txHash, customerWallet);
+    const bookingId = order.escrow_booking_id || (order.order_display_id ? getEscrowBookingId(order.order_display_id) : orderId);
+
+    // Two-phase acceptance (#5724): once the deposit is verified on-chain we
+    // finalize the driver assignment via accept_bid_tx. If that cannot be
+    // completed the deposit is refunded and the order stays pending.
+    const finalizeAcceptance = async () => {
+      const pending = order.pending_bid_acceptance;
+      if (!pending) return;
+      const { error: acceptErr } = await orderRepository.executeRpc('accept_bid_tx', {
+        p_bid_id: pending.bid_id,
+        p_order_id: orderId,
+        p_load_id: pending.load_id,
+        p_driver_id: pending.driver_id,
+        p_truck_id: pending.truck_id,
+        p_driver_name: pending.driver_name,
+        p_driver_rating: pending.driver_rating,
+        p_truck_number: pending.truck_number,
+        p_bid_amount: pending.bid_amount,
+        p_order_display_id: pending.order_display_id,
+        p_expected_version: pending.version,
+        p_escrow_booking_id: bookingId,
+      }, req.token ? createUserClient(req.token) : undefined);
+      if (acceptErr) {
+        logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
+        try {
+          await escrowRefund(order.order_display_id);
+        } catch (refundErr) {
+          logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
+        }
+        await orderRepository.revertEscrowStatus(orderId).catch((revertErr) => {
+          logger.error('[confirm-deposit] Failed to revert escrow status:', revertErr.message);
+        });
+        throw new DomainError(409, {
+          error: 'Deposit confirmed but the driver assignment could not be finalized. The escrow deposit has been refunded. Please try again.',
+          details: acceptErr.message,
+        });
+      }
+      sendPushNotification(
+        pending.driver_id,
+        'Bid Accepted!',
+        `Your bid for order ${pending.order_display_id} has been accepted. You are now assigned to this load.`,
+        'bid_accepted',
+        { orderId, orderDisplayId: pending.order_display_id }
+      ).catch((err) => logger.error(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
+    };
+
+    const result = await recordDepositTx(
+      bookingId,
+      txHash,
+      customerWallet,
+      order.escrow_driver_wallet ?? null,
+      order.escrow_amount_wei ?? null
+    );
+
+    if (result.alreadyFunded) {
+      const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
+        escrow_status: 'funded',
+        deposit_tx_hash: result.txHash,
+        escrow_deposited_at: new Date().toISOString(),
+      }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
+
+      if (!updateErr && updatedData) {
+        await finalizeAcceptance();
+        return res.json({ message: 'Escrow deposit confirmed (recovered).', txHash: result.txHash });
+      }
+      return res.status(202).json({ message: 'Escrow deposit confirmed on-chain. Database sync pending.', txHash: result.txHash });
+    }
 
     if (result.error) {
-      if (result.alreadyFunded) {
-        const { error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
-          escrow_status: 'funded',
-          deposit_tx_hash: result.txHash,
-          escrow_deposited_at: new Date().toISOString(),
-        }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
-
-        if (!updateErr) {
-          return res.json({ message: 'Escrow deposit confirmed (recovered).', txHash: result.txHash });
-        }
-        return res.status(202).json({ message: 'Escrow deposit confirmed on-chain. Database sync pending.', txHash: result.txHash });
-      }
       return res.status(422).json({ error: result.error });
     }
 
-    const { error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
+    const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
       escrow_status: 'funded',
       deposit_tx_hash: result.txHash,
       escrow_deposited_at: new Date().toISOString(),
@@ -1421,6 +1464,12 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
       return res.status(500).json({ error: 'Database update failed after deposit confirmation. Please contact support.' });
     }
 
+    if (!updatedData) {
+      logger.error('[confirm-deposit] No row updated — escrow_status may not have been "funding"');
+      return res.status(409).json({ error: 'Order was not in funding state. Please refresh and try again.' });
+    }
+
+    await finalizeAcceptance();
     res.json({ message: 'Escrow deposit confirmed', txHash: result.txHash });
   } catch (err) {
     if (err instanceof DomainError) {
@@ -1706,6 +1755,8 @@ router.post('/:id/pod', authenticate, requireRole(['driver']), podUpload.fields(
     let photoHash = order.pod_photo_hash || null;
     const files = req.files || {};
 
+    let uploadedAny = false;
+
     if (files.signature && files.signature[0]) {
       const file = files.signature[0];
       try {
@@ -1724,6 +1775,7 @@ router.post('/:id/pod', authenticate, requireRole(['driver']), podUpload.fields(
       }
       signatureUrl = storagePath;
       signatureHash = computeFileHash(file.buffer);
+      uploadedAny = true;
     }
 
     if (files.photo && files.photo[0]) {
@@ -1744,6 +1796,11 @@ router.post('/:id/pod', authenticate, requireRole(['driver']), podUpload.fields(
       }
       photoUrl = storagePath;
       photoHash = computeFileHash(file.buffer);
+      uploadedAny = true;
+    }
+
+    if (!uploadedAny) {
+      return res.status(400).json({ error: 'At least one valid proof file (signature or photo) is required' });
     }
 
     const updates = {

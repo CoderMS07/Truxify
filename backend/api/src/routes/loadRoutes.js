@@ -51,12 +51,12 @@
 
 import express from 'express';
 import { supabase } from '../config/db.js';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, requireRole } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 import logger from '../middleware/logger.js';
 import { loadFilterQuerySchema } from '../validation/loadSchemas.js';
-import { validateParams } from '../middleware/validate.js';
+import { validateParams, validateQuery } from '../middleware/validate.js';
 import { paramIdSchema, uuidParamSchema } from '../validation/requestSchemas.js';
 import { escapeLike } from '../lib/escapeLike.js';
 
@@ -151,17 +151,7 @@ function sanitizeLoadFilters(query) {
  */
 router.get('/', authenticate, userLimiter, requirePolicy('load-offer:browse'), async (req, res) => {
   try {
-    const filterResult = loadFilterQuerySchema.safeParse(req.query);
-    if (!filterResult.success) {
-      return res.status(400).json({
-        error: 'Validation failed',
-        details: filterResult.error.issues.map(issue => ({
-          field: issue.path.join('.') || 'query',
-          message: issue.message,
-        })),
-      });
-    }
-    const filters = filterResult.data;
+    const filters = req.query;
 
     const pageVal = req.query.page || '1';
     const limitVal = req.query.limit || '10';
@@ -310,6 +300,64 @@ router.get('/', authenticate, userLimiter, requirePolicy('load-offer:browse'), a
 
   } catch (err) {
     logger.error('Internal Server Error in GET /api/loads:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
+// 1.5 CREATE NEW LOAD OFFER (CUSTOMER)
+// POST /api/loads
+// ============================================================================
+router.post('/', authenticate, userLimiter, requireRole(['customer']), async (req, res) => {
+  try {
+    const { origin, destination, weight_tons, expected_price, material_type } = req.body;
+
+    if (!origin || !origin.lat || !origin.lng) {
+      return res.status(400).json({ error: 'Origin with lat/lng is required' });
+    }
+    if (!destination || !destination.lat || !destination.lng) {
+      return res.status(400).json({ error: 'Destination with lat/lng is required' });
+    }
+
+    if (weight_tons === undefined || weight_tons === null || Number.isNaN(Number(weight_tons))) {
+      return res.status(400).json({ error: 'Valid weight_tons is required' });
+    }
+    if (expected_price === undefined || expected_price === null || Number.isNaN(Number(expected_price))) {
+      return res.status(400).json({ error: 'Valid expected_price is required' });
+    }
+
+    const pickupAddress = origin.address || 'Unknown Origin';
+    const dropAddress = destination.address || 'Unknown Destination';
+    const routeLabel = `${pickupAddress.split(',')[0]} \u2192 ${dropAddress.split(',')[0]}`;
+
+    const { data, error } = await supabase
+      .from('load_offers')
+      .insert({
+        customer_id: req.user.id,
+        customer_name: req.user.fullName || 'Customer',
+        pickup_address: pickupAddress,
+        drop_address: dropAddress,
+        pickup_lat: origin.lat,
+        pickup_lng: origin.lng,
+        drop_lat: destination.lat,
+        drop_lng: destination.lng,
+        route_label: routeLabel,
+        weight: `${weight_tons} tonnes`,
+        freight_value: Math.round(parseFloat(expected_price) * 100), // Assuming paisa representation
+        goods_type: material_type || 'General',
+        status: 'available'
+      })
+      .select()
+      .single();
+
+    if (error) {
+      logger.error('Failed to create load offer:', error);
+      return res.status(500).json({ error: 'Failed to create load offer', details: error.message });
+    }
+
+    res.status(201).json({ message: 'Load posted successfully', load: data });
+  } catch (err) {
+    logger.error('Internal Server Error in POST /api/loads:', err);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });

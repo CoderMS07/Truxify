@@ -84,14 +84,16 @@ class _PodCaptureScreenState extends State<PodCaptureScreen> {
 
       final List<ConnectivityResult> connectivityResult = await Connectivity().checkConnectivity();
       if (connectivityResult.contains(ConnectivityResult.none)) {
-        setState(() => _uploadStatus = 'Saved offline. Will sync when online.');
         if (mounted) {
+          setState(() => _uploadStatus = 'Saved offline. Will sync when online.');
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Saved offline. Will sync when online.')),
           );
         }
       } else {
-        setState(() => _uploadStatus = 'Uploading...');
+        if (mounted) {
+          setState(() => _uploadStatus = 'Uploading...');
+        }
         try {
           await SyncService.instance.uploadPodFiles(
             orderId: widget.orderId,

@@ -3,7 +3,7 @@ import { promisify } from 'util';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../backend/api/src/middleware/logger.js';
 
 const execAsync = promisify(exec);
 
