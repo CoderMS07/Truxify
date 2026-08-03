@@ -14,8 +14,21 @@ permissions:
   contents: read
 
 jobs:
+  secret-scan:
+    name: Gitleaks Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   backend:
     name: Backend tests
+    needs: secret-scan
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -43,6 +56,7 @@ jobs:
 
   customer:
     name: Customer Flutter & Android APK checks
+    needs: secret-scan
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -83,6 +97,7 @@ jobs:
 
   driver:
     name: Driver Flutter & Android APK checks
+    needs: secret-scan
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -123,6 +138,7 @@ jobs:
 
   ml:
     name: ML engine tests
+    needs: secret-scan
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -148,6 +164,7 @@ jobs:
 
   contracts:
     name: Smart contract checks
+    needs: secret-scan
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -178,6 +195,7 @@ jobs:
 
   client-credentials-guard:
     name: No client-side backend credentials
+    needs: secret-scan
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
