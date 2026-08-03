@@ -10,6 +10,7 @@ create or replace function complete_trip_tx(
 returns table(driver_id uuid)
 language plpgsql
 security definer
+set search_path = public, pg_temp
 as $$
 declare
   v_order record;
@@ -23,6 +24,13 @@ begin
 
   if not found then
     raise exception 'Order not found';
+  end if;
+
+  -- Verify the caller is the driver assigned to this order. get_profile_id()
+  -- maps the Firebase JWT sub to profiles.id, which is what orders.driver_id
+  -- stores (auth.uid() is the Firebase UID and would never match).
+  if auth.uid() is not null and get_profile_id() <> v_order.driver_id then
+    raise exception 'Unauthorized: you can only complete trips you are assigned to';
   end if;
 
   if v_order.driver_id is null then
@@ -150,3 +158,8 @@ begin
   return next;
 end;
 $$;
+
+-- Only the assigned driver (via the authenticated backend) or service_role may
+-- invoke this RPC. Block anonymous REST access as defense-in-depth; the
+-- authenticated caller is still bound to their own driver assignment above.
+REVOKE EXECUTE ON FUNCTION complete_trip_tx(uuid, uuid, text) FROM anon;
