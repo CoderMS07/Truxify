@@ -57,10 +57,12 @@ describe('tracker', () => {
   });
 
   describe('isWebSocketUpgradeAllowed', () => {
-    it('allows upgrade when no Redis client', async () => {
+    it('enforces the per-IP limit in memory when no Redis client is configured (no fail-open)', async () => {
       const req = makeRequest();
-      const result = await isWebSocketUpgradeAllowed(req);
-      expect(result).toBe(true);
+      for (let i = 0; i < 5; i++) {
+        await expect(isWebSocketUpgradeAllowed(req)).resolves.toBe(true);
+      }
+      await expect(isWebSocketUpgradeAllowed(req)).resolves.toBe(false);
     });
   });
 
@@ -113,7 +115,8 @@ describe('tracker', () => {
     it('buffers valid location ping', async () => {
       const ws = makeWs();
       await handleLocationPing(ws, { lat: 19.076, lng: 72.877 });
-      const buffer = __testing.getTelemetryWriteBuffer();
+      const rawBuf = __testing.getTelemetryWriteBuffer();
+      const buffer = rawBuf.toArray ? rawBuf.toArray() : rawBuf;
       expect(buffer.length).toBe(1);
       expect(buffer[0].lat).toBe(19.076);
       expect(buffer[0].lng).toBe(72.877);
@@ -132,6 +135,26 @@ describe('tracker', () => {
       await handleSubscribe(ws, { driver_id: 'driver-1' });
       expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"status":"subscribed"'));
     });
+
+    it('rejects non-driver without an active order for the target driver', async () => {
+      const ws = makeWs({ user: { id: 'customer-1', role: 'customer' } });
+      await handleSubscribe(ws, { driver_id: 'driver-2' });
+      expect(ws.send).toHaveBeenCalledWith(JSON.stringify({
+        error: 'Forbidden: You are not authorized to subscribe to this tracking target.',
+      }));
+    });
+
+    it('allows a customer with an active order for the target driver', async () => {
+      __testing.setOrderRepository({
+        findActiveOrderForDriverByCustomer: vi.fn().mockResolvedValue({
+          data: { id: 'order-1', order_display_id: 'OD-1' },
+          error: null,
+        }),
+      });
+      const ws = makeWs({ user: { id: 'customer-1', role: 'customer' } });
+      await handleSubscribe(ws, { driver_id: 'driver-2' });
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"status":"subscribed"'));
+    });
   });
 
   describe('__testing helpers', () => {
@@ -141,7 +164,8 @@ describe('tracker', () => {
     });
 
     it('getTelemetryWriteBuffer returns an array', () => {
-      const buf = __testing.getTelemetryWriteBuffer();
+      const rawBuf = __testing.getTelemetryWriteBuffer();
+      const buf = rawBuf.toArray ? rawBuf.toArray() : rawBuf;
       expect(Array.isArray(buf)).toBe(true);
     });
   });

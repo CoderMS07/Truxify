@@ -17,6 +17,16 @@
 
 import logger from '../middleware/logger.js';
 
+function clamp(value, min, max) {
+  if (typeof value !== 'number' || isNaN(value)) return min || 0;
+  return Math.max(min || 0, Math.min(max || Infinity, value));
+}
+
+function sanitizePrice(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num >= 0 ? Math.round(num) : 0;
+}
+
 const EARTH_RADIUS_KM = 6371.0088;
 
 const DEFAULTS = Object.freeze({
@@ -150,7 +160,7 @@ export function computeOrderPricing(input, rateCard = readRateCard()) {
   const netProfit = baseFreight - fuelCost - tollEstimate;
 
   return {
-    distanceKm: Math.round(distanceKm * 100) / 100, // 2-decimal precision
+    distanceKm: Math.round(distanceKm * 100 + Number.EPSILON) / 100, // 2-decimal precision
     baseFreight,
     tollEstimate,
     platformFee,

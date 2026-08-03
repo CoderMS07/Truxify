@@ -50,6 +50,67 @@ Truxify is structured as a monorepo containing the following components:
 
 ---
 
+## Backend Architecture
+
+The backend API (`backend/api`) follows a layered service-oriented architecture. Understanding this structure is essential before contributing new features.
+
+### Service Layer
+
+Routes are thin — they parse the request, delegate to a service, and send the response. All business logic lives in services:
+
+```text
+┌─────────────────────────────────────────────┐
+│                  ROUTES                      │
+│   (thin: parse + delegate + respond)        │
+├─────────────────────────────────────────────┤
+│                 MIDDLEWARE                   │
+│  auth · correlation-id · idempotency · log  │
+├─────────────────────────────────────────────┤
+│                 SERVICES                     │
+│  OrderService · OrderLifecycleService        │
+│  OrderValidationService · TimelineService   │
+│  NotificationService · DriverService        │
+│  LoadService · TrackingService              │
+├─────────────────────────────────────────────┤
+│                REPOSITORIES                  │
+│  OrderRepository · DriverRepository         │
+│  BidRepository · LoadRepository             │
+│  TimelineRepository                         │
+├─────────────────────────────────────────────┤
+│            SUPABASE (PostgreSQL)             │
+│  via supabase-js (service_role key)         │
+│  + MongoDB (GPS logs) + Redis (cache/queue) │
+└─────────────────────────────────────────────┘
+```
+
+### Adding New Logic
+
+| If you need to… | Put it in… |
+|---|---|
+| Handle a new API request | A **route** in `src/routes/` |
+| Validate business rules | An **assertion** in the appropriate **service** |
+| Query or mutate the database | A **repository** method |
+| Orchestrate a multi-step workflow | A **service** that coordinates repositories |
+| Send a notification | The **NotificationService** |
+| Add cross-cutting behaviour | **Middleware** in `src/middleware/` |
+
+### Architecture Decision Records
+
+Detailed design decisions — including why each pattern was chosen, the alternatives considered, and the consequences — are documented as Architecture Decision Records (ADRs):
+
+| ADR | Topic |
+|-----|-------|
+| [ADR-0001](docs/architecture/adr/ADR-0001-service-layer.md) | Service Decomposition |
+| [ADR-0002](docs/architecture/adr/ADR-0002-repository-pattern.md) | Repository Pattern |
+| [ADR-0003](docs/architecture/adr/ADR-0003-order-lifecycle.md) | Order Lifecycle Orchestrator |
+| [ADR-0004](docs/architecture/adr/ADR-0004-validation-workflow.md) | Validation & Workflow |
+| [ADR-0005](docs/architecture/adr/ADR-0005-timeline-management.md) | Timeline Management |
+| [ADR-0006](docs/architecture/adr/ADR-0006-notification-workflow.md) | Notification & OTP Workflow |
+
+Read the full set at `docs/architecture/adr/`.
+
+---
+
 ## Development Setup
 
 ### 1. Fork and Clone the Repository
@@ -93,6 +154,31 @@ Copy the example environment file and update the variables (Supabase, Firebase, 
 ```bash
 cp .env.example .env
 ```
+
+### 4. Set Up Pre-commit Secrets Guard
+
+To prevent sensitive credentials (e.g. Supabase keys, Relayer private keys, Firebase service accounts) from being accidentally committed, we enforce local secret scanning:
+
+1. Install **Gitleaks** on your development machine:
+   - **macOS**: `brew install gitleaks`
+   - **Windows**: `scoop install gitleaks` or download the binary from the [Gitleaks Releases page](https://github.com/gitleaks/gitleaks/releases).
+   - **Linux**: Install via snap `sudo snap install gitleaks` or download the binary.
+
+2. Configure a local pre-commit hook to block commits containing secrets:
+   Create or edit `.git/hooks/pre-commit` inside your local checkout with the following shell script:
+   ```bash
+   #!/bin/sh
+   # Run gitleaks detect on staged changes before committing
+   if ! gitleaks protect --staged --redact --verbose; then
+     echo "❌ Gitleaks detected secrets in your staged changes. Commit blocked!"
+     exit 1
+   fi
+   ```
+
+3. Make the pre-commit script executable:
+   ```bash
+   chmod +x .git/hooks/pre-commit
+   ```
 
 #### Flutter Development Setup
 

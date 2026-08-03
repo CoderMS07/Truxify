@@ -128,7 +128,7 @@ describe('Database Schema Constraints and RPC Upsert validation in supabase_setu
     expect(insertMatches.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('verifies that complete_trip_tx(p_order_id uuid) updates trips, trip_items, and trip_stops on successful verification', async () => {
+  it('verifies that complete_trip_tx(p_order_id uuid) finalizes the order-linked trip and raises when none exists', async () => {
     const setupSqlPath = path.resolve(__dirname, '../../../../docs/supabase_setup.sql');
     const migrationSqlPath = path.resolve(__dirname, '../../../../docs/migration_complete_trip_update.sql');
 
@@ -136,10 +136,16 @@ describe('Database Schema Constraints and RPC Upsert validation in supabase_setu
     const migrationSql = await fs.readFile(migrationSqlPath, 'utf8');
 
     for (const [name, sqlContent] of [['supabase_setup.sql', setupSql], ['migration_complete_trip_update.sql', migrationSql]]) {
-      // 1. Check for active trip lookup query
+      // 1. Check for order-linked trip lookup query
       expect(
-        /select\s+trip_display_id\s+into\s+v_trip_display_id\s+from\s+trips\s+where\s+driver_id\s*=\s*\w+\.driver_id\s+and\s+status\s*=\s*'active'/i.test(sqlContent),
-        `Active trip lookup not found in ${name}`
+        /select\s+trip_display_id\s+into\s+v_trip_display_id\s+from\s+trips\s+where\s+order_id\s*=\s*p_order_id/i.test(sqlContent),
+        `Order-linked trip lookup not found in ${name}`
+      ).toBe(true);
+
+      // 1b. Check that completion raises when no trip exists for the order
+      expect(
+        /if\s+v_trip_display_id\s+is\s+null[\s\S]*raise\s+exception[\s\S]*no\s+active\s+trip\s+found/i.test(sqlContent),
+        `No-trip raise guard not found in ${name}`
       ).toBe(true);
 
       // 2. Check for trips status update to completed
@@ -240,6 +246,17 @@ describe('Database Schema Constraints and RPC Upsert validation in supabase_setu
       expect(sqlContent).toMatch(/escrow_release_attempts\s+integer\s+not\s+null\s+default\s+0/i);
       expect(sqlContent).toMatch(/escrow_release_last_attempt_at\s+timestamptz/i);
     }
+  });
+
+  it('drops the orphaned public.bids table and bid_status enum in favor of load_bids', async () => {
+    const migrationSqlPath = path.resolve(
+      __dirname,
+      '../../../../supabase/migrations/20260802150000_drop_orphaned_bids_table.sql'
+    );
+    const sqlContent = await fs.readFile(migrationSqlPath, 'utf8');
+
+    expect(sqlContent).toMatch(/drop\s+table\s+if\s+exists\s+public\.bids/i);
+    expect(sqlContent).toMatch(/drop\s+type\s+if\s+exists\s+public\.bid_status/i);
   });
 
   it('verifies that database table counts and metadata are correct and in sync', async () => {
