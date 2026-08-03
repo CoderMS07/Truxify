@@ -14,8 +14,21 @@ permissions:
   contents: read
 
 jobs:
+  secret-scan:
+    name: Gitleaks Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   backend:
     name: Backend tests
+    needs: secret-scan
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -31,7 +44,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: backend/api
-        run: npm ci --workspaces=false
+        run: npm ci --workspaces=false --legacy-peer-deps
 
       - name: Run unit tests
         working-directory: backend/api
@@ -42,12 +55,19 @@ jobs:
         run: npm run test:integration
 
   customer:
-    name: Customer Flutter checks
+    name: Customer Flutter & Android APK checks
+    needs: secret-scan
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -70,14 +90,25 @@ jobs:
       - name: Test
         working-directory: apps/customer
         run: flutter test
+
+      - name: Build Android APK
+        working-directory: apps/customer
+        run: flutter build apk --debug --no-pub
 
   driver:
-    name: Driver Flutter checks
+    name: Driver Flutter & Android APK checks
+    needs: secret-scan
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -100,9 +131,14 @@ jobs:
       - name: Test
         working-directory: apps/driver
         run: flutter test
+
+      - name: Build Android APK
+        working-directory: apps/driver
+        run: flutter build apk --debug --no-pub
 
   ml:
     name: ML engine tests
+    needs: secret-scan
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -122,10 +158,44 @@ jobs:
 
       - name: Run tests
         working-directory: backend/ml
+        env:
+          PYTHONPATH: .
         run: python -m pytest tests/ -v
+
+  contracts:
+    name: Smart contract checks
+    needs: secret-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: blockchain/package-lock.json
+
+      - name: Install dependencies
+        working-directory: blockchain
+        run: npm ci
+
+      - name: Compile contracts
+        working-directory: blockchain
+        run: npx hardhat compile
+
+      - name: Run contract tests
+        working-directory: blockchain
+        run: npx hardhat test
+
+      - name: Verify backend ABI selectors match compiled contract
+        run: bash scripts/check-escrow-abi.sh
 
   client-credentials-guard:
     name: No client-side backend credentials
+    needs: secret-scan
     runs-on: ubuntu-latest
     timeout-minutes: 5
 

@@ -54,20 +54,50 @@ def load_model(model_name: str) -> Optional[Any]:
 def model_exists(model_name: str) -> bool:
     return os.path.exists(get_model_path(model_name))
 
+def get_model_meta(model_name: str) -> Optional[dict]:
+    """Return the persisted metadata dict for a model, or None."""
+    path = get_meta_path(model_name)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        logger.warning("Failed to read metadata for model '%s'", model_name)
+        return None
+
 async def ensure_model_loaded(model_name: str, train_fn, *args, **kwargs) -> Optional[Any]:
     async with _get_lock(model_name):
         if not model_exists(model_name):
             logger.info("Model '%s' not found, training...", model_name)
-            await train_fn(*args, **kwargs)
+            train_fn(*args, **kwargs)
         return load_model(model_name)
 
-async def preload_all_models():
-    from .demand_forecast import MODEL_NAME as DEMAND_MODEL_NAME
-    from .price_prediction import MODEL_NAME as PRICE_MODEL_NAME
+SUPPORTED_MODELS: list[str] = [
+    "demand_forecast",
+    "price_forecast",
+    "driver_profit",
+    "trust_scorer",
+    "collaborative_filter",
+]
 
-    model_names = [DEMAND_MODEL_NAME, PRICE_MODEL_NAME]
-    for name in model_names:
+
+def check_models_exist() -> set[str]:
+    """Return the set of persisted model names that exist on disk."""
+    return {name for name in SUPPORTED_MODELS if model_exists(name)}
+
+
+async def preload_all_models() -> set[str]:
+    """Verify which persisted models exist at startup.
+
+    Returns the set of model names found on disk so the caller can
+    populate runtime tracking without hardcoding.
+    """
+    available = set()
+    for name in SUPPORTED_MODELS:
         if model_exists(name):
             logger.info("Model '%s' already exists at startup", name)
+            available.add(name)
         else:
             logger.info("Model '%s' not found at startup, will train on first request", name)
+    return available
