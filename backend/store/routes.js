@@ -122,6 +122,7 @@ router.post('/store/transaction', async (req, res) => {
                     tx.addOperation(op.fn);
                 }
             }
+            return tx.execute();
         });
         
         res.json({

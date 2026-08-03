@@ -1,7 +1,8 @@
 import crypto from 'crypto';
-import { supabase, redisClient } from '../../config/db.js';
+import { supabase, redisClient, mongoDb } from '../../config/db.js';
 import { DomainError } from './domainError.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
+import { haversineKm } from '../../lib/pricing.js';
 import {
   sendDeliveryOtpNotification,
   storeDeliveryOtp,
@@ -35,13 +36,25 @@ function _haversineM(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-const orderTimelineService = new OrderTimelineService({ supabase, logger });
-
 const DELIVERY_OTP_READY_STATUSES = new Set(['arriving']);
+
+const DELIVERY_GEOFENCE_RADIUS_KM = Number(process.env.DELIVERY_GEOFENCE_RADIUS_KM) || 0.5;
+const DELIVERY_GEOFENCE_MAX_AGE_MS = Number(process.env.DELIVERY_GEOFENCE_MAX_AGE_MS) || 5 * 60 * 1000;
+
+function toEpochMs(value) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    const time = Date.parse(value);
+    return Number.isNaN(time) ? null : time;
+  }
+  return null;
+}
 
 export class DeliveryVerificationService {
   constructor(orderRepository, deps = {}) {
     this.orderRepository = orderRepository;
+    this.orderTimelineService = deps.orderTimelineService || new OrderTimelineService(supabase);
     this.notificationService = deps.notificationService || {
       sendDeliveryOtpNotification,
       storeDeliveryOtp,
@@ -49,6 +62,7 @@ export class DeliveryVerificationService {
       verifyDeliveryOtp,
     };
     this.escrowReleaseFn = deps.escrowReleaseFn || defaultEscrowRelease;
+    this.trackingTokenService = deps.trackingTokenService || null;
   }
 
   async validateDeliveryOtp({ orderId, driverId, otp }) {
@@ -59,7 +73,7 @@ export class DeliveryVerificationService {
       });
     }
 
-    const { data: order, error: orderErr } = await this.orderRepository.findOrderById(orderId, 'id, order_display_id, driver_id, customer_id, escrow_status, escrow_release_attempts, status, toll_estimate, base_freight, platform_fee, total_amount');
+    const { data: order, error: orderErr } = await this.orderRepository.findOrderById(orderId, 'id, order_display_id, driver_id, customer_id, escrow_status, escrow_release_attempts, status, release_tx_hash, drop_lat, drop_lng, toll_estimate, base_freight, platform_fee, total_amount');
 
     if (orderErr || !order) {
       throw new DomainError(404, { error: 'Order not found.' });
@@ -69,7 +83,9 @@ export class DeliveryVerificationService {
       throw new DomainError(403, { error: 'Access Denied: You are not assigned to this order.' });
     }
 
-    if (!DELIVERY_OTP_READY_STATUSES.has(order.status)) {
+    const isRetryForStuckEscrow = order.status === 'payment_released' && ['funded', 'release_failed'].includes(order.escrow_status);
+
+    if (!DELIVERY_OTP_READY_STATUSES.has(order.status) && !isRetryForStuckEscrow) {
       throw new DomainError(409, {
         error: 'Delivery OTP can only be verified after the shipment reaches the delivery location.',
       });
@@ -117,6 +133,12 @@ export class DeliveryVerificationService {
 
   async ensureDeliveryOtp({ orderId }) {
     return measureExecution('DeliveryVerificationService.ensureDeliveryOtp', async () => {
+    if (await checkOtpLockout(orderId)) {
+      throw new DomainError(429, {
+        error: `Too many failed OTP attempts. Delivery OTP is locked for ${OTP_LOCKOUT_MINUTES} minutes.`,
+      });
+    }
+
     const activeOtp = await this.notificationService.getActiveDeliveryOtp(orderId);
     if (activeOtp) {
       logger.warn(`[DeliveryVerificationService] Driver attempted OTP regeneration for order ${orderId}`);
@@ -135,6 +157,12 @@ export class DeliveryVerificationService {
 
   async resendDeliveryOtp({ orderId, customerId, orderDisplayId, orderStatus }) {
     return measureExecution('DeliveryVerificationService.resendDeliveryOtp', async () => {
+    if (await checkOtpLockout(orderId)) {
+      throw new DomainError(429, {
+        error: `Too many failed OTP attempts. Delivery OTP is locked for ${OTP_LOCKOUT_MINUTES} minutes.`,
+      });
+    }
+
     const terminalStatuses = ['delivered', 'cancelled', 'payment_released'];
     if (terminalStatuses.includes(orderStatus)) {
       throw new DomainError(400, { error: 'Cannot resend OTP for a completed or cancelled order.' });
@@ -143,12 +171,18 @@ export class DeliveryVerificationService {
       throw new DomainError(409, { error: 'Delivery OTP can only be sent after the shipment reaches the delivery location.' });
     }
 
+    const activeOtp = await this.notificationService.getActiveDeliveryOtp(orderId);
     const otp = crypto.randomInt(100000, 1000000).toString();
     const stored = await this.notificationService.storeDeliveryOtp(orderId, otp, OTP_TTL_MINUTES);
     if (!stored) {
       throw new Error('Failed to generate delivery OTP.');
     }
-    await clearOtpState(orderId);
+    // Only a fresh issuance after the previous OTP expired may reset the
+    // failure counter; an active-OTP resend keeps it so repeated resends
+    // cannot zero out the brute-force budget.
+    if (!activeOtp) {
+      await clearOtpState(orderId);
+    }
 
     const notifResult = await this.notificationService.sendDeliveryOtpNotification(customerId, orderDisplayId, otp);
     if (!notifResult.success) {
@@ -269,18 +303,10 @@ export class DeliveryVerificationService {
     return measureExecution('DeliveryVerificationService.verifyDelivery', async () => {
     const { order, otpRecord } = await this.validateDeliveryOtp({ orderId, driverId, otp });
 
-    const guardResult = await this.orderRepository.updateOrderGuardStatus(
-      orderId,
-      { updated_at: new Date().toISOString() },
-      ['cancelled', 'payment_released']
-    );
+    const isRetryForStuckEscrow = order.status === 'payment_released' && ['funded', 'release_failed'].includes(order.escrow_status);
 
-    if (guardResult.error) {
-      const pgCode = guardResult.error.code;
-      if (pgCode === 'PGRST116') {
-        throw new DomainError(409, { error: 'Order was already cancelled or payment released.' });
-      }
-      throw new DomainError(500, { error: 'Failed to verify OTP.', details: guardResult.error.message });
+    if (!isRetryForStuckEscrow) {
+      await this.assertDriverAtDropoff(order);
     }
 
     let releaseTxHash = null;
@@ -329,37 +355,85 @@ export class DeliveryVerificationService {
           retryable: true,
         });
       }
+
+      // Persist the confirmed release outcome immediately so a later
+      // complete_trip_tx failure is recoverable: escrow_status becomes
+      // 'released' before the RPC runs, so the SQL gate no longer blocks
+      // retries with a NULL release hash.
+      if (releaseTxHash || escrowAlreadyReleased) {
+        const { error: persistReleaseErr } = await this.orderRepository.updateOrder(orderId, {
+          escrow_status: 'released',
+          escrow_release_error: null,
+          escrow_released_at: new Date().toISOString(),
+          release_tx_hash: releaseTxHash,
+        });
+
+        if (persistReleaseErr) {
+          logger.error('[escrow] Release confirmed but persistence failed:', persistReleaseErr.message);
+        }
+      }
+    } else if (order.escrow_status === 'released') {
+      // Release was confirmed in a previous attempt — reuse the persisted hash.
+      releaseTxHash = order.release_tx_hash || null;
     } else {
       logger.info(`[escrow] Escrow not funded (status: ${order.escrow_status}) — skipping on-chain release.`);
     }
 
     // 2. Execute Postgres RPC to complete the trip AFTER blockchain success
-    const { data: tripData, error: rpcErr } = await this.orderRepository.executeRpc('complete_trip_tx', {
-      p_order_id: orderId,
-      p_otp_id: otpRecord.id,
-      p_release_tx_hash: releaseTxHash,
-    });
+    let verifiedOrder;
+    let tripData = null;
 
-    if (rpcErr) {
-      logger.error('complete_trip_tx RPC failed:', rpcErr.message);
-      throw new DomainError(500, { error: 'Failed to complete trip in database.', details: rpcErr.message });
+    if (!isRetryForStuckEscrow) {
+      const guardResult = await this.orderRepository.updateOrderGuardStatus(
+        orderId,
+        { updated_at: new Date().toISOString() },
+        ['cancelled', 'payment_released']
+      );
+
+      if (guardResult.error) {
+        const pgCode = guardResult.error.code;
+        if (pgCode === 'PGRST116') {
+          throw new DomainError(409, { error: 'Order was already cancelled or payment released.' });
+        }
+        throw new DomainError(500, { error: 'Failed to verify OTP.', details: guardResult.error.message });
+      }
+
+      const rpcResult = await this.orderRepository.executeRpc('complete_trip_tx', {
+        p_order_id: orderId,
+        p_otp_id: otpRecord.id,
+        p_release_tx_hash: releaseTxHash,
+      }, userClient);
+      tripData = rpcResult.data;
+
+      if (rpcResult.error) {
+        logger.error('complete_trip_tx RPC failed:', rpcResult.error.message);
+        throw new DomainError(500, { error: 'Failed to complete trip.', details: rpcResult.error.message });
+      }
+
+      const verifyResult = await this.orderRepository.findOrderById(orderId, 'status, escrow_status, escrow_release_attempts');
+      verifiedOrder = verifyResult.data;
+
+      if (verifyResult.error || !verifiedOrder) {
+        logger.error(`[verify-delivery] Failed to verify order status after RPC for order ${orderId}`);
+        throw new DomainError(500, { error: 'Failed to verify order status after payment release.' });
+      }
+
+      if (verifiedOrder.status !== 'payment_released') {
+        logger.warn(`[verify-delivery] Order ${orderId} status changed to "${verifiedOrder.status}" — payment was not released.`);
+        throw new DomainError(409, {
+          error: 'Order status changed during processing. Payment was not released.',
+        });
+      }
+
+      await this.completeDeliveryOtp({ otpRecordId: otpRecord.id, orderId });
+    } else {
+      logger.info(`[verify-delivery] Retry for stuck escrow for order ${orderId} by driver ${driverId}`);
     }
 
-    const { data: verifiedOrder, error: verifyErr } = await this.orderRepository.findOrderById(orderId, 'status, escrow_status, escrow_release_attempts');
-
-    if (verifyErr || !verifiedOrder) {
-      logger.error(`[verify-delivery] Failed to verify order status after RPC for order ${orderId}`);
-      throw new DomainError(500, { error: 'Failed to verify order status after payment release.' });
-    }
-
-    if (verifiedOrder.status !== 'payment_released') {
-      logger.warn(`[verify-delivery] Order ${orderId} status changed to "${verifiedOrder.status}" — payment was not released.`);
-      throw new DomainError(409, {
-        error: 'Order status changed during processing. Payment was not released.',
-      });
-    }
-
-    await this.completeDeliveryOtp({ otpRecordId: otpRecord.id, orderId });
+    // The trip is complete (payment_released) — kill any active public
+    // tracking tokens so a shared link can no longer broadcast the driver's
+    // live location. Best-effort: revokeAllForOrder never throws.
+    await this.trackingTokenService?.revokeAllForOrder(order.order_display_id);
 
     // --- Fire FCM push to driver: "Payment Released ✓" ---
     const resolvedDriverIdForPush = tripData?.driver_id || order.driver_id;

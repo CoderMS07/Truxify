@@ -11,6 +11,78 @@ import logger from './logger.js';
  * In production, development auth headers (x-user-id, x-user-role, x-user-name)
  * are unconditionally stripped to prevent any possibility of bypass.
  */
+export async function verifyAuthToken(token) {
+  let userProfile;
+  let firebaseUid;
+  let supabaseUserId = null;
+
+  let decoded;
+  try {
+    decoded = jwt.decode(token);
+  } catch (err) {
+  }
+
+  const isSupabaseToken = decoded && typeof decoded.iss === 'string' && (decoded.iss.includes('supabase') || decoded.iss.includes('supabase.co'));
+
+  if (isSupabaseToken) {
+    if (!supabase) {
+      throw new Error('Supabase client is not configured on this server.');
+    }
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !user) {
+      throw new Error(authError?.message || 'Invalid or expired Supabase authentication token.');
+    }
+    supabaseUserId = user.id;
+
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('id, firebase_uid, role, full_name, phone')
+      .eq('id', user.id)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error('Database query failed verification: ' + error.message);
+    }
+    userProfile = profile;
+  } else {
+    if (!firebaseAdmin) {
+      throw new Error('Firebase Auth verification is not configured on this server.');
+    }
+    const decodedToken = await firebaseAdmin.auth().verifyIdToken(token, true);
+    firebaseUid = decodedToken.uid;
+
+    if (!supabase) {
+      throw new Error('Supabase client is not configured on this server.');
+    }
+
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('id, firebase_uid, role, full_name, phone')
+      .eq('firebase_uid', firebaseUid)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error('Database query failed verification: ' + error.message);
+    }
+    userProfile = profile;
+  }
+
+  if (!userProfile) {
+    throw new Error('User profile not found or inactive.');
+  }
+
+  return {
+    id: userProfile.id,
+    uid: userProfile.firebase_uid,
+    role: userProfile.role,
+    fullName: userProfile.full_name,
+    phone: userProfile.phone,
+    isActive: true
+  };
+}
+
 export async function authenticate(req, res, next) {
   // ── Production header sanitization (defense in depth) ──────────────
   // Strip dev-only authentication headers before any logic runs.
@@ -154,7 +226,7 @@ export async function authenticate(req, res, next) {
       if (!firebaseAdmin) {
         return res.status(500).json({ error: 'Firebase Auth verification is not configured on this server.' });
       }
-      const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
+      const decodedToken = await firebaseAdmin.auth().verifyIdToken(token, true);
       firebaseUid = decodedToken.uid;
 
       // Check Redis cache first.

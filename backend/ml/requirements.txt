@@ -30,6 +30,7 @@ httpx==0.27.0
 # --- Data / Caching ---
 redis==5.0.0
 sqlalchemy==2.0.23
+psycopg2-binary==2.9.10
 
 # --- Observability ---
 opentelemetry-api==1.22.0

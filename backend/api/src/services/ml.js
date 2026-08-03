@@ -107,7 +107,7 @@ export async function predictPrice({
 } = {}) {
   guardMlApiKey();
   
-  const cacheKey = JSON.stringify({ distanceKm, cargoWeightKg, truckType, routeOrigin, routeDestination });
+  const cacheKey = JSON.stringify({ distanceKm, cargoWeightKg, truckType, routeOrigin, routeDestination, trafficMultiplier });
   const cached = priceCache.get(cacheKey);
   if (cached !== undefined) return cached;
 
@@ -148,8 +148,8 @@ export async function predictPrice({
 
   const result = {
       ...validated.validated,
-      estimatedPricePaisa: convertToPaisa(validated.validated.estimated_price),
-      estimatedPriceInr: validated.validated.estimated_price,
+      estimatedPricePaisa: convertToPaisa(validated.validated.estimated_price * trafficMultiplier),
+      estimatedPriceInr: validated.validated.estimated_price * trafficMultiplier,
   };
   priceCache.set(cacheKey, result);
   return result;
@@ -459,7 +459,7 @@ export async function matchDeadhead({ driverDestination, truckSpecs, arrivalTime
  */
 export async function optimiseMidTrip(routeData) {
   guardMlApiKey();
-  const baseUrl = process.env.ML_ENGINE_URL || DEFAULT_ML_ENGINE_URL;
+  const baseUrl = getBaseUrl();
   const url = `${baseUrl}/optimise/mid-trip`;
   const response = await fetch(url, {
     method: 'POST',
@@ -477,7 +477,7 @@ export async function optimiseMidTrip(routeData) {
  */
 export async function trainDemandModel(force = false) {
   guardMlApiKey();
-  const baseUrl = process.env.ML_ENGINE_URL || DEFAULT_ML_ENGINE_URL;
+  const baseUrl = getBaseUrl();
   const url = `${baseUrl}/train/demand`;
   const response = await fetch(url, {
     method: 'POST',
@@ -495,7 +495,7 @@ export async function trainDemandModel(force = false) {
  */
 export async function trainPriceModel(force = false) {
   guardMlApiKey();
-  const baseUrl = process.env.ML_ENGINE_URL || DEFAULT_ML_ENGINE_URL;
+  const baseUrl = getBaseUrl();
   const url = `${baseUrl}/train/price`;
   const response = await fetch(url, {
     method: 'POST',
@@ -512,7 +512,7 @@ export async function trainPriceModel(force = false) {
  */
 export async function listModels() {
   guardMlApiKey();
-  const baseUrl = process.env.ML_ENGINE_URL || DEFAULT_ML_ENGINE_URL;
+  const baseUrl = getBaseUrl();
   const url = `${baseUrl}/models`;
   const response = await fetch(url, {
     method: 'GET',
@@ -559,7 +559,7 @@ export async function matchEnRouteLoads({
       width_m: Number(o.width_m || 1),
       height_m: Number(o.height_m || 1),
       pickup_deadline: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
-      payment_inr: Number(o.payment_inr || o.freight_value || 0),
+      payment_inr: Number(o.payment_inr || (o.freight_value ? o.freight_value / 100 : 0)),
     }));
 
   const specs = truckSpecs || {
@@ -599,7 +599,7 @@ export async function matchEnRouteLoads({
           detour_km: dtKm,
           distance_to_pickup_km: dtKm,
           match_score: Math.max(0, 1 - dtKm / maxDetourKm),
-          estimated_earnings: Number(o.payment_inr || o.freight_value || 0),
+          estimated_earnings: Number(o.payment_inr || (o.freight_value ? o.freight_value / 100 : 0)),
           _fallback: true,
         };
       })
