@@ -19,7 +19,7 @@ const NETWORK_ERROR_CODES = new Set([
 ]);
 
 function isTransientHttpStatus(status) {
-  if (status == null) return false;
+  if (status === null) return false;
   if (status === 408) return true;
   if (status >= 500 && status <= 599) return true;
   if (status === 429 || status === 408) return true;
