@@ -57,7 +57,7 @@ class RegionService {
     // ============ Health Checks ============
 
     async startHealthChecks() {
-        setInterval(async () => {
+        clearInterval(window.__interval); window.__interval = setInterval(async () => {
             await this.checkAllRegions();
         }, 10000); // Every 10 seconds
     }

@@ -45,7 +45,7 @@ router.get('/', authenticate, userLimiter, requireRole(['driver', 'admin']), asy
       const lat = load.pickup_lat;
       const lng = load.pickup_lng;
 
-      if (lat == null || lng == null) {
+      if (lat === null || lng == null) {
         return null;
       }
 
