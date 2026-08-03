@@ -36,19 +36,28 @@ contract zkEVMBridge is Ownable, ReentrancyGuard {
         emit BridgeDeposit(msg.sender, amount, bridgeFee);
     }
 
-    function withdrawFromL2(
-        uint256 amount,
-        bytes calldata proof
-    ) external nonReentrant {
-        require(proof.length > 0, "Empty proof");
-        require(depositedAmount[msg.sender] >= amount, "Exceeds deposited amount");
-        // Withdraw from L2
-        zkEVM.withdrawFromL2(amount, proof);
-        depositedAmount[msg.sender] -= amount;
-        pendingWithdrawals[msg.sender] += amount;
+    mapping(bytes32 => bool) public usedProofs;
 
-        emit BridgeWithdraw(msg.sender, amount);
-    }
+function withdrawFromL2(
+    uint256 amount,
+    bytes calldata proof
+) external nonReentrant {
+    require(proof.length > 0, "Empty proof");
+    require(amount > 0, "Amount must be > 0");
+    require(depositedAmount[msg.sender] >= amount, "Exceeds deposited amount");
+
+    bytes32 proofHash = keccak256(proof);
+    require(!usedProofs[proofHash], "Proof already used");
+    usedProofs[proofHash] = true;
+
+    // Withdraw from L2 — proof is verified inside zkEVM.withdrawFromL2
+    zkEVM.withdrawFromL2(amount, proof);
+
+    depositedAmount[msg.sender] -= amount;
+    pendingWithdrawals[msg.sender] += amount;
+
+    emit BridgeWithdraw(msg.sender, amount);
+}
 
     function claimWithdrawal() external nonReentrant {
         uint256 amount = pendingWithdrawals[msg.sender];
