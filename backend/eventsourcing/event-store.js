@@ -174,7 +174,7 @@ class EventStore {
                         cancelledAt: timestamp
                     },
                     timestamp,
-                    version: (await this.getAggregateState(command.aggregateId)?.version || 0) + 1
+                    version: ((await this.getAggregateState(command.aggregateId))?.version || 0) + 1
                 });
                 break;
 
@@ -189,7 +189,7 @@ class EventStore {
                         assignedAt: timestamp
                     },
                     timestamp,
-                    version: (await this.getAggregateState(command.aggregateId)?.version || 0) + 1
+                    version: ((await this.getAggregateState(command.aggregateId))?.version || 0) + 1
                 });
                 break;
 
