@@ -1,21 +1,24 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:developer' as developer;
 
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/app_models.dart';
+import '../models/deadhead_recommendation.dart';
 import '../models/marketplace_models.dart';
+import 'api_client.dart';
+import 'driver_insights_service.dart';
+import 'secure_storage.dart';
 
 class MarketplaceRepository {
   MarketplaceRepository({
     SupabaseClient? client,
-    http.Client? httpClient,
+    ApiClient? apiClient,
     String? apiBaseUrl,
   })  : _providedClient = client,
-        _httpClient = httpClient ?? http.Client(),
+        _apiClient = apiClient ?? ApiClient(baseUrl: apiBaseUrl),
         _apiBaseUrl = (apiBaseUrl ?? defaultApiBaseUrl).replaceFirst(
           RegExp(r'/$'),
           '',
@@ -23,96 +26,208 @@ class MarketplaceRepository {
 
   static const String defaultApiBaseUrl = String.fromEnvironment(
     'TRUXIFY_API_BASE_URL',
-    defaultValue: 'http://localhost:5000',
   );
 
   final SupabaseClient? _providedClient;
   SupabaseClient get _client => _providedClient ?? Supabase.instance.client;
-  final http.Client _httpClient;
+  final ApiClient _apiClient;
   final String _apiBaseUrl;
 
+  String _encodePathSegment(String value) => Uri.encodeComponent(value);
+
+  void dispose() {
+    _apiClient.dispose();
+  }
+
+  Future<String?> _firebaseAccessToken() async {
+    try {
+      return await FirebaseAuth.instance.currentUser?.getIdToken();
+    } catch (e) {
+      debugPrint('Firebase token error: $e');
+      return null;
+    }
+  }
+
+  String? _supabaseAccessToken() {
+    try {
+      return _client.auth.currentSession?.accessToken;
+    } catch (e) {
+      debugPrint('Supabase token error: $e');
+      return null;
+    }
+  }
+
   Future<Map<String, String>> _authHeaders() async {
-    final accessToken = await FirebaseAuth.instance.currentUser?.getIdToken();
-    final userId = _client.auth.currentUser?.id ?? '';
+    final token = _supabaseAccessToken() ?? await _firebaseAccessToken();
+    if (token != null && token.isNotEmpty) {
+      // Persist to OS-backed secure storage for background sync and
+      // WebSocket reconnects (issue #5739).
+      unawaited(AuthTokenStore.persist(token));
+    }
     return <String, String>{
       'Content-Type': 'application/json',
-      if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+      if (token != null && token.isNotEmpty)
+        'Authorization': 'Bearer $token',
     };
   }
 
   Future<List<LoadOffer>> fetchLoadOffers() async {
-    final uri = Uri.parse('$_apiBaseUrl/api/orders/load-offers');
-    final response = await _httpClient.get(uri, headers: await _authHeaders());
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw StateError('Failed to fetch load offers');
+    final path = '/api/orders/load-offers';
+    try {
+      final decoded = await _apiClient.get(path);
+      if (decoded is! List) throw StateError('Unexpected response type');
+      return decoded.cast<Map<String, dynamic>>().map(_mapLoadOffer).toList(growable: false);
+    } catch (e) {
+      if (e is ApiException) throw StateError(e.message);
+      rethrow;
     }
-
-    final decoded = jsonDecode(response.body);
-    if (decoded is! List) throw StateError('Unexpected response type');
-    return decoded.cast<Map<String, dynamic>>().map(_mapLoadOffer).toList(growable: false);
   }
 
-  Future<List<LoadOffer>> fetchEnRouteLoads() async {
-    final uri = Uri.parse('$_apiBaseUrl/api/orders/load-offers/en-route');
-    final response = await _httpClient.get(uri, headers: await _authHeaders());
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw StateError('Failed to fetch en-route loads');
+  Future<List<LoadOffer>> fetchEnRouteLoads({
+    double? currentLat,
+    double? currentLng,
+    double maxDetourKm = 50,
+  }) async {
+    final queryParams = <String, String>{};
+    if (currentLat != null && currentLng != null) {
+      queryParams['current_lat'] = currentLat.toStringAsFixed(6);
+      queryParams['current_lng'] = currentLng.toStringAsFixed(6);
+      queryParams['max_detour_km'] = maxDetourKm.toStringAsFixed(1);
     }
+    final query = queryParams.isNotEmpty
+        ? '?${queryParams.entries.map((e) => '${e.key}=${e.value}').join('&')}'
+        : '';
+    final path = '/api/orders/load-offers/en-route$query';
+    try {
+      final decoded = await _apiClient.get(path);
+      if (decoded is! List) throw StateError('Unexpected response type');
+      return decoded.cast<Map<String, dynamic>>().map(_mapLoadOffer).toList(growable: false);
+    } catch (e) {
+      if (e is ApiException) throw StateError(e.message);
+      rethrow;
+    }
+  }
 
-    final decoded = jsonDecode(response.body);
-    if (decoded is! List) throw StateError('Unexpected response type');
-    return body.cast<Map<String, dynamic>>().map(_mapLoadOffer).toList(growable: false);
+  Future<Map<String, dynamic>> fetchDemandHeatmap() async {
+    final path = '/api/demand-heatmap';
+    try {
+      final decoded = await _apiClient.get(path);
+      return decoded as Map<String, dynamic>;
+    } catch (e) {
+      if (e is ApiException) throw StateError(e.message);
+      rethrow;
+    }
   }
 
   Future<DriverBid> submitBid({
     required String loadId,
-    required String driverId,
     required num amount,
   }) async {
-    final uri = Uri.parse('$_apiBaseUrl/api/orders/$loadId/bids');
-    final accessToken = await FirebaseAuth.instance.currentUser?.getIdToken();
-    final response = await _httpClient.post(
-      uri,
-      headers: <String, String>{
-        'Content-Type': 'application/json',
-        if (accessToken != null) 'Authorization': 'Bearer $accessToken',
-      },
-      body: jsonEncode(<String, dynamic>{
-        'bid_amount': (amount * 100).round(),
-      }),
-    );
-
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw StateError(decoded['error']?.toString() ?? 'Failed to submit bid.');
+    final path = '/api/orders/${_encodePathSegment(loadId)}/bids';
+    try {
+      final decoded = await _apiClient.post(
+        path,
+        body: <String, dynamic>{
+          'bid_amount': (amount * 100).round(),
+        },
+      ) as Map<String, dynamic>;
+      
+      return DriverBid.fromJson(Map<String, dynamic>.from(decoded['bid'] as Map));
+    } catch (e) {
+      if (e is ApiException) throw StateError(e.message);
+      rethrow;
     }
-
-    return DriverBid.fromJson(Map<String, dynamic>.from(decoded['bid'] as Map));
   }
 
-  Future<List<DriverBid>> fetchDriverBids({required String driverId}) async {
-    final uri = Uri.parse('$_apiBaseUrl/api/driver/bids');
-    final response = await _httpClient.get(uri, headers: await _authHeaders());
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw StateError('Failed to fetch driver bids');
+  Future<List<DriverBid>> fetchDriverBids() async {
+    final path = '/api/driver/bids';
+    try {
+      final decoded = await _apiClient.get(path);
+      final body = decoded is Map<String, dynamic>
+          ? decoded['bids'] as List? ?? const []
+          : decoded as List;
+      return body.cast<Map<String, dynamic>>().map(DriverBid.fromJson).toList(growable: false);
+    } catch (e) {
+      if (e is ApiException) throw StateError(e.message);
+      rethrow;
     }
+  }
 
-    final decoded = jsonDecode(response.body);
-    final body = decoded is Map<String, dynamic>
-        ? decoded['bids'] as List? ?? const []
-        : decoded as List;
-    return body.cast<Map<String, dynamic>>().map(DriverBid.fromJson).toList(growable: false);
+  Future<List<DeadheadRecommendation>> fetchDeadheadRecommendations({
+    required double destLat,
+    required double destLng,
+    required double maxWeightKg,
+    required double maxLengthM,
+    required double maxWidthM,
+    required double maxHeightM,
+    required String arrivalTime,
+    required List<Map<String, dynamic>> availableLoads,
+  }) async {
+    final path = '/api/driver/match/deadhead';
+    try {
+      final decoded = await _apiClient.post(
+        path,
+        body: <String, dynamic>{
+          'driver_destination': {'lat': destLat, 'lng': destLng},
+          'truck_specs': {
+            'max_weight_kg': maxWeightKg,
+            'max_length_m': maxLengthM,
+            'max_width_m': maxWidthM,
+            'max_height_m': maxHeightM,
+          },
+          'arrival_time': arrivalTime,
+          'available_loads': availableLoads,
+        },
+      ) as Map<String, dynamic>;
+
+      final recs = decoded['recommendations'] as List? ?? const [];
+      return recs
+          .cast<Map<String, dynamic>>()
+          .map(DeadheadRecommendation.fromJson)
+          .toList(growable: false);
+    } catch (e) {
+      if (e is ApiException) throw StateError(e.message);
+      rethrow;
+    }
   }
 
   LoadOffer _mapLoadOffer(Map<String, dynamic> row) {
     String s(String key, [String fallback = '']) => (row[key] ?? fallback).toString();
-    num n(String key, [num fallback = 0]) => (row[key] as num?) ?? fallback;
-    double d(String key, [double fallback = 0]) => (row[key] as num?)?.toDouble() ?? fallback;
-    int i(String key, [int fallback = 0]) => (row[key] as num?)?.toInt() ?? fallback;
-    bool b(String key, [bool fallback = false]) => (row[key] as bool?) ?? fallback;
+    num n(String key, [num fallback = 0]) {
+      final v = row[key];
+      if (v is num) return v;
+      if (v is String) return num.tryParse(v) ?? fallback;
+      return fallback;
+    }
+    double d(String key, [double fallback = 0]) {
+      final v = row[key];
+      if (v is num) return v.toDouble();
+      if (v is String) return double.tryParse(v) ?? fallback;
+      return fallback;
+    }
+    int i(String key, [int fallback = 0]) {
+      final v = row[key];
+      if (v is num) return v.toInt();
+      if (v is String) return int.tryParse(v) ?? fallback;
+      return fallback;
+    }
+    bool b(String key, [bool fallback = false]) {
+      final v = row[key];
+      if (v is bool) return v;
+      if (v is String) {
+        final lower = v.toLowerCase();
+        if (lower == 'true' || lower == '1') return true;
+        if (lower == 'false' || lower == '0') return false;
+      }
+      if (v is num) return v != 0;
+      return fallback;
+    }
+    double? nullableDouble(String key) {
+      final v = row[key];
+      if (v is num) return v.toDouble();
+      if (v is String) return double.tryParse(v);
+      return null;
+    }
 
     final freightValue = row.containsKey('freight_value')
         ? _formatCurrency(n('freight_value'))
@@ -126,6 +241,17 @@ class MarketplaceRepository {
         : (row.containsKey('estimatedProfit') ? s('estimatedProfit') : s('estimated_profit', netProfit));
 
     final isBestProfit = b('is_best_profit', b('best_profit', false));
+
+    // Raw numeric data for ML payloads (nullable for backward compatibility).
+    final originLat = nullableDouble('origin_lat');
+    final originLng = nullableDouble('origin_lng');
+    final destLat = nullableDouble('dest_lat');
+    final destLng = nullableDouble('dest_lng');
+    final weightKg = nullableDouble('weight_kg');
+    final lengthM = nullableDouble('length_m');
+    final widthM = nullableDouble('width_m');
+    final heightM = nullableDouble('height_m');
+    final paymentInr = nullableDouble('payment_inr');
 
     return LoadOffer(
       id: s('id'),
@@ -147,7 +273,7 @@ class MarketplaceRepository {
       bestProfit: isBestProfit,
       routeDistance: s('route_distance', '—'),
       routeDuration: s('route_duration', '—'),
-      weight: row.containsKey('weight_kg') ? '${n('weight_kg')} kg' : s('weight', '—'),
+      weight: weightKg != null ? '${_formatWeight(weightKg)} kg' : s('weight', '—'),
       dimensions: s('dimensions', '—'),
       stackable: s('stackable', '—'),
       fragile: s('fragile', '—'),
@@ -161,7 +287,70 @@ class MarketplaceRepository {
           : s('extraEarnings', '₹0'),
       spaceAvailable: s('space_available', '—'),
       updatedTotalEarnings: s('updated_total_earnings', '—'),
+      originLat: originLat,
+      originLng: originLng,
+      destinationLat: destLat,
+      destinationLng: destLng,
+      weightKg: weightKg,
+      lengthM: lengthM,
+      widthM: widthM,
+      heightM: heightM,
+      paymentInr: paymentInr,
     );
+  }
+
+  /// Builds the deadhead recommendation payload matching the ML engine's
+  /// [DeadheadInput] schema.  Loads with incomplete coordinate/cargo data are
+  /// silently filtered out so the ML model never receives 0.0 placeholders.
+  ///
+  /// [loads] – available load offers (from [fetchLoadOffers] /
+  ///           [fetchEnRouteLoads]).
+  /// [driverLat], [driverLng] – the driver's current GPS coordinates.
+  /// [truckMaxWeightKg] … [truckMaxHeightM] – truck capacity limits.
+  /// [arrivalTime] – ISO-8601 datetime string for when the driver arrives
+  ///                  at their destination.
+  Map<String, dynamic> buildDeadheadPayload({
+    required List<LoadOffer> loads,
+    required double driverLat,
+    required double driverLng,
+    required double truckMaxWeightKg,
+    required double truckMaxLengthM,
+    required double truckMaxWidthM,
+    required double truckMaxHeightM,
+    required String arrivalTime,
+  }) {
+    final validLoads = <Map<String, dynamic>>[];
+    for (final load in loads) {
+      if (!load.hasDeadheadData) continue;
+      validLoads.add(<String, dynamic>{
+        'load_id': load.id,
+        'origin_lat': load.originLat,
+        'origin_lng': load.originLng,
+        'dest_lat': load.destinationLat,
+        'dest_lng': load.destinationLng,
+        'weight_kg': load.weightKg,
+        'length_m': load.lengthM ?? 0.0,
+        'width_m': load.widthM ?? 0.0,
+        'height_m': load.heightM ?? 0.0,
+        'pickup_deadline': arrivalTime,
+        'payment_inr': load.paymentInr,
+      });
+    }
+
+    return <String, dynamic>{
+      'driver_destination': <String, dynamic>{
+        'lat': driverLat,
+        'lng': driverLng,
+      },
+      'truck_specs': <String, dynamic>{
+        'max_weight_kg': truckMaxWeightKg,
+        'max_length_m': truckMaxLengthM,
+        'max_width_m': truckMaxWidthM,
+        'max_height_m': truckMaxHeightM,
+      },
+      'arrival_time': arrivalTime,
+      'available_loads': validLoads,
+    };
   }
 
   /// Subscribes to new available load offers via Supabase Realtime postgres_changes.
@@ -188,7 +377,9 @@ class MarketplaceRepository {
             final newRecord = payload.newRecord;
             if (newRecord.isNotEmpty) {
               final offer = _mapLoadOffer(newRecord);
-              controller.add(offer);
+              if (!controller.isClosed) {
+                controller.add(offer);
+              }
             }
           } catch (e, st) {
             developer.log('Error mapping load offer', error: e, stackTrace: st);
@@ -197,6 +388,8 @@ class MarketplaceRepository {
       ).subscribe();
     } catch (e, st) {
       developer.log('Supabase/Realtime not available', error: e, stackTrace: st);
+      controller.close();
+      return const Stream.empty();
     }
 
     controller.onCancel = () {
@@ -213,9 +406,53 @@ class MarketplaceRepository {
     return controller.stream;
   }
 
+  Future<ProfitPrediction> predictLoadProfit({
+    required LoadOffer load,
+    required double truckMileageKmL,
+    required double fuelPricePerLitre,
+    required double tripDurationHours,
+  }) async {
+    final routeDistanceKm = _parseDistanceKm(load.routeDistance);
+    final tollEstimateInr = _parseCurrencyInr(load.tollCost);
+    final cargoWeightKg = load.weightKg ?? 0;
+
+    if (routeDistanceKm <= 0 || cargoWeightKg <= 0 || truckMileageKmL <= 0) {
+      throw StateError('Insufficient data for profit prediction');
+    }
+
+    final service = DriverInsightsService(apiBaseUrl: _apiBaseUrl);
+    try {
+      return await service.predictProfit(
+        routeDistanceKm: routeDistanceKm,
+        fuelPricePerLitre: fuelPricePerLitre,
+        tollEstimateInr: tollEstimateInr,
+        truckMileageKmL: truckMileageKmL,
+        cargoWeightKg: cargoWeightKg,
+        tripDurationHours: tripDurationHours,
+      );
+    } finally {
+      service.dispose();
+    }
+  }
+
+  double _parseDistanceKm(String distance) {
+    final cleaned = distance.replaceAll(RegExp(r'[^0-9.]'), '');
+    return double.tryParse(cleaned) ?? 0;
+  }
+
+  double _parseCurrencyInr(String value) {
+    final cleaned = value.replaceAll(RegExp(r'[^0-9]'), '');
+    return double.tryParse(cleaned) ?? 0;
+  }
+
   String _formatCurrency(num value) {
     final rupees = value / 100;
     final rounded = rupees.round();
     return '₹$rounded';
+  }
+
+  String _formatWeight(double kg) {
+    if (kg == kg.roundToDouble()) return '${kg.toInt()}';
+    return kg.toStringAsFixed(1);
   }
 }

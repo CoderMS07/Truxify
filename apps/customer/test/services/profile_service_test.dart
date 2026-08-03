@@ -77,4 +77,68 @@ void main() {
       throwsA(isA<StateError>().having((e) => e.message, 'message', 'Bad Request')),
     );
   });
+
+  test('fetchProfile clears corrupted cached data on ApiException', () async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('truxify_profile_cache', 'not-json');
+
+    when(() => apiClient.get('/api/profile'))
+        .thenThrow(const ApiException(503, 'Service Unavailable'));
+
+    expect(
+      () => profileService.fetchProfile(),
+      throwsA(isA<StateError>().having(
+        (e) => e.message,
+        'message',
+        'Service Unavailable',
+      )),
+    );
+    expect(prefs.getString('truxify_profile_cache'), isNull);
+  });
+
+  group('fetchCustomerStats', () {
+    test('returns stats map on successful response', () async {
+      when(() => apiClient.get('/api/profile/customer-stats'))
+          .thenAnswer((_) async => {
+                'stats': {
+                  'totalOrders': 42,
+                  'totalSaved': 12500,
+                  'co2ReducedKg': 15.6,
+                },
+              });
+
+      final stats = await profileService.fetchCustomerStats();
+
+      expect(stats, isNotNull);
+      expect(stats!['totalOrders'], equals(42));
+      expect(stats['totalSaved'], equals(12500));
+      expect(stats['co2ReducedKg'], equals(15.6));
+
+      verify(() => apiClient.get('/api/profile/customer-stats')).called(1);
+    });
+
+    test('returns null when stats field is null', () async {
+      when(() => apiClient.get('/api/profile/customer-stats'))
+          .thenAnswer((_) async => {'stats': null});
+
+      final stats = await profileService.fetchCustomerStats();
+      expect(stats, isNull);
+    });
+
+    test('returns null on ApiException', () async {
+      when(() => apiClient.get('/api/profile/customer-stats'))
+          .thenThrow(const ApiException(500, 'Server Error'));
+
+      final stats = await profileService.fetchCustomerStats();
+      expect(stats, isNull);
+    });
+
+    test('returns null on unexpected exception', () async {
+      when(() => apiClient.get('/api/profile/customer-stats'))
+          .thenThrow(Exception('Network error'));
+
+      final stats = await profileService.fetchCustomerStats();
+      expect(stats, isNull);
+    });
+  });
 }

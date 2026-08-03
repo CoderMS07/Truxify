@@ -1,19 +1,19 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../controllers/app_controller.dart';
 import '../core/app_routes.dart';
 import '../core/config.dart';
-import '../models/app_models.dart';
 import '../data/mock_data.dart';
+import '../l10n/app_localizations.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/fcm_service.dart';
+import '../services/secure_storage.dart';
 import '../core/supabase_config.dart';
-import 'package:truxify_shared/truxify_shared.dart' hide NotificationsScreen;
+import 'package:truxify_shared/truxify_shared.dart' hide NotificationsScreen, FcmService;
 import 'notifications_screen.dart';
 import '../utils/validators.dart';
 
@@ -32,12 +32,12 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  String _driverName = driverName;
-  String _driverPhone = '+91 98765 43210';
-  String _driverEmail = 'kanish.jeba@truxify.com';
+  String _driverName = '';
+  String _driverPhone = '';
+  String _driverEmail = '';
   String _currentLanguage = 'English';
   String _walletAddress = '';
-  String _truckNumber = driverTruckNumber;
+  String _truckNumber = '';
 
   bool _isLoadingReputation = true;
   double? _platformRating;
@@ -51,6 +51,47 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _fetchReputation();
   }
 
+  bool _initializedLanguage = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_initializedLanguage) {
+      final controller = TruxifyScope.of(context);
+      _currentLanguage = _nameForLanguageCode(controller.locale.languageCode);
+      _initializedLanguage = true;
+    }
+  }
+
+  String _nameForLanguageCode(String code) {
+    switch (code) {
+      case 'en': return 'English';
+      case 'hi': return 'Hindi';
+      case 'ta': return 'Tamil';
+      case 'kn': return 'Kannada';
+      case 'mr': return 'Marathi';
+      default: return 'English';
+    }
+  }
+
+  String _langCodeForName(String name) {
+    switch (name) {
+      case 'English': return 'en';
+      case 'Hindi': return 'hi';
+      case 'Tamil': return 'ta';
+      case 'Kannada': return 'kn';
+      case 'Marathi': return 'mr';
+      default: return 'en';
+    }
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+  }
+
+  bool _isDigilockerVerified = false;
+
   Future<void> _loadWalletAddress() async {
     try {
       final client = Supabase.instance.client;
@@ -58,12 +99,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (userId != null) {
         final data = await client
             .from('profiles')
-            .select('polygon_wallet_address')
+            .select('polygon_wallet_address, full_name, phone, email, is_digilocker_verified')
             .eq('id', userId)
             .maybeSingle();
         if (data != null && mounted) {
           setState(() {
             _walletAddress = data['polygon_wallet_address']?.toString() ?? '';
+            _driverName = data['full_name']?.toString() ?? '';
+            _driverPhone = data['phone']?.toString() ?? '';
+            _driverEmail = data['email']?.toString() ?? '';
+            _isDigilockerVerified = data['is_digilocker_verified'] as bool? ?? false;
           });
         }
       }
@@ -91,40 +136,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
         return;
       }
 
-      const apiBaseUrl = String.fromEnvironment(
-        'TRUXIFY_API_BASE_URL',
-        defaultValue: 'http://localhost:5000',
-      );
+      final apiClient = ApiClient(timeout: AppConfig.profileUpdateTimeout);
+      try {
+        final data = await apiClient.get('/api/driver/$driverId/reputation');
 
-      final uri = Uri.parse('$apiBaseUrl/api/driver/$driverId/reputation');
-      final token = client.auth.currentSession?.accessToken;
-      final response = await http.get(
-        uri,
-        headers: {
-          'Content-Type': 'application/json',
-          if (token != null) 'Authorization': 'Bearer $token',
-        },
-      ).timeout(AppConfig.profileUpdateTimeout);
+        if (!mounted) return;
 
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        setState(() {
-          _platformRating = data['supabaseRating'] != null
-              ? (data['supabaseRating'] as num).toDouble()
-              : null;
-          _onChainScore = data['onChainScore'] != null
-              ? (data['onChainScore'] as num).toInt()
-              : null;
-          _walletAddress = data['walletAddress']?.toString() ?? '';
-          _isLoadingReputation = false;
-        });
-      } else {
-        setState(() {
-          _reputationUnavailable = true;
-          _isLoadingReputation = false;
-        });
+        if (data is Map<String, dynamic>) {
+          setState(() {
+            _platformRating = (data['supabaseRating'] as num?)?.toDouble() ?? 0.0;
+            _onChainScore = data['onChainScore'] != null
+                ? (data['onChainScore'] as num).toInt()
+                : null;
+            _walletAddress = data['walletAddress']?.toString() ?? '';
+            _isLoadingReputation = false;
+          });
+        } else {
+          setState(() {
+            _reputationUnavailable = true;
+            _isLoadingReputation = false;
+          });
+        }
+      } finally {
+        apiClient.dispose();
       }
     } catch (e) {
       if (mounted) {
@@ -170,7 +204,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               const BottomSheetHandle(),
               const SizedBox(height: 16),
               Text(
-                'Edit Profile',
+                AppLocalizations.of(context)!.editProfile,
                 style: GoogleFonts.dmSans(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
@@ -188,7 +222,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     fontSize: 14,
                     color: Theme.of(context).colorScheme.onSurface),
                 decoration: InputDecoration(
-                  labelText: 'Full Name',
+                  labelText: AppLocalizations.of(context)!.fullNames,
                   labelStyle: GoogleFonts.dmSans(
                       color: TruxifyColors.adaptiveSecondaryText(context)),
                   border: OutlineInputBorder(
@@ -210,7 +244,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     fontSize: 14,
                     color: Theme.of(context).colorScheme.onSurface),
                 decoration: InputDecoration(
-                  labelText: 'Phone Number',
+                  labelText: AppLocalizations.of(context)!.phoneNumbers,
                   labelStyle: GoogleFonts.dmSans(
                       color: TruxifyColors.adaptiveSecondaryText(context)),
                   border: OutlineInputBorder(
@@ -233,7 +267,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     fontSize: 14,
                     color: Theme.of(context).colorScheme.onSurface),
                 decoration: InputDecoration(
-                  labelText: 'Email Address',
+                  labelText: AppLocalizations.of(context)!.emailAddress,
                   labelStyle: GoogleFonts.dmSans(
                       color: TruxifyColors.adaptiveSecondaryText(context)),
                   border: OutlineInputBorder(
@@ -256,7 +290,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           fontSize: 14,
                           color: Theme.of(context).colorScheme.onSurface),
                       decoration: InputDecoration(
-                        labelText: 'Vehicle Registration Number',
+                        labelText: AppLocalizations.of(context)!.vehicleRegistrationNumber,
                         hintText: 'e.g., DL01AA1234',
                         labelStyle: GoogleFonts.dmSans(
                             color: TruxifyColors.adaptiveSecondaryText(context)),
@@ -283,7 +317,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(height: 20),
               PrimaryButton(
-                label: 'Save Changes',
+                label: AppLocalizations.of(context)!.saveChanges,
                 onPressed: () {
                   if (formKey.currentState?.validate() ?? false) {
                     setState(() {
@@ -294,8 +328,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     });
                     Navigator.of(context).pop();
                     ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Profile updated successfully'),
+                    SnackBar(
+                      content: Text(AppLocalizations.of(context)!.profileUpdatedSuccessfully),
                       backgroundColor: TruxifyColors.success,
                     ),
                   );
@@ -330,7 +364,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   const BottomSheetHandle(),
                   const SizedBox(height: 16),
                   Text(
-                    'Select Language',
+                    AppLocalizations.of(context)!.selectLanguage,
                     style: GoogleFonts.dmSans(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
@@ -338,7 +372,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  ...['English', 'Hindi (हिंदी)', 'Gujarati (ગુજરાતી)']
+                  ...['English', 'Hindi (हिंदी)', 'Tamil (தமிழ்)', 'Kannada (ಕನ್ನಡ)', 'Marathi (मराठी)']
                       .map((lang) {
                     final isSelected = lang.startsWith(selectedLang);
                     return GestureDetector(
@@ -382,16 +416,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   }),
                   const SizedBox(height: 16),
                   PrimaryButton(
-                    label: 'Apply Language',
-                    onPressed: () {
-                      setState(() {
-                        _currentLanguage = selectedLang;
-                      });
-                      Navigator.of(context).pop();
-                      ScaffoldMessenger.of(context).showSnackBar(
+                    label: AppLocalizations.of(context)!.applyLanguage,
+                    onPressed: () async {
+                      final controller = TruxifyScope.of(context);
+                      final langCode = _langCodeForName(selectedLang);
+                      await controller.setLocale(langCode);
+                      if (mounted) {
+                        setState(() {
+                          _currentLanguage = selectedLang;
+                        });
+                        Navigator.of(context).pop();
+                        ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content:
-                              Text('Language switched to $_currentLanguage'),
+                              Text(AppLocalizations.of(context)!.languageSwitched),
                           backgroundColor: TruxifyColors.success,
                         ),
                       );
@@ -427,7 +465,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               const BottomSheetHandle(),
               const SizedBox(height: 16),
               Text(
-                'Polygon Wallet Address',
+                AppLocalizations.of(context)!.polygonWalletAddress,
                 style: GoogleFonts.dmSans(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
@@ -486,50 +524,42 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(height: 20),
               PrimaryButton(
-                label: 'Save Wallet Address',
+                label: AppLocalizations.of(context)!.saveWalletAddress,
                 onPressed: () async {
                   final address = walletController.text.trim();
                   if (address.isEmpty) return;
                   try {
-                    final client = Supabase.instance.client;
-                    final token = client.auth.currentSession?.accessToken;
-                    final userId = client.auth.currentUser?.id ?? '';
-                    final response = await http.put(
-                      Uri.parse('${const String.fromEnvironment('TRUXIFY_API_BASE_URL', defaultValue: 'http://localhost:5000')}/api/profile/wallet'),
-                      headers: <String, String>{
-                        'Content-Type': 'application/json',
-                        if (token != null) 'Authorization': 'Bearer $token',
-                      },
-                      body: jsonEncode(<String, String>{
-                        'wallet_address': address,
-                      }),
-                    );
-                    if (response.statusCode == 200) {
+                    final apiClient = ApiClient();
+                    try {
+                      await apiClient.put(
+                        '/api/profile/wallet',
+                        body: <String, String>{
+                          'wallet_address': address,
+                        },
+                      );
                       setState(() {
                         _walletAddress = address;
                       });
+                      if (!context.mounted) return;
                       Navigator.of(context).pop();
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content:
-                                Text('Wallet address updated successfully'),
-                            backgroundColor: TruxifyColors.success,
-                          ),
-                        );
-                      }
-                    } else {
-                      final body = jsonDecode(response.body)
-                          as Map<String, dynamic>;
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(body['error']?.toString() ??
-                                'Failed to update wallet'),
-                            backgroundColor: TruxifyColors.errorRed,
-                          ),
-                        );
-                      }
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content:
+                              Text(AppLocalizations.of(context)!.walletAddressUpdated),
+                          backgroundColor: TruxifyColors.success,
+                        ),
+                      );
+                    } finally {
+                      apiClient.dispose();
+                    }
+                  } on ApiException catch (e) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(e.message),
+                          backgroundColor: TruxifyColors.errorRed,
+                        ),
+                      );
                     }
                   } catch (e) {
                     if (context.mounted) {
@@ -568,7 +598,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               const BottomSheetHandle(),
               const SizedBox(height: 16),
               Text(
-                'Help & Support',
+                AppLocalizations.of(context)!.helpSupport,
                 style: GoogleFonts.dmSans(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
@@ -578,8 +608,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
               const SizedBox(height: 16),
               _buildHelpOption(
                 icon: Icons.help_outline_rounded,
-                title: 'Browse FAQs',
-                subtitle: 'Instant answers to common driver questions',
+                title: AppLocalizations.of(context)!.browseFAQs,
+                subtitle: AppLocalizations.of(context)!.instantAnswers,
                 color: TruxifyColors.hintText,
                 onTap: () {
                   Navigator.pop(context);
@@ -620,7 +650,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: color.withOpacity(0.1),
+                color: color.withValues(alpha: 0.1),
                 shape: BoxShape.circle,
               ),
               child: Icon(icon, color: color, size: 20),
@@ -687,7 +717,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(height: 12),
               Text(
-                'Truxify Driver App',
+                AppLocalizations.of(context)!.aboutTruxifyDriverApp,
                 style: GoogleFonts.dmSans(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
@@ -703,7 +733,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(height: 16),
               Text(
-                'Truxify is a driver-first freight marketplace designed to empower drivers with transparent pricing, instant blockchain receipts, and direct loading solutions.',
+                AppLocalizations.of(context)!.truxifyDescription,
                 textAlign: TextAlign.center,
                 style: GoogleFonts.dmSans(
                   fontSize: 13,
@@ -713,7 +743,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(height: 20),
               PrimaryButton(
-                label: 'Close',
+                label: AppLocalizations.of(context)!.close,
                 onPressed: () => Navigator.pop(context),
               ),
             ],
@@ -740,7 +770,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               borderRadius: BorderRadius.circular(16),
               boxShadow: [
                 BoxShadow(
-                  color: TruxifyColors.accent.withOpacity(0.15),
+                  color: TruxifyColors.accent.withValues(alpha: 0.15),
                   blurRadius: 10,
                   offset: const Offset(0, 4),
                 ),
@@ -753,7 +783,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     border: Border.all(
-                        color: Colors.white.withOpacity(0.2), width: 3),
+                        color: Colors.white.withValues(alpha: 0.2), width: 3),
                   ),
                   child: CircleAvatar(
                     radius: 30,
@@ -778,20 +808,32 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        _driverName,
-                        style: GoogleFonts.dmSans(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
+                      Row(
+                        children: [
+                          Text(
+                            _driverName,
+                            style: GoogleFonts.dmSans(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                          if (_isDigilockerVerified) ...[
+                            const SizedBox(width: 6),
+                            const Icon(
+                              Icons.verified_user_rounded,
+                              color: Colors.greenAccent,
+                              size: 18,
+                            ),
+                          ],
+                        ],
                       ),
                       const SizedBox(height: 4),
                       Text(
                         '$driverTruck · $_truckNumber',
                         style: GoogleFonts.dmSans(
                           fontSize: 12,
-                          color: Colors.white.withOpacity(0.85),
+                          color: Colors.white.withValues(alpha: 0.85),
                         ),
                       ),
                       const SizedBox(height: 8),
@@ -799,7 +841,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 8, vertical: 3),
                         decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.15),
+                          color: Colors.white.withValues(alpha: 0.15),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Row(
@@ -825,7 +867,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 IconButton(
                   onPressed: () => _showEditProfileSheet(context),
                   icon: const Icon(Icons.edit_rounded, color: Colors.white),
-                  tooltip: 'Edit Profile',
+                  tooltip: AppLocalizations.of(context)!.editProfile,
                 ),
               ],
             ),
@@ -956,7 +998,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                   title: Text(
-                    'Documents',
+                    AppLocalizations.of(context)!.documents,
                     style: GoogleFonts.dmSans(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
@@ -964,7 +1006,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                   subtitle: Text(
-                    'Driver license, permit, and vehicle papers',
+                    AppLocalizations.of(context)!.driverLicensePermitPapers,
                     style: GoogleFonts.dmSans(
                       fontSize: 12,
                       color: TruxifyColors.adaptiveSecondaryText(context),
@@ -987,7 +1029,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                   title: Text(
-                    'Notifications',
+                    AppLocalizations.of(context)!.notifications,
                     style: GoogleFonts.dmSans(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
@@ -995,7 +1037,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                   subtitle: Text(
-                    'View trip alerts and updates',
+                    AppLocalizations.of(context)!.viewTripAlerts,
                     style: GoogleFonts.dmSans(
                       fontSize: 12,
                       color: TruxifyColors.adaptiveSecondaryText(context),
@@ -1017,7 +1059,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                   title: Text(
-                    'Wallet Address',
+                    AppLocalizations.of(context)!.walletAddress,
                     style: GoogleFonts.dmSans(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
@@ -1025,9 +1067,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                   subtitle: Text(
-                    _walletAddress.isNotEmpty
+                    _walletAddress.length >= 16
                         ? '${_walletAddress.substring(0, 10)}...${_walletAddress.substring(_walletAddress.length - 6)}'
-                        : 'Not set',
+                        : _walletAddress.isNotEmpty
+                            ? _walletAddress
+                            : AppLocalizations.of(context)!.notSet,
                     style: GoogleFonts.dmSans(
                       fontSize: 12,
                       color: TruxifyColors.adaptiveSecondaryText(context),
@@ -1045,7 +1089,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                   title: Text(
-                    'Language',
+                    AppLocalizations.of(context)!.languageLabel,
                     style: GoogleFonts.dmSans(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
@@ -1071,7 +1115,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                   title: Text(
-                    'Help & Support',
+                    AppLocalizations.of(context)!.helpAndSupport247,
                     style: GoogleFonts.dmSans(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
@@ -1079,7 +1123,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                   subtitle: Text(
-                    '24/7 hotline, chat assistant, and FAQs',
+                    AppLocalizations.of(context)!.helpSupport,
                     style: GoogleFonts.dmSans(
                       fontSize: 12,
                       color: TruxifyColors.adaptiveSecondaryText(context),
@@ -1097,7 +1141,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                   title: Text(
-                    'About Truxify',
+                    AppLocalizations.of(context)!.aboutTruxifyDriverApp,
                     style: GoogleFonts.dmSans(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
@@ -1105,7 +1149,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                   subtitle: Text(
-                    'Version and application info',
+                    AppLocalizations.of(context)!.versionAndAppInfo,
                     style: GoogleFonts.dmSans(
                       fontSize: 12,
                       color: TruxifyColors.adaptiveSecondaryText(context),
@@ -1125,32 +1169,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
               try {
                 if (SupabaseConfig.isConfigured) {
                   final client = Supabase.instance.client;
-                  final session = client.auth.currentSession;
-                  final accessToken = session?.accessToken;
-                  final driverId = client.auth.currentUser?.id;
 
-                  if (accessToken != null && driverId != null) {
-                    const apiBaseUrl = String.fromEnvironment(
-                      'TRUXIFY_API_BASE_URL',
-                      defaultValue: 'http://localhost:5000',
-                    );
-                    try {
-                      await http.post(
-                        Uri.parse('$apiBaseUrl/api/auth/logout'),
-                        headers: <String, String>{
-                          'Content-Type': 'application/json',
-                          'Authorization': 'Bearer $accessToken',
-                        },
-                      ).timeout(AppConfig.quickActionTimeout);
-                    } catch (e) {
-                      debugPrint('Backend logout failed: $e');
-                    }
+                  final apiClient = ApiClient(timeout: AppConfig.quickActionTimeout);
+                  try {
+                    await apiClient.post('/api/auth/logout');
+                  } catch (e) {
+                    debugPrint('Backend logout failed: $e');
+                  } finally {
+                    apiClient.dispose();
                   }
 
-                  // Clear FCM token on logout
+                  // Unregister and clear FCM token on logout so this device stops
+                  // receiving push notifications for the signed-out account.
+                  await FcmService.unregisterToken();
                   await FcmService.clearToken();
 
                   await client.auth.signOut();
+
+                  // Remove the persisted auth token from OS-backed secure
+                  // storage so it cannot be reused after logout (issue #5739).
+                  await AuthTokenStore.clear();
                 }
 
                 if (!context.mounted) {
@@ -1167,7 +1205,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               } catch (e) {
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Logout failed: $e')),
+                    SnackBar(content: Text(AppLocalizations.of(context)!.logoutFailed)),
                   );
                 }
               }
@@ -1177,7 +1215,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 const Icon(Icons.logout_rounded, color: TruxifyColors.error),
                 const SizedBox(width: 12),
                 Text(
-                  'Logout',
+                  AppLocalizations.of(context)!.logout,
                   style: GoogleFonts.dmSans(
                     fontSize: 14,
                     color: TruxifyColors.error,
@@ -1203,7 +1241,7 @@ class _DriverHelpScreen extends StatelessWidget {
       userId: userId,
       faqRepository: FaqRepository(client),
       supportRepository: SupportRepository(client),
-      title: 'Help & Support',
+      title: AppLocalizations.of(context)!.helpSupport,
     );
   }
 }
@@ -1214,19 +1252,14 @@ class _ThemeModeTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final controller = TruxifyScope.of(context);
-    final currentTheme = controller.themeMode;
-    final selectedTheme = currentTheme == ThemeMode.system
-        ? (Theme.of(context).brightness == Brightness.dark
-            ? ThemeMode.dark
-            : ThemeMode.light)
-        : currentTheme;
+    final selectedTheme = controller.themeMode;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         children: [
           Text(
-            'Theme',
+            AppLocalizations.of(context)!.theme,
             style: GoogleFonts.dmSans(
               fontSize: 14,
               fontWeight: FontWeight.w600,
@@ -1242,14 +1275,18 @@ class _ThemeModeTile extends StatelessWidget {
                 const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               ),
             ),
-            segments: const [
+            segments: [
+              ButtonSegment<ThemeMode>(
+                value: ThemeMode.system,
+                label: Text(AppLocalizations.of(context)!.system),
+              ),
               ButtonSegment<ThemeMode>(
                 value: ThemeMode.light,
-                label: Text('Light'),
+                label: Text(AppLocalizations.of(context)!.light),
               ),
               ButtonSegment<ThemeMode>(
                 value: ThemeMode.dark,
-                label: Text('Dark'),
+                label: Text(AppLocalizations.of(context)!.dark),
               ),
             ],
             selected: {selectedTheme},

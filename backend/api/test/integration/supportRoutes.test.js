@@ -228,10 +228,19 @@ describe('Support Routes', () => {
     });
   });
 
+  it('GET /tickets rejects unsupported status filter values', async () => {
+    const res = await request(buildApp())
+      .get('/api/support/tickets?status=unknown')
+      .set(CUSTOMER_HEADERS);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Unsupported support ticket status.');
+  });
+
   describe('GET /tickets/:id', () => {
     beforeEach(() => {
       m.store.support_tickets.push({
-        id: 'ticket-123',
+        id: 'ticke33333333-3333-4333-8333-333333333333',
         user_id: 'customer-1',
         subject: 'My ticket',
         category: 'general',
@@ -243,17 +252,17 @@ describe('Support Routes', () => {
 
     it('returns 200 and the ticket for the owner', async () => {
       const res = await request(buildApp())
-        .get('/api/support/tickets/ticket-123')
+        .get('/api/support/tickets/ticke33333333-3333-4333-8333-333333333333')
         .set(CUSTOMER_HEADERS);
 
       expect(res.status).toBe(200);
-      expect(res.body.id).toBe('ticket-123');
+      expect(res.body.id).toBe('ticke33333333-3333-4333-8333-333333333333');
       expect(res.body.user_id).toBe('customer-1');
     });
 
     it('returns 200 and the ticket for an admin', async () => {
       const res = await request(buildApp())
-        .get('/api/support/tickets/ticket-123')
+        .get('/api/support/tickets/ticke33333333-3333-4333-8333-333333333333')
         .set({
           'x-user-id': 'admin-1',
           'x-user-role': 'admin',
@@ -261,12 +270,12 @@ describe('Support Routes', () => {
         });
 
       expect(res.status).toBe(200);
-      expect(res.body.id).toBe('ticket-123');
+      expect(res.body.id).toBe('ticke33333333-3333-4333-8333-333333333333');
     });
 
     it('returns 403 for an authenticated user who is not the owner', async () => {
       const res = await request(buildApp())
-        .get('/api/support/tickets/ticket-123')
+        .get('/api/support/tickets/ticke33333333-3333-4333-8333-333333333333')
         .set({
           'x-user-id': 'customer-2',
           'x-user-role': 'customer',
@@ -290,7 +299,7 @@ describe('Support Routes', () => {
   describe('PATCH /tickets/:id', () => {
     it('allows owner to update subject, description, and category', async () => {
       m.store.support_tickets.push({
-        id: 'ticket-123',
+        id: 'ticke33333333-3333-4333-8333-333333333333',
         user_id: 'customer-1',
         subject: 'My ticket',
         description: 'Detail',
@@ -301,7 +310,7 @@ describe('Support Routes', () => {
       });
 
       const res = await request(buildApp())
-        .patch('/api/support/tickets/ticket-123')
+        .patch('/api/support/tickets/ticke33333333-3333-4333-8333-333333333333')
         .set(CUSTOMER_HEADERS)
         .send({
           subject: 'New subject',
@@ -317,14 +326,14 @@ describe('Support Routes', () => {
 
     it('allows owner to change status to closed', async () => {
       m.store.support_tickets.push({
-        id: 'ticket-123',
+        id: 'ticke33333333-3333-4333-8333-333333333333',
         user_id: 'customer-1',
         subject: 'My ticket',
         status: 'open',
       });
 
       const res = await request(buildApp())
-        .patch('/api/support/tickets/ticket-123')
+        .patch('/api/support/tickets/ticke33333333-3333-4333-8333-333333333333')
         .set(CUSTOMER_HEADERS)
         .send({ status: 'closed' });
 
@@ -334,14 +343,14 @@ describe('Support Routes', () => {
 
     it('denies owner from changing status to in_progress or resolved', async () => {
       m.store.support_tickets.push({
-        id: 'ticket-123',
+        id: 'ticke33333333-3333-4333-8333-333333333333',
         user_id: 'customer-1',
         subject: 'My ticket',
         status: 'open',
       });
 
       const res = await request(buildApp())
-        .patch('/api/support/tickets/ticket-123')
+        .patch('/api/support/tickets/ticke33333333-3333-4333-8333-333333333333')
         .set(CUSTOMER_HEADERS)
         .send({ status: 'in_progress' });
 
@@ -351,14 +360,14 @@ describe('Support Routes', () => {
 
     it('allows admin to change status to in_progress or resolved', async () => {
       m.store.support_tickets.push({
-        id: 'ticket-123',
+        id: 'ticke33333333-3333-4333-8333-333333333333',
         user_id: 'customer-1',
         subject: 'My ticket',
         status: 'open',
       });
 
       const res = await request(buildApp())
-        .patch('/api/support/tickets/ticket-123')
+        .patch('/api/support/tickets/ticke33333333-3333-4333-8333-333333333333')
         .set({
           'x-user-id': 'admin-1',
           'x-user-role': 'admin',
@@ -372,14 +381,14 @@ describe('Support Routes', () => {
 
     it('returns 400 when attempting to update a closed ticket', async () => {
       m.store.support_tickets.push({
-        id: 'ticket-123',
+        id: '33333333-3333-4333-8333-333333333333',
         user_id: 'customer-1',
         subject: 'My ticket',
         status: 'closed',
       });
 
       const res = await request(buildApp())
-        .patch('/api/support/tickets/ticket-123')
+        .patch('/api/support/tickets/33333333-3333-4333-8333-333333333333')
         .set(CUSTOMER_HEADERS)
         .send({ subject: 'New subject' });
 
@@ -389,14 +398,14 @@ describe('Support Routes', () => {
 
     it('returns 403 for non-owner and non-admin', async () => {
       m.store.support_tickets.push({
-        id: 'ticket-123',
+        id: 'ticke33333333-3333-4333-8333-333333333333',
         user_id: 'customer-1',
         subject: 'My ticket',
         status: 'open',
       });
 
       const res = await request(buildApp())
-        .patch('/api/support/tickets/ticket-123')
+        .patch('/api/support/tickets/ticke33333333-3333-4333-8333-333333333333')
         .set({
           'x-user-id': 'customer-2',
           'x-user-role': 'customer',
@@ -412,9 +421,9 @@ describe('Support Routes', () => {
   describe('GET /admin/tickets', () => {
     beforeEach(() => {
       m.store.support_tickets.push(
-        { id: 't1', user_id: 'customer-1', subject: 'S1', category: 'payment', status: 'open', created_at: '2026-06-03T00:00:00.000Z' },
-        { id: 't2', user_id: 'customer-2', subject: 'S2', category: 'order', status: 'in_progress', created_at: '2026-06-02T00:00:00.000Z' },
-        { id: 't3', user_id: 'customer-1', subject: 'S3', category: 'technical', status: 'closed', created_at: '2026-06-01T00:00:00.000Z' }
+        { id: 't1', user_id: '11111111-1111-4111-8111-111111111111', subject: 'S1', category: 'payment', status: 'open', created_at: '2026-06-03T00:00:00.000Z' },
+        { id: 't2', user_id: '22222222-2222-4222-8222-222222222222', subject: 'S2', category: 'order', status: 'in_progress', created_at: '2026-06-02T00:00:00.000Z' },
+        { id: 't3', user_id: '11111111-1111-4111-8111-111111111111', subject: 'S3', category: 'technical', status: 'closed', created_at: '2026-06-01T00:00:00.000Z' }
       );
     });
 
@@ -449,7 +458,7 @@ describe('Support Routes', () => {
 
     it('filters by status, category, and user_id', async () => {
       const res = await request(buildApp())
-        .get('/api/support/admin/tickets?status=open&category=payment&user_id=customer-1')
+        .get('/api/support/admin/tickets?status=open&category=payment&user_id=11111111-1111-4111-8111-111111111111')
         .set({
           'x-user-id': 'admin-1',
           'x-user-role': 'admin',
@@ -460,13 +469,39 @@ describe('Support Routes', () => {
       expect(res.body.tickets).toHaveLength(1);
       expect(res.body.tickets[0].id).toBe('t1');
     });
+
+    it('rejects malformed user_id filter values', async () => {
+      const res = await request(buildApp())
+        .get('/api/support/admin/tickets?user_id=customer-1')
+        .set({
+          'x-user-id': 'admin-1',
+          'x-user-role': 'admin',
+          'x-user-name': 'Test Admin',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('user_id must be a valid UUID');
+    });
+
+    it('rejects unsupported status filter values', async () => {
+      const res = await request(buildApp())
+        .get('/api/support/admin/tickets?status=waiting')
+        .set({
+          'x-user-id': 'admin-1',
+          'x-user-role': 'admin',
+          'x-user-name': 'Test Admin',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('Unsupported support ticket status.');
+    });
   });
 
   describe('Support Ticket Comments', () => {
     beforeEach(() => {
       m.store.support_ticket_comments = [];
       m.store.support_tickets = [{
-        id: 't-123',
+        id: '33333333-3333-4333-8333-333333333333',
         user_id: 'customer-1',
         subject: 'Need help',
         category: 'general',
@@ -476,14 +511,14 @@ describe('Support Routes', () => {
 
     it('POST /tickets/:id/comments adds a comment for ticket owner', async () => {
       const res = await request(buildApp())
-        .post('/api/support/tickets/t-123/comments')
+        .post('/api/support/tickets/33333333-3333-4333-8333-333333333333/comments')
         .set(CUSTOMER_HEADERS)
         .send({ message: 'This is a test comment' });
 
       expect(res.status).toBe(201);
       expect(res.body.message).toBe('Comment added successfully.');
       expect(res.body.comment.message).toBe('This is a test comment');
-      expect(res.body.comment.ticket_id).toBe('t-123');
+      expect(res.body.comment.ticket_id).toBe('33333333-3333-4333-8333-333333333333');
 
       const commentInsert = m.calls.find(c => c.table === 'support_ticket_comments' && c.mode === 'insert');
       expect(commentInsert).toBeTruthy();
@@ -492,7 +527,7 @@ describe('Support Routes', () => {
 
     it('POST /tickets/:id/comments returns 403 for non-owner', async () => {
       const res = await request(buildApp())
-        .post('/api/support/tickets/t-123/comments')
+        .post('/api/support/tickets/33333333-3333-4333-8333-333333333333/comments')
         .set({
           'x-user-id': 'customer-2',
           'x-user-role': 'customer',
@@ -507,7 +542,7 @@ describe('Support Routes', () => {
       m.store.support_tickets[0].status = 'closed';
 
       const res = await request(buildApp())
-        .post('/api/support/tickets/t-123/comments')
+        .post('/api/support/tickets/33333333-3333-4333-8333-333333333333/comments')
         .set(CUSTOMER_HEADERS)
         .send({ message: 'New comment after closure' });
 
@@ -522,7 +557,7 @@ describe('Support Routes', () => {
       m.store.support_tickets[0].status = 'closed';
 
       const res = await request(buildApp())
-        .post('/api/support/tickets/t-123/comments')
+        .post('/api/support/tickets/33333333-3333-4333-8333-333333333333/comments')
         .set({
           'x-user-id': 'admin-1',
           'x-user-role': 'admin',
@@ -539,7 +574,7 @@ describe('Support Routes', () => {
 
     it('POST /tickets/:id/comments still accepts comments on open tickets', async () => {
       const res = await request(buildApp())
-        .post('/api/support/tickets/t-123/comments')
+        .post('/api/support/tickets/33333333-3333-4333-8333-333333333333/comments')
         .set(CUSTOMER_HEADERS)
         .send({ message: 'Still open, commenting fine' });
 
@@ -551,7 +586,7 @@ describe('Support Routes', () => {
       m.store.support_tickets[0].status = 'in_progress';
 
       const res = await request(buildApp())
-        .post('/api/support/tickets/t-123/comments')
+        .post('/api/support/tickets/33333333-3333-4333-8333-333333333333/comments')
         .set(CUSTOMER_HEADERS)
         .send({ message: 'In progress comment' });
 
@@ -562,14 +597,14 @@ describe('Support Routes', () => {
     it('GET /tickets/:id/comments retrieves comments for ticket owner', async () => {
       m.store.support_ticket_comments.push({
         id: 'c-1',
-        ticket_id: 't-123',
+        ticket_id: '33333333-3333-4333-8333-333333333333',
         user_id: 'customer-1',
         message: 'Hello',
         created_at: '2026-06-01T00:00:00.000Z',
       });
 
       const res = await request(buildApp())
-        .get('/api/support/tickets/t-123/comments')
+        .get('/api/support/tickets/33333333-3333-4333-8333-333333333333/comments')
         .set(CUSTOMER_HEADERS);
 
       expect(res.status).toBe(200);
@@ -579,12 +614,12 @@ describe('Support Routes', () => {
 
     it('GET /tickets/:id/comments supports sort=desc for descending chronological sorting', async () => {
       m.store.support_ticket_comments.push(
-        { id: 'c-1', ticket_id: 't-123', user_id: 'customer-1', message: 'First', created_at: '2026-06-01T00:00:00.000Z' },
-        { id: 'c-2', ticket_id: 't-123', user_id: 'customer-1', message: 'Second', created_at: '2026-06-02T00:00:00.000Z' }
+        { id: 'c-1', ticket_id: '33333333-3333-4333-8333-333333333333', user_id: 'customer-1', message: 'First', created_at: '2026-06-01T00:00:00.000Z' },
+        { id: 'c-2', ticket_id: '33333333-3333-4333-8333-333333333333', user_id: 'customer-1', message: 'Second', created_at: '2026-06-02T00:00:00.000Z' }
       );
 
       const res = await request(buildApp())
-        .get('/api/support/tickets/t-123/comments?sort=desc')
+        .get('/api/support/tickets/33333333-3333-4333-8333-333333333333/comments?sort=desc')
         .set(CUSTOMER_HEADERS);
 
       expect(res.status).toBe(200);

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'controllers/app_controller.dart';
 import 'core/app_routes.dart';
+import 'l10n/app_localizations.dart';
 import 'screens/documents_screen.dart';
 import 'screens/destination_picker_screen.dart';
 import 'screens/load_detail_screen.dart';
@@ -30,6 +32,7 @@ class _TruxifyAppState extends State<TruxifyApp> {
     _controller = TruxifyController();
     _controller.addListener(_onControllerChanged);
     _controller.loadThemeMode();
+    _controller.loadLocale();
   }
 
   void _onControllerChanged() {
@@ -49,10 +52,24 @@ class _TruxifyAppState extends State<TruxifyApp> {
       controller: _controller,
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
-        title: 'Truxify Driver',
+        onGenerateTitle: (context) => AppLocalizations.of(context)!.appTitle,
         theme: TruxifyTheme.light(),
         darkTheme: TruxifyTheme.dark(),
         themeMode: _controller.themeMode,
+        locale: _controller.locale,
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          GlobalMaterialLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+        ],
+        supportedLocales: const [
+          Locale('en', ''),
+          Locale('hi', ''),
+          Locale('ta', ''),
+          Locale('kn', ''),
+          Locale('mr', ''),
+        ],
         initialRoute: AppRoutes.splash,
         onGenerateRoute: (settings) {
           switch (settings.name) {
@@ -72,6 +89,7 @@ class _TruxifyAppState extends State<TruxifyApp> {
                 (context) => OtpScreen(
                   phone: args['phone'] ?? '',
                   verificationId: args['verificationId'] ?? '',
+                  countryCode: args['countryCode'] ?? '+91',
                 ),
               );
 

@@ -1,17 +1,22 @@
 import dotenv from 'dotenv';
+import mongoose from 'mongoose';
 import { createClient } from '@supabase/supabase-js';
 import { MongoClient } from 'mongodb';
 import Redis from 'ioredis';
+import pg from 'pg';
 import * as admin from 'firebase-admin';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import logger from '../middleware/logger.js';
 
-// Load environment variables from root directory .env
-dotenv.config({ path: path.resolve(process.cwd(), '../../.env') });
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load environment variables relative to this module instead of process.cwd()
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 // ============================================================================
-// 1. SUPABASE CLIENTS — anon key for public access (RLS enforced),
-//    service role key for admin operations only (bypasses RLS)
+// 1. SUPABASE CLIENTS
 // ============================================================================
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
@@ -42,6 +47,31 @@ if (supabaseUrl && supabaseAnonKey) {
   );
 }
 
+/**
+ * Creates a per-request Supabase client authenticated with the given JWT.
+ * The resulting client carries the user's identity so that
+ * SECURITY DEFINER RPCs that call auth.uid() receive the correct user.
+ *
+ * @param {string} accessToken — a valid Supabase or Firebase access token
+ * @returns {import('@supabase/supabase-js').SupabaseClient}
+ */
+export function createUserClient(accessToken) {
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error('Cannot create user client: SUPABASE_URL or SUPABASE_ANON_KEY is not configured.');
+  }
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+    global: {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+  });
+}
+
 if (supabaseUrl && supabaseServiceKey && supabaseServiceKey !== supabaseAnonKey) {
   try {
     supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
@@ -57,10 +87,38 @@ if (supabaseUrl && supabaseServiceKey && supabaseServiceKey !== supabaseAnonKey)
 }
 
 // ============================================================================
+// 1.5 DIRECT POSTGRESQL POOL (PgBouncer)
+// ============================================================================
+const databaseUrl = process.env.DATABASE_URL;
+export let pgPool = null;
+
+if (databaseUrl) {
+  try {
+    const { Pool } = pg;
+    pgPool = new Pool({
+      connectionString: databaseUrl,
+      // For PgBouncer in transaction mode, use a moderate pool size
+      max: 20, 
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 2000,
+    });
+    logger.info('PostgreSQL Pool initialized successfully (PgBouncer port 6543).');
+  } catch (error) {
+    logger.error({ err: error }, 'Failed to initialize PostgreSQL pool');
+  }
+} else {
+  logger.warn('DATABASE_URL not found in .env. Direct PostgreSQL pool disabled.');
+}
+
+// ============================================================================
 // 2. MONGODB ATLAS CLIENT (Telemetry & Activity Pings)
 // ============================================================================
 const mongoUri = process.env.MONGODB_URI;
 const mongoDbName = process.env.MONGODB_DB_NAME || 'truxify_telemetry';
+const MONGO_POOL_SIZE = parseInt(process.env.MONGO_POOL_SIZE || '10', 10);
+const MONGO_CONNECT_TIMEOUT = parseInt(process.env.MONGO_CONNECT_TIMEOUT || '10000', 10);
+const MONGO_SERVER_SEL_TIMEOUT = parseInt(process.env.MONGO_SERVER_SEL_TIMEOUT || '5000', 10);
+logger.info('[DB] MongoDB pool size: ' + MONGO_POOL_SIZE + ', connect timeout: ' + MONGO_CONNECT_TIMEOUT + 'ms');
 
 export let mongoDb = null;
 let mongoClient = null;
@@ -71,37 +129,39 @@ export async function waitForMongoDb() {
   await _mongoDbReady;
 }
 
-if (mongoUri) {
-  try {
-    mongoClient = new MongoClient(mongoUri);
-    mongoClient.connect()
-      .then(() => {
-        mongoDb = mongoClient.db(mongoDbName);
-        logger.info({ db: mongoDbName }, 'Connected to MongoDB');
-        
-        // Create indexes on telemetry collection
-        mongoDb.collection('telemetry').createIndex(
-          { timestamp: 1 },
-          { expireAfterSeconds: 604800 }
-        ).catch(err => logger.error({ err }, 'Failed to create TTL index on telemetry'));
-        
-        mongoDb.collection('telemetry').createIndex(
-          { location: '2dsphere' }
-        ).catch(err => logger.error({ err }, 'Failed to create 2dsphere index on telemetry'));
-        if (_mongoDbResolve) _mongoDbResolve();
-      })
-      .catch(err => {
-        logger.error({ err }, 'Failed to connect to MongoDB server');
-        if (_mongoDbResolve) _mongoDbResolve();
-      });
-  } catch (error) {
-    logger.error({ err: error }, 'MongoDB client initialization error');
+// Wrap in async IIFE so mongoClient.connect() can use await instead of .then()
+// This ensures the module properly waits for the connection before reporting readiness
+(async () => {
+  if (mongoUri) {
+    try {
+      mongoClient = new MongoClient(mongoUri);
+      await mongoClient.connect();
+      mongoDb = mongoClient.db(mongoDbName);
+      logger.info({ db: mongoDbName }, 'Connected to MongoDB');
+
+      // Create indexes on telemetry collection
+      mongoDb.collection('telemetry').createIndex(
+        { timestamp: 1 },
+        { expireAfterSeconds: 604800 }
+      ).catch(err => logger.error({ err }, 'Failed to create TTL index on telemetry'));
+
+      mongoDb.collection('telemetry').createIndex(
+        { driver_id: 1, order_id: 1, timestamp: -1 }
+      ).catch(err => logger.error({ err }, 'Failed to create compound index on telemetry'));
+
+      mongoDb.collection('telemetry').createIndex(
+        { location: '2dsphere' }
+      ).catch(err => logger.error({ err }, 'Failed to create 2dsphere index on telemetry'));
+      if (_mongoDbResolve) _mongoDbResolve();
+    } catch (err) {
+      logger.error({ err }, 'Failed to connect to MongoDB server');
+      if (_mongoDbResolve) _mongoDbResolve();
+    }
+  } else {
     if (_mongoDbResolve) _mongoDbResolve();
+    logger.warn('MONGODB_URI not found in .env. MongoDB telemetry database disabled.');
   }
-} else {
-  if (_mongoDbResolve) _mongoDbResolve();
-  logger.warn('MONGODB_URI not found in .env. MongoDB telemetry database disabled.');
-}
+})();
 
 // ============================================================================
 // 3. UPSTASH REDIS CLIENT (Sessions, cache, rate limits)
@@ -172,7 +232,47 @@ if (serviceAccountRaw) {
   logger.warn('Firebase not configured. Skipping initialization.');
 }
 
+let _closeDbInProgress = false;
+
 export async function closeDbConnections() {
+  if (_closeDbInProgress) return;
+  _closeDbInProgress = true;
+  if (supabase) {
+    try {
+      await supabase.removeAllChannels();
+      logger.info('[shutdown] Supabase channels removed.');
+    } catch (err) {
+      logger.error({ err }, '[shutdown] Supabase close error');
+    }
+  }
+
+  if (supabaseAdmin) {
+    try {
+      await supabaseAdmin.removeAllChannels();
+      logger.info('[shutdown] Supabase Admin channels removed.');
+    } catch (err) {
+      logger.error({ err }, '[shutdown] Supabase Admin close error');
+    }
+  }
+
+  if (pgPool) {
+    try {
+      await pgPool.end();
+      logger.info('[shutdown] PostgreSQL pool closed.');
+    } catch (err) {
+      logger.error({ err }, '[shutdown] PostgreSQL pool close error');
+    }
+  }
+
+  try {
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.disconnect();
+      logger.info('[shutdown] Mongoose disconnected.');
+    }
+  } catch (err) {
+    logger.error({ err }, '[shutdown] Mongoose disconnect error');
+  }
+
   if (mongoClient) {
     try {
       await mongoClient.close();
@@ -225,3 +325,5 @@ export function validateConfig() {
 
   logger.info('Config validation passed');
 }
+
+// Signal handlers are registered in index.js only to ensure coordinated shutdown.

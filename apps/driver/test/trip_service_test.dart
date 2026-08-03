@@ -153,6 +153,8 @@ void main() {
   final mockUser = FakeUser(driverId);
   final mockAuth = MockGoTrueClient(mockUser: mockUser);
 
+
+
   group('TripService.markStopCompleted Tests', () {
     // markStopCompleted now verifies ownership via Supabase and then
     // delegates the stop completion to the backend API; the progression
@@ -218,6 +220,23 @@ void main() {
         () => service.markStopCompleted(stopId, tripDisplayId),
         throwsA(isA<Exception>().having((e) => e.toString(), 'message',
             contains('Stop not found or does not belong to this trip'))),
+      );
+    });
+
+    test('Throws fallback message when stop update error is not JSON', () async {
+      final mockHttp = MockClient((request) async {
+        return http.Response('Bad gateway', 502);
+      });
+
+      final service = TripService(client: ownedTripClient(), httpClient: mockHttp);
+
+      expect(
+        () => service.markStopCompleted(stopId, tripDisplayId),
+        throwsA(isA<Exception>().having(
+          (e) => e.toString(),
+          'message',
+          contains('Failed to mark stop completed (502)'),
+        )),
       );
     });
 

@@ -1,11 +1,102 @@
+/**
+ * @openapi
+ * components:
+ *   schemas:
+ *     BatchSyncRequest:
+ *       type: object
+ *       required:
+ *         - events
+ *         - idempotencyKey
+ *       properties:
+ *         events:
+ *           type: array
+ *           maxItems: 100
+ *           items:
+ *             type: object
+ *             properties:
+ *               id:
+ *                 type: string
+ *               trip_id:
+ *                 type: string
+ *                 nullable: true
+ *               type:
+ *                 type: string
+ *               occurred_at:
+ *                 type: string
+ *                 format: date-time
+ *               payload:
+ *                 type: object
+ *               retry_count:
+ *                 type: integer
+ *         idempotencyKey:
+ *           type: string
+ *     BatchSyncResponse:
+ *       type: object
+ *       properties:
+ *         message:
+ *           type: string
+ *         processed_count:
+ *           type: integer
+ *     TripEventsResponse:
+ *       type: object
+ *       properties:
+ *         trip_id:
+ *           type: string
+ *         events:
+ *           type: array
+ *           items:
+ *             type: object
+ *             properties:
+ *               event_id:
+ *                 type: string
+ *               user_id:
+ *                 type: string
+ *               trip_id:
+ *                 type: string
+ *               event_type:
+ *                 type: string
+ *               event_timestamp:
+ *                 type: string
+ *                 format: date-time
+ *               latitude:
+ *                 type: number
+ *                 nullable: true
+ *               longitude:
+ *                 type: number
+ *                 nullable: true
+ *               metadata:
+ *                 type: object
+ *               created_at:
+ *                 type: string
+ *                 format: date-time
+ */
+
 import express from 'express';
 import { z } from 'zod';
 import { supabase } from '../config/db.js';
-import { authenticate, requireRole } from '../middleware/auth.js';
+import { authenticate } from '../middleware/auth.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
+import { validateParams } from '../middleware/validate.js';
+import { uuidParamSchema } from '../validation/requestSchemas.js';
 import logger from '../middleware/logger.js';
 
 const router = express.Router();
+const DEFAULT_EVENTS_LIMIT = 100;
+const MAX_EVENTS_LIMIT = 500;
+
+function parsePositiveIntegerQuery(value, fallback, max) {
+  if (value === undefined) return { value: fallback };
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+    return { error: 'Query value must be a positive integer' };
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (parsed < 1) {
+    return { error: 'Query value must be a positive integer' };
+  }
+
+  return { value: Math.min(parsed, max) };
+}
 
 // ============================================================================
 // 🛡️ OFFLINE SYNC VALIDATION SCHEMAS (ISSUE #362)
@@ -32,7 +123,23 @@ function validateEventPayload(type, payload) {
   return { success: true, data: payload };
 }
 
-const SENSITIVE_FIELDS = ['otp', 'delivery_otp', 'token', 'secret', 'password'];
+const SENSITIVE_FIELDS = [
+  'otp', 'delivery_otp', 'token', 'secret', 'password',
+  'phone_number', 'driver_phone', 'customer_phone', 'email',
+  'current_location', 'driver_location',
+  'license_number', 'aadhaar_number', 'pan_number',
+];
+
+function deepSanitize(obj, keys) {
+  if (obj === null || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(item => deepSanitize(item, keys));
+  const clean = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (keys.includes(k)) continue;
+    clean[k] = deepSanitize(v, keys);
+  }
+  return clean;
+}
 
 // Schema for an individual Trip Event from the Flutter offline database
 const tripEventSchema = z.object({
@@ -71,56 +178,39 @@ const validateBatchPayload = (schema) => (req, res, next) => {
   }
 };
 
-async function verifyTripIdsBelongToUser(tripIds, user) {
-  const uniqueTripIds = [...new Set(tripIds.filter(Boolean))];
-  if (uniqueTripIds.length === 0) return { ok: true };
-
-  const [ordersResult, tripsResult] = await Promise.all([
-    supabase
-      .from('orders')
-      .select('id, driver_id, customer_id')
-      .in('id', uniqueTripIds),
-    supabase
-      .from('trips')
-      .select('id, driver_id')
-      .in('id', uniqueTripIds),
-  ]);
-
-  if (ordersResult.error) {
-    return { ok: false, status: 500, error: 'Failed to verify order ownership.' };
-  }
-  if (tripsResult.error) {
-    return { ok: false, status: 500, error: 'Failed to verify trip ownership.' };
-  }
-
-  const orderById = new Map((ordersResult.data || []).map(order => [order.id, order]));
-  const tripById = new Map((tripsResult.data || []).map(trip => [trip.id, trip]));
-
-  for (const tripId of uniqueTripIds) {
-    const order = orderById.get(tripId);
-    const trip = tripById.get(tripId);
-
-    if (!order && !trip) {
-      return { ok: false, status: 404, error: `Trip not found: ${tripId}` };
-    }
-
-    if (user.role === 'admin') continue;
-
-    const ownsOrder = order && (order.driver_id === user.id || order.customer_id === user.id);
-    const ownsTrip = trip && trip.driver_id === user.id;
-
-    if (!ownsOrder && !ownsTrip) {
-      return { ok: false, status: 403, error: `Access denied for trip: ${tripId}` };
-    }
-  }
-
-  return { ok: true };
-}
-
 // ============================================================================
 // 📡 OFFLINE SYNC ENDPOINT: BATCH EVENT INGESTION
 // ============================================================================
 
+/**
+ * @openapi
+ * /api/v1/trips/events/batch:
+ *   post:
+ *     tags: [Trips]
+ *     summary: Batch ingest offline trip events
+ *     description: Handles batched telemetry and trip events uploaded by mobile clients after recovering from network loss. Supports idempotency to prevent duplicate processing.
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/BatchSyncRequest'
+ *     responses:
+ *       200:
+ *         description: Empty batch acknowledged
+ *       202:
+ *         description: Batch processed successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/BatchSyncResponse'
+ *       422:
+ *         description: Malformed batch payload
+ *       500:
+ *         description: Database processing error
+ */
 /**
  * POST /api/v1/trips/events/batch
  * Handles batched telemetry and trip events uploaded by the mobile client
@@ -132,7 +222,7 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
 
   if (events.length === 0) {
     // Flutter expects 200 or 202 for success.
-    return res.status(200).json({ message: 'Empty batch received, nothing to process.' });
+    return res.status(200).json({ error: 'Empty batch received, nothing to process.' });
   }
 
   try {
@@ -148,7 +238,7 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
     if (existingBatch) {
       logger.info('[SyncEngine] Ignored duplicate batch:', idempotencyKey);
       // Return 202 Accepted so the Flutter app marks them as synced locally
-      return res.status(202).json({ message: 'Batch already processed.' });
+      return res.status(202).json({ error: 'Batch already processed.' });
     }
 
     // 2. Validate per-event-type payloads and strip sensitive fields
@@ -163,19 +253,41 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
       }
     }
 
-    const ownershipCheck = await verifyTripIdsBelongToUser(events.map(event => event.trip_id), req.user);
-    if (!ownershipCheck.ok) {
-      return res.status(ownershipCheck.status).json({ error: ownershipCheck.error });
+    // 2b. Ownership check: events may only be attached to trips (orders) the
+    // caller owns or is assigned to. Never trust a client-supplied trip_id.
+    if (req.user.role !== 'admin') {
+      const tripIds = [...new Set(events.map(event => event.trip_id).filter(Boolean))];
+
+      if (tripIds.length > 0) {
+        const { data: ownedOrders, error: ownershipError } = await supabase
+          .from('orders')
+          .select('id, driver_id, customer_id')
+          .in('id', tripIds);
+
+        if (ownershipError) {
+          logger.error('[SyncEngine] Failed to verify trip ownership:', ownershipError.message);
+          return res.status(500).json({ error: 'Internal Server Error' });
+        }
+
+        const orderById = new Map((ownedOrders || []).map(order => [order.id, order]));
+
+        for (const tripId of tripIds) {
+          const order = orderById.get(tripId);
+          const isDriver = order?.driver_id === userId;
+          const isCustomer = order?.customer_id === userId;
+          if (!order || (!isDriver && !isCustomer)) {
+            logger.warn('[SyncEngine] Rejected batch: user', userId, 'not authorised for trip', tripId);
+            return res.status(403).json({ error: 'Access Denied: You are not authorised to add events to this trip.' });
+          }
+        }
+      }
     }
 
     const recordsToInsert = events.map(event => {
       const lat = event.payload?.lat !== undefined ? Number(event.payload.lat) : null;
       const lng = event.payload?.lng !== undefined ? Number(event.payload.lng) : null;
 
-      const safeMetadata = { ...event.payload };
-      for (const field of SENSITIVE_FIELDS) {
-        delete safeMetadata[field];
-      }
+      const safeMetadata = deepSanitize(event.payload, SENSITIVE_FIELDS);
 
       return {
         event_id: event.id,
@@ -240,230 +352,151 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
 // GET TRIP EVENTS (DRIVER, CUSTOMER, OR ADMIN)
 // ============================================================================
 /**
- * @route GET /api/trips/:id/events
- * @desc Returns all telemetry and milestone events for a given trip, ordered chronologically.
- * @access Authenticated (Driver, Customer owner, or Admin)
- * @param {string} req.params.id - The UUID of the trip
- * @param {string} [req.query.type] - Filter by specific event type (e.g. gpsUpdate)
- * @param {string} [req.query.sort] - Chronological sort order ('asc' or 'desc', defaults to 'asc')
- * @param {number} [req.query.min_lat] - Minimum latitude for geographical bounding box filtering
- * @param {number} [req.query.max_lat] - Maximum latitude for geographical bounding box filtering
- * @param {number} [req.query.min_lng] - Minimum longitude for geographical bounding box filtering
- * @param {number} [req.query.max_lng] - Maximum longitude for geographical bounding box filtering
- * @returns {object} 200 - Trip ID and array of events
- * @returns {object} 400 - Validation errors for coordinates or sorting parameters
- * @returns {object} 403 - Forbidden if user is not driver, customer owner, or admin
- * @returns {object} 404 - Trip or order not found
- * @returns {object} 500 - Internal server error
+ * @openapi
+ * /api/trips/{id}/events:
+ *   get:
+ *     tags: [Trips]
+ *     summary: Get trip events
+ *     description: Returns all telemetry/milestone events for a given trip, ordered chronologically. Accessible by trip driver, order customer, or admin.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *       - in: query
+ *         name: type
+ *         schema:
+ *           type: string
+ *         description: Filter by event type (e.g., gpsUpdate)
+ *       - in: query
+ *         name: sort
+ *         schema:
+ *           type: string
+ *           enum: [asc, desc]
+ *           default: desc
+ *       - in: query
+ *         name: min_lat
+ *         schema:
+ *           type: number
+ *       - in: query
+ *         name: max_lat
+ *         schema:
+ *           type: number
+ *       - in: query
+ *         name: min_lng
+ *         schema:
+ *           type: number
+ *       - in: query
+ *         name: max_lng
+ *         schema:
+ *           type: number
+ *     responses:
+ *       200:
+ *         description: Trip events with metadata
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/TripEventsResponse'
+ *       403:
+ *         description: Access denied
+ *       404:
+ *         description: Trip not found
  */
-router.get('/:id/events', authenticate, userLimiter, async (req, res) => {
+/**
+ * GET /api/trips/:id/events
+ *
+ * Returns all telemetry/milestone events for a given trip, ordered
+ * chronologically.
+ *
+ * Access control:
+ *   - The trip's driver (trip_events.user_id === req.user.id)
+ *   - The order's customer (orders.customer_id === req.user.id)
+ *   - Any admin
+ *
+ * Optional query param: ?type=gpsUpdate  (filters by event_type)
+ */
+router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSchema), async (req, res) => {
   const tripId = req.params.id;
   const { type, sort, min_lat, max_lat, min_lng, max_lng } = req.query;
-  if (sort !== undefined && sort !== 'asc' && sort !== 'desc') {
-    return res.status(400).json({ error: 'sort must be asc or desc' });
-  }
   const isAscending = sort !== 'desc';
-  const parseCoordinate = (value, name, min, max) => {
-    if (value === undefined) return { value: undefined };
-    if (typeof value !== 'string' || value.trim() === '') {
-      return { error: `${name} must be a number` };
-    }
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) {
-      return { error: `${name} must be a number` };
-    }
-    if (parsed < min || parsed > max) {
-      return { error: `${name} must be between ${min} and ${max}` };
-    }
-    return { value: parsed };
-  };
-  const minLat = parseCoordinate(min_lat, 'min_lat', -90, 90);
-  const maxLat = parseCoordinate(max_lat, 'max_lat', -90, 90);
-  const minLng = parseCoordinate(min_lng, 'min_lng', -180, 180);
-  const maxLng = parseCoordinate(max_lng, 'max_lng', -180, 180);
+  const parsedPage = parsePositiveIntegerQuery(req.query.page, 1, Number.MAX_SAFE_INTEGER);
+  const parsedLimit = parsePositiveIntegerQuery(req.query.limit, DEFAULT_EVENTS_LIMIT, MAX_EVENTS_LIMIT);
 
-  for (const result of [minLat, maxLat, minLng, maxLng]) {
-    if (result.error) {
-      return res.status(400).json({ error: result.error });
-    }
+  if (parsedPage.error || parsedLimit.error) {
+    return res.status(400).json({ error: parsedPage.error || parsedLimit.error });
   }
-  if (minLat.value !== undefined && maxLat.value !== undefined && minLat.value > maxLat.value) {
-    return res.status(400).json({ error: 'min_lat must be less than or equal to max_lat' });
-  }
-  if (minLng.value !== undefined && maxLng.value !== undefined && minLng.value > maxLng.value) {
-    return res.status(400).json({ error: 'min_lng must be less than or equal to max_lng' });
-  }
+
+  const page = parsedPage.value;
+  const limit = parsedLimit.value;
+  const offset = (page - 1) * limit;
 
   try {
-    const [orderResult, tripResult] = await Promise.all([
-      supabase
-        .from('orders')
-        .select('id, driver_id, customer_id')
-        .eq('id', tripId)
-        .maybeSingle(),
-      supabase
-        .from('trips')
-        .select('id, driver_id')
-        .eq('id', tripId)
-        .maybeSingle(),
-    ]);
+    const { data: order, error: orderErr } = await supabase
+      .from('orders')
+      .select('id, driver_id, customer_id')
+      .eq('id', tripId)
+      .maybeSingle();
 
-    if (orderResult.error) {
-      return res.status(500).json({ error: 'Failed to verify order ownership.', details: orderResult.error.message });
-    }
-    if (tripResult.error) {
-      return res.status(500).json({ error: 'Failed to verify trip ownership.', details: tripResult.error.message });
+    if (orderErr) {
+      logger.error(`[TripEvents] Failed to look up order for trip ${tripId}: ${orderErr.message}`);
+      return res.status(500).json({ error: 'Internal Server Error' });
     }
 
-    const order = orderResult.data;
-    const trip = tripResult.data;
-    if (!order && !trip) {
+    if (!order) {
       return res.status(404).json({ error: 'Trip not found.' });
     }
 
     if (req.user.role !== 'admin') {
-      const isOrderDriver = order?.driver_id === req.user.id;
-      const isOrderCustomer = order?.customer_id === req.user.id;
-      const isTripDriver = trip?.driver_id === req.user.id;
-      if (!isOrderDriver && !isOrderCustomer && !isTripDriver) {
+      const isDriver = order?.driver_id === req.user.id;
+      const isCustomer = order?.customer_id === req.user.id;
+      if (!isDriver && !isCustomer) {
         return res.status(403).json({ error: 'Access Denied: You are not authorised to view events for this trip.' });
       }
     }
 
-    // 1. Fetch the trip to determine the driver
-    const { data: events, error: eventsErr } = await supabase
+    let eventsQuery = supabase
       .from('trip_events')
-      .select('event_id, user_id, trip_id, event_type, event_timestamp, latitude, longitude, metadata, created_at')
-      .eq('trip_id', tripId)
-      .order('event_timestamp', { ascending: isAscending });
+      .select('event_id, user_id, trip_id, event_type, event_timestamp, latitude, longitude, metadata, created_at', { count: 'exact' })
+      .eq('trip_id', tripId);
+
+    if (type && typeof type === 'string') {
+      eventsQuery = eventsQuery.eq('event_type', type);
+    }
+
+    if (min_lat !== undefined) eventsQuery = eventsQuery.gte('latitude', Number(min_lat));
+    if (max_lat !== undefined) eventsQuery = eventsQuery.lte('latitude', Number(max_lat));
+    if (min_lng !== undefined) eventsQuery = eventsQuery.gte('longitude', Number(min_lng));
+    if (max_lng !== undefined) eventsQuery = eventsQuery.lte('longitude', Number(max_lng));
+
+    const { data: events, error: eventsErr, count } = await eventsQuery
+      .order('event_timestamp', { ascending: isAscending })
+      .range(offset, offset + limit - 1);
 
     if (eventsErr) {
-      return res.status(500).json({ error: 'Failed to fetch trip events.', details: eventsErr.message });
-    }
-
-    if (!events || events.length === 0) {
-      return res.json({ trip_id: tripId, events: [] });
-    }
-
-    // 5. Optional type filter
-    let filteredEvents = events;
-    if (type && typeof type === 'string') {
-      filteredEvents = events.filter(e => e.event_type === type);
-    }
-
-    if (min_lat !== undefined || max_lat !== undefined || min_lng !== undefined || max_lng !== undefined) {
-      if (min_lat !== undefined && !Number.isFinite(Number(min_lat))) {
-        return res.status(400).json({ error: 'min_lat must be a valid number' });
-      }
-      if (max_lat !== undefined && !Number.isFinite(Number(max_lat))) {
-        return res.status(400).json({ error: 'max_lat must be a valid number' });
-      }
-      if (min_lng !== undefined && !Number.isFinite(Number(min_lng))) {
-        return res.status(400).json({ error: 'min_lng must be a valid number' });
-      }
-      if (max_lng !== undefined && !Number.isFinite(Number(max_lng))) {
-        return res.status(400).json({ error: 'max_lng must be a valid number' });
-      }
-      filteredEvents = filteredEvents.filter(e => {
-        if (e.latitude === null || e.longitude === null || e.latitude === undefined || e.longitude === undefined) return false;
-        const lat = Number(e.latitude);
-        const lng = Number(e.longitude);
-        if (minLat.value !== undefined && lat < minLat.value) return false;
-        if (maxLat.value !== undefined && lat > maxLat.value) return false;
-        if (minLng.value !== undefined && lng < minLng.value) return false;
-        if (maxLng.value !== undefined && lng > maxLng.value) return false;
-        return true;
+      return res.status(500).json({
+        error: 'Failed to fetch trip events.',
+        code: 'TRIP_EVENTS_FETCH_ERROR',
+        details: eventsErr.message,
+        timestamp: new Date().toISOString(),
       });
     }
 
     return res.json({
       trip_id: tripId,
-      events: filteredEvents,
+      events: events || [],
+      pagination: {
+        page,
+        limit,
+        total: count || 0,
+        totalPages: count ? Math.ceil(count / limit) : 0,
+      },
     });
   } catch (err) {
     return res.status(500).json({ error: 'Internal Server Error', details: err.message });
-  }
-});
-
-// ============================================================================
-// MARK STOP COMPLETED (DRIVER)
-// ============================================================================
-router.put('/:tripDisplayId/stops/:stopId/complete', authenticate, userLimiter, requireRole(['driver']), async (req, res) => {
-  const { tripDisplayId, stopId } = req.params;
-
-  try {
-    const { data: trip } = await supabase.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle();
-    if (!trip) return res.status(403).json({ error: 'Access Denied: Trip does not belong to you.' });
-
-    const updatedStop = await supabase.from('trip_stops').update({
-      is_completed: true,
-      is_current: false,
-    }).eq('id', stopId).eq('trip_display_id', tripDisplayId).select().maybeSingle();
-
-    if (updatedStop.error) {
-      logger.error('[tripRoutes] Failed to update stop:', updatedStop.error.message);
-      return res.status(500).json({ error: 'Database error while updating stop.' });
-    }
-    if (!updatedStop.data) return res.status(404).json({ error: 'Stop not found or does not belong to this trip.' });
-
-    const nextStops = await supabase.from('trip_stops').select()
-      .eq('trip_display_id', tripDisplayId)
-      .eq('is_completed', false)
-      .order('sort_order')
-      .limit(1);
-
-    if (nextStops.data && nextStops.data.length > 0) {
-      await supabase.from('trip_stops').update({ is_current: true })
-        .eq('id', nextStops.data[0].id)
-        .eq('trip_display_id', tripDisplayId);
-    } else {
-      await supabase.from('trips').update({ status: 'completed' })
-        .eq('trip_display_id', tripDisplayId)
-        .eq('driver_id', req.user.id);
-    }
-
-    res.json({ message: 'Stop marked as completed.' });
-  } catch (err) {
-    logger.error('[tripRoutes] markStopCompleted error:', err.message);
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-
-// ============================================================================
-// START TRIP (DRIVER)
-// ============================================================================
-router.put('/:tripDisplayId/start', authenticate, userLimiter, requireRole(['driver']), async (req, res) => {
-  const { tripDisplayId } = req.params;
-
-  try {
-    const { data: trip } = await supabase.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle();
-    if (!trip) return res.status(403).json({ error: 'Access Denied: Trip does not belong to you.' });
-
-    const stops = await supabase.from('trip_stops').select()
-      .eq('trip_display_id', tripDisplayId)
-      .eq('is_completed', false)
-      .order('sort_order')
-      .limit(1);
-
-    if (!stops.data || stops.data.length === 0) {
-      return res.status(400).json({ error: 'No active stops found for this trip.' });
-    }
-
-    const firstStopId = stops.data[0].id;
-    const updatedStop = await supabase.from('trip_stops').update({ is_current: true })
-      .eq('id', firstStopId)
-      .eq('trip_display_id', tripDisplayId)
-      .select()
-      .maybeSingle();
-
-    if (!updatedStop.data) {
-      return res.status(500).json({ error: 'Failed to start trip: Stop not found or update failed.' });
-    }
-
-    res.json({ message: 'Trip started.', stop_id: firstStopId });
-  } catch (err) {
-    logger.error('[tripRoutes] startTrip error:', err.message);
-    res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 

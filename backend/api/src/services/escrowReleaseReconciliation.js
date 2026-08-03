@@ -1,4 +1,4 @@
-import { supabase, redisClient } from '../config/db.js';
+import { supabaseAdmin, redisClient } from '../config/db.js';
 import { escrowRelease } from './escrow.js';
 import logger from '../middleware/logger.js';
 import os from 'os';
@@ -6,13 +6,16 @@ const DEFAULT_INTERVAL_MS = 60_000;
 const LOCK_KEY = 'escrow:release:reconciliation:lock';
 const LOCK_TTL_SECONDS = 120;
 const MAX_RETRIES = 10;
-const LEASE_EXTENSION_INTERVAL_MS = (LOCK_TTL_SECONDS * 1000) / 2;
 let reconciliationTimer = null;
 let reconciliationRunning = false;
 
 export async function reconcilePendingEscrowReleases() {
+  if (!supabaseAdmin) {
+    logger.warn('[escrow-release-reconciliation] supabaseAdmin not available — skipping cycle');
+    return;
+  }
+
   let lockAcquired = false;
-  let leaseExtender = null;
 
   if (redisClient) {
     try {
@@ -22,28 +25,21 @@ export async function reconcilePendingEscrowReleases() {
         return;
       }
       lockAcquired = true;
-      leaseExtender = setInterval(async () => {
-        try {
-          await redisClient.expire(LOCK_KEY, LOCK_TTL_SECONDS);
-        } catch (err) {
-          logger.warn('[escrow-release-reconciliation] Failed to extend lock lease:', err.message);
-        }
-      }, LEASE_EXTENSION_INTERVAL_MS);
     } catch (err) {
-      logger.error('[escrow-release-reconciliation] Failed to acquire Redis lock:', err.message);
+      logger.error('[escrow-release-reconciliation] Failed to acquire Redis lock, skipping batch:', err.message);
+      return;
     }
-  }
-
-  if (!lockAcquired) {
+  } else {
+    // Redis not configured — single-instance mode, use in-process guard only
     if (reconciliationRunning) return;
-    reconciliationRunning = true;
   }
 
   try {
+    if (!lockAcquired) reconciliationRunning = true;
     const instanceId = process.env.HOSTNAME || os.hostname();
-    const { data: failedOrders, error } = await supabase
+    const { data: failedOrders, error } = await supabaseAdmin
       .from('orders')
-      .select('id, order_display_id, escrow_release_attempts')
+      .select('id, order_display_id, escrow_release_attempts, release_tx_hash')
       .eq('escrow_status', 'release_failed')
       .lt('escrow_release_attempts', MAX_RETRIES)
       .limit(50);
@@ -59,8 +55,15 @@ export async function reconcilePendingEscrowReleases() {
     }
 
     for (const order of failedOrders ?? []) {
+      if (lockAcquired && redisClient) {
+        try {
+          await redisClient.expire(LOCK_KEY, LOCK_TTL_SECONDS);
+        } catch (err) {
+          logger.warn('[escrow-release-reconciliation] Failed to refresh lock:', err.message);
+        }
+      }
       try {
-        const { data: claimed, error: claimError } = await supabase
+        const { data: claimed, error: claimError } = await supabaseAdmin
           .rpc('claim_release_reconciliation', {
             p_order_id: order.id,
             p_instance_id: instanceId,
@@ -72,7 +75,7 @@ export async function reconcilePendingEscrowReleases() {
         }
 
         if (claimError) {
-          const { data: existing } = await supabase
+          const { data: existing } = await supabaseAdmin
             .from('orders')
             .select('escrow_status, reconciled_by')
             .eq('id', order.id)
@@ -86,25 +89,27 @@ export async function reconcilePendingEscrowReleases() {
         const releaseAttemptedAt = new Date().toISOString();
         const releaseAttempts = (order.escrow_release_attempts || 0) + 1;
 
-        const { txHash } = await escrowRelease(order.order_display_id);
-        if (!txHash) {
+        const { txHash, alreadyReleased } = await escrowRelease(order.order_display_id);
+        if (!txHash && !alreadyReleased) {
           throw new Error('Escrow release did not return a transaction hash');
         }
 
         const releasedAt = new Date().toISOString();
-        const { error: updateError } = await supabase
+        const { error: updateError } = await supabaseAdmin
           .from('orders')
           .update({
             escrow_status: 'released',
-            release_tx_hash: txHash,
+            release_tx_hash: txHash || order.release_tx_hash,
             escrow_release_error: null,
             escrow_released_at: releasedAt,
             escrow_release_attempts: releaseAttempts,
             escrow_release_last_attempt_at: releaseAttemptedAt,
+            reconciled_by: null,
             updated_at: releasedAt,
           })
           .eq('id', order.id)
-          .eq('escrow_status', 'release_failed');
+          .in('escrow_status', ['release_failed', 'funded'])
+          .eq('reconciled_by', instanceId);
 
         if (updateError) {
           logger.error(
@@ -118,12 +123,13 @@ export async function reconcilePendingEscrowReleases() {
         const releaseAttemptedAt = new Date().toISOString();
         const releaseAttempts = (order.escrow_release_attempts || 0) + 1;
 
-        const { error: attemptError } = await supabase
+        const { error: attemptError } = await supabaseAdmin
           .from('orders')
           .update({
             escrow_release_attempts: releaseAttempts,
             escrow_release_last_attempt_at: releaseAttemptedAt,
             escrow_release_error: String(err.message || 'Unknown error').slice(0, 1000),
+            reconciled_by: null,
             updated_at: new Date().toISOString(),
           })
           .eq('id', order.id);
@@ -148,9 +154,6 @@ export async function reconcilePendingEscrowReleases() {
       }
     }
   } finally {
-    if (leaseExtender) {
-      clearInterval(leaseExtender);
-    }
     if (lockAcquired && redisClient) {
       try {
         await redisClient.del(LOCK_KEY);

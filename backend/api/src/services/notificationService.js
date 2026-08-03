@@ -1,31 +1,35 @@
 import { supabase, firebaseAdmin } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import crypto from 'crypto';
+import { measureExecution } from '../core/performanceMetrics.js';
 
 const TRANSIENT_ERROR_CODES = new Set([
   'messaging/too-many-topics',
   'messaging/internal-error',
   'messaging/unavailable',
-  'messaging/server-unavailable',
+  'messaging/server-unavailable'
 ]);
 
 const INVALID_TOKEN_CODES = new Set([
   'messaging/registration-token-not-registered',
   'messaging/invalid-registration-token',
-  'messaging/invalid-argument',
+  'messaging/invalid-argument'
 ]);
 
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [1000, 2000, 4000];
+const RETRY_BASE_DELAY = 500;
+const RETRY_MAX_DELAY = 5000;
+
+function calculateRetryBackoff(attempt) {
+  const delay = Math.min(RETRY_BASE_DELAY * Math.pow(2, attempt), RETRY_MAX_DELAY);
+  return delay + Math.floor(Math.random() * 200);
+}
 
 async function getUserFcmToken(userId) {
   if (!supabase) return null;
   try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('fcm_token')
-      .eq('id', userId)
-      .maybeSingle();
+    const { data, error } = await supabase.from('profiles').select('fcm_token').eq('id', userId).maybeSingle();
     if (error || !data?.fcm_token) return null;
     return data.fcm_token;
   } catch (err) {
@@ -39,7 +43,10 @@ async function clearInvalidToken(userId) {
   try {
     await supabase
       .from('profiles')
-      .update({ fcm_token: null, fcm_token_updated_at: new Date().toISOString() })
+      .update({
+        fcm_token: null,
+        fcm_token_updated_at: new Date().toISOString()
+      })
       .eq('id', userId);
   } catch (dbErr) {
     logger.error(`[FCM] Failed to clear invalid FCM token for user ${userId}: ${dbErr.message}`);
@@ -77,16 +84,18 @@ export async function sendFcmNotification(userId, notification, data = {}) {
         token: fcmToken,
         notification: {
           title: notification.title,
-          body: notification.body,
+          body: notification.body
         },
-        data: stringData,
+        data: stringData
       });
 
       logger.info(`[FCM] Push notification sent to user ${userId} — messageId: ${messageId}`);
       return { success: true, messageId };
     } catch (err) {
       lastError = err;
-      logger.error(`[FCM] Delivery failed for user ${userId} (attempt ${attempt + 1}/${MAX_RETRIES}) — errorCode: ${err.code ?? 'unknown'} — ${err.message}`);
+      logger.error(
+        `[FCM] Delivery failed for user ${userId} (attempt ${attempt + 1}/${MAX_RETRIES}) — errorCode: ${err.code ?? 'unknown'} — ${err.message}`
+      );
 
       if (isInvalidTokenError(err.code)) {
         logger.warn(`[FCM] Clearing invalid FCM token for user ${userId} due to error: ${err.code}`);
@@ -95,149 +104,235 @@ export async function sendFcmNotification(userId, notification, data = {}) {
       }
 
       if (isTransientError(err.code) && attempt < MAX_RETRIES - 1) {
-        logger.info(`[FCM] Retrying after ${RETRY_DELAYS[attempt]}ms for user ${userId}`);
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt]));
+        const delay = calculateRetryBackoff(attempt);
+        logger.info(`[FCM] Retrying after ${delay}ms for user ${userId}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else if (!isTransientError(err.code)) {
+        logger.warn(`[FCM] Non-retryable error for user ${userId}: ${err.code}`);
+        return { success: false, error: err.message, errorCode: err.code };
       }
     }
   }
 
-  return { success: false, error: lastError?.message || 'Unknown error', errorCode: lastError?.code };
+  return {
+    success: false,
+    error: lastError?.message || 'Unknown error',
+    errorCode: lastError?.code
+  };
+}
+
+/**
+ * Hash a delivery OTP with scrypt and a per-OTP random salt. The salt is
+ * stored alongside the digest, so the stored value cannot be brute-forced
+ * offline the way an unsalted SHA-256 of a 6-digit code can be.
+ *
+ * @param {string|number} otp
+ * @param {string} [saltHex] - existing salt (for verification), or undefined
+ *   to generate a fresh 16-byte salt.
+ * @returns {{hash: string, salt: string}} hex-encoded scrypt digest (64 bytes)
+ *   and hex-encoded salt.
+ */
+export function hashDeliveryOtp(otp, saltHex) {
+  const salt = saltHex || crypto.randomBytes(16).toString('hex');
+  const key = crypto.scryptSync(String(otp), salt, 64);
+  return { hash: key.toString('hex'), salt };
+}
+
+/**
+ * Timing-safe comparison of a submitted OTP against a stored record.
+ *
+ * Records written after the salted-hash migration carry an `otp_salt`; those
+ * are compared with scrypt. Pre-migration rows (no salt) are compared with
+ * SHA-256 so in-flight OTPs keep working for their remaining TTL window.
+ *
+ * @param {string|number} otp
+ * @param {{otp_hash?: string, otp_salt?: string}|null} otpRecord
+ * @returns {boolean}
+ */
+export function verifyDeliveryOtpHash(otp, otpRecord) {
+  if (!otpRecord) return false;
+  if (otpRecord.otp_salt) {
+    const { hash: submittedHash } = hashDeliveryOtp(otp, otpRecord.otp_salt);
+    const expected = String(otpRecord.otp_hash || '');
+    if (!/^[a-f0-9]{128}$/.test(expected)) return false;
+    return crypto.timingSafeEqual(Buffer.from(submittedHash, 'hex'), Buffer.from(expected, 'hex'));
+  }
+  if (otpRecord.otp_hash && /^[a-f0-9]{64}$/.test(otpRecord.otp_hash)) {
+    const submittedHash = crypto.createHash('sha256').update(String(otp)).digest('hex');
+    return crypto.timingSafeEqual(Buffer.from(submittedHash, 'hex'), Buffer.from(otpRecord.otp_hash, 'hex'));
+  }
+  return false;
 }
 
 export async function storeDeliveryOtp(orderId, otp, ttlMinutes = 15) {
-  const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
-  const otpHash = crypto.createHash('sha256').update(String(otp)).digest('hex');
+  return measureExecution('NotificationService.storeDeliveryOtp', async () => {
+    const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
+    const { hash: otpHash, salt: otpSalt } = hashDeliveryOtp(otp);
 
-  const { data, error } = await supabase
-    .from('delivery_otps')
-    .insert({
-      order_id: orderId,
-      otp_hash: otpHash,
-      expires_at: expiresAt,
-      verified: false,
-    })
-    .select('id')
-    .single();
+    const { data, error } = await supabase
+      .from('delivery_otps')
+      .insert({
+        order_id: orderId,
+        otp_hash: otpHash,
+        otp_salt: otpSalt,
+        expires_at: expiresAt,
+        verified: false
+      })
+      .select('id')
+      .single();
 
-  if (error) {
-    logger.error('[NotificationService] Failed to store OTP:', error.message);
-    return null;
-  }
+    if (error) {
+      logger.error('[NotificationService] Failed to store OTP:', error.message);
+      return null;
+    }
 
-  logger.info(`[NotificationService] OTP stored for order ${orderId}, expires at ${expiresAt}`);
-  return data;
+    logger.info(`[NotificationService] OTP stored for order ${orderId}, expires at ${expiresAt}`);
+    return data;
+  });
 }
 
 export async function getActiveDeliveryOtp(orderId) {
-  const { data, error } = await supabase
-    .from('delivery_otps')
-    .select('id, otp_hash, expires_at')
-    .eq('order_id', orderId)
-    .eq('verified', false)
-    .gte('expires_at', new Date().toISOString())
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  return measureExecution('NotificationService.getActiveDeliveryOtp', async () => {
+    const { data, error } = await supabase
+      .from('delivery_otps')
+      .select('id, otp_hash, otp_salt, expires_at')
+      .eq('order_id', orderId)
+      .eq('verified', false)
+      .gte('expires_at', new Date().toISOString())
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-  if (error) {
-    logger.error('[NotificationService] Failed to fetch active OTP:', error.message);
-    return null;
-  }
+    if (error) {
+      logger.error('[NotificationService] Failed to fetch active OTP:', error.message);
+      return null;
+    }
 
-  return data;
+    return data;
+  });
 }
 
-export async function verifyDeliveryOtp(orderId) {
-  const { error } = await supabase
-    .from('delivery_otps')
-    .update({
-      verified: true,
-      verified_at: new Date().toISOString(),
-    })
-    .eq('order_id', orderId)
-    .eq('verified', false);
+export async function verifyDeliveryOtp(otpId) {
+  return measureExecution('NotificationService.verifyDeliveryOtp', async () => {
+    // Target a specific OTP record by ID instead of bulk-updating all
+    // unverified OTPs for an order. This ensures only the matched OTP
+    // (which was validated by the caller via timing-safe hash comparison)
+    // is consumed, preventing any future caller from bypassing verification.
+    const { data, error } = await supabase
+      .from('delivery_otps')
+      .update({
+        verified: true,
+        verified_at: new Date().toISOString()
+      })
+      .eq('id', otpId)
+      .eq('verified', false)
+      .select('id')
+      .maybeSingle();
 
-  if (error) {
-    logger.error('[NotificationService] Failed to verify OTP:', error.message);
-    return false;
-  }
+    if (error) {
+      logger.error('[NotificationService] Failed to verify OTP:', error.message);
+      return false;
+    }
 
-  return true;
+    if (!data) {
+      logger.warn('[NotificationService] OTP not found or already verified:', otpId);
+      return false;
+    }
+
+    return true;
+  });
 }
 
 export async function expireDeliveryOtps(orderId) {
-  const { error } = await supabase
-    .from('delivery_otps')
-    .update({ expires_at: new Date().toISOString() })
-    .eq('order_id', orderId)
-    .eq('verified', false);
+  return measureExecution('NotificationService.expireDeliveryOtps', async () => {
+    const { error } = await supabase
+      .from('delivery_otps')
+      .update({ expires_at: new Date().toISOString() })
+      .eq('order_id', orderId)
+      .eq('verified', false);
 
-  if (error) {
-    logger.error('[NotificationService] Failed to expire OTPs:', error.message);
-  }
+    if (error) {
+      logger.error('[NotificationService] Failed to expire OTPs:', error.message);
+    }
+  });
 }
 
 export async function sendDeliveryOtpNotification(customerId, orderDisplayId, otp) {
   logger.info(`[NotificationService] Delivering OTP for Order ${orderDisplayId} to Customer ${customerId}`);
 
   const title = 'Delivery Verification OTP';
-  const body = `Your delivery OTP for order ${orderDisplayId} is ${otp}. Share this with the driver only after verifying your cargo has arrived safely.`;
-  const otpHash = crypto.createHash('sha256').update(String(otp)).digest('hex');
+  const body = `Your delivery OTP for order ${orderDisplayId} is ready. Share this with the driver only after verifying your cargo has arrived safely.`;
 
   let dbSuccess = false;
   try {
-    const { error } = await supabase
-      .from('notifications')
-      .insert({
-        user_id: customerId,
-        title,
-        body,
-        notif_type: 'order_update',
-        metadata: { order_display_id: orderDisplayId, delivery_otp_hash: otpHash },
-      });
+    const { error } = await supabase.from('notifications').insert({
+      user_id: customerId,
+      title,
+      body,
+      notif_type: 'order_update',
+      // No OTP or OTP-derived value is persisted here: an unsalted digest of
+      // a 6-digit code is offline-brute-forceable if the table leaks.
+      metadata: { order_display_id: orderDisplayId }
+    });
 
     if (error) {
-      logger.error('[NotificationService] Database insert failed:', error);
+      logger.error({ err: error }, '[NotificationService] Database insert failed');
     } else {
       logger.info('[NotificationService] Notification inserted successfully');
       dbSuccess = true;
     }
   } catch (dbErr) {
-    logger.error('[NotificationService] Database connection error during notification insert:', dbErr.message);
+    logger.error({ err: dbErr }, '[NotificationService] Database connection error during notification insert');
   }
 
   let fcmResult;
-  try { fcmResult = await sendFcmNotification(
+  try {
+    fcmResult = await sendFcmNotification(
       customerId,
-    { title: 'Delivery Verification OTP', body },
-    { orderDisplayId, notifType: 'delivery_otp' }
-  ); } catch (err) { logger.warn('[NotificationService] Unexpected sendFcmNotification error: %s', err?.message ?? err); }
+      { title, body },
+      { orderDisplayId, notifType: 'delivery_otp', deliveryOtp: String(otp) }
+    );
+  } catch (err) {
+    logger.error({ err: err?.message ?? String(err) }, 'Unexpected sendFcmNotification error');
+  }
 
   if (process.env.TWILIO_AUTH_TOKEN) {
     logger.info(`[NotificationService] [SMS] SMS stub: Sending OTP for order ${orderDisplayId} (masked)`);
   } else {
-    logger.info(`[NotificationService] [SMS] SMS stub: No SMS gateway configured. OTP sent out-of-band for order ${orderDisplayId} (masked)`);
+    logger.info(
+      `[NotificationService] [SMS] SMS stub: No SMS gateway configured. OTP sent out-of-band for order ${orderDisplayId} (masked)`
+    );
   }
 
   return { success: dbSuccess || fcmResult?.success, fcm: fcmResult };
 }
 
 export async function sendPushNotification(userId, title, body, notifType, metadata = {}) {
-  if (supabase) {
-    try {
-      const { error } = await supabase
-        .from('notifications')
-        .insert({ user_id: userId, title, body, notif_type: notifType, metadata });
+  return measureExecution('NotificationService.sendPushNotification', async () => {
+    if (supabase) {
+      try {
+        const { error } = await supabase.from('notifications').insert({
+          user_id: userId,
+          title,
+          body,
+          notif_type: notifType,
+          metadata
+        });
 
-      if (error) {
-        logger.error(`[NotificationService] Database insert failed: ${error.message}`);
+        if (error) {
+          logger.error(`[NotificationService] Database insert failed: ${error.message}`);
+        }
+      } catch (dbErr) {
+        logger.error(`[NotificationService] Database error: ${dbErr.message}`);
       }
-    } catch (dbErr) {
-      logger.error(`[NotificationService] Database error: ${dbErr.message}`);
     }
-  }
 
-  let fcmResult;
-  try { fcmResult = await sendFcmNotification(userId, { title, body }, { notifType, ...metadata }); } catch (err) { logger.warn('[NotificationService] Unexpected sendFcmNotification error: %s', err?.message ?? err); }
-  return { success: fcmResult?.success, fcm: fcmResult };
+    let fcmResult;
+    try {
+      fcmResult = await sendFcmNotification(userId, { title, body }, { notifType, ...metadata });
+    } catch (err) {
+      logger.error({ err: err?.message ?? String(err) }, 'Unexpected sendFcmNotification error');
+    }
+    return { success: fcmResult?.success, fcm: fcmResult };
+  });
 }
