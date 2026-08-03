@@ -1,4 +1,3 @@
-
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
@@ -10,9 +9,10 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
-import 'package:truxify_driver/widgets/slide_to_confirm_button.dart';
+import 'package:truxify_shared/truxify_shared.dart';
 
 import '../core/app_routes.dart';
+import '../l10n/app_localizations.dart';
 import '../models/app_models.dart';
 import '../models/earnings_daily_model.dart';
 import '../services/driver_earnings_service.dart';
@@ -20,13 +20,23 @@ import '../services/geocode_service.dart';
 import '../services/marketplace_repository.dart';
 import '../services/route_service.dart';
 import '../services/trip_service.dart';
+import '../services/sync_service.dart';
+import '../services/battery_service.dart';
 import '../services/location_service.dart';
+import '../services/weigh_station_service.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import '../theme/app_theme.dart';
-import '../widgets/common_widgets.dart';
-import '../widgets/earnings_shimmer.dart';
 import '../widgets/map_markers.dart';
+import '../widgets/slide_to_confirm_button.dart';
+import '../widgets/home/offline_banner.dart';
+import '../widgets/home/low_battery_banner.dart';
+import '../widgets/home/active_navigation_header.dart';
+import '../widgets/home/search_destination_card.dart';
+import '../widgets/home/new_load_notification_banner.dart';
+import '../widgets/home/driver_status_sheet.dart';
+import '../widgets/home/active_trip_sheet.dart';
 import 'destination_picker_screen.dart';
-import '../widgets/pulsing_location_dot.dart';
+import 'pod_capture_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -34,11 +44,21 @@ class HomeScreen extends StatefulWidget {
     required this.marketplaceRepo,
     required this.earningsService,
     this.mockLocationText,
+    this.onNavigateToLoads,
+    this.onNavigateToActiveTrip,
   });
 
   final MarketplaceRepository marketplaceRepo;
   final DriverEarningsService earningsService;
   final String? mockLocationText;
+
+  /// Called when the driver taps "Find New Load" CTA.
+  /// Typically navigates to the loads marketplace tab.
+  final VoidCallback? onNavigateToLoads;
+
+  /// Called when the driver taps "View Active Trip" CTA.
+  /// Typically navigates to the trips tab.
+  final VoidCallback? onNavigateToActiveTrip;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -57,6 +77,10 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<List<ll.LatLng>>? _routeFuture;
   DestinationPickResult? _destination;
   bool _isSearchExpanded = false;
+  Map<String, dynamic>? _heatmapData;
+
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  bool _hasPendingPods = false;
 
   List<Marker>? _cachedMarkers;
   ll.LatLng? _lastDest;
@@ -126,12 +150,20 @@ class _HomeScreenState extends State<HomeScreen> {
   String _activeTripDistance = '';
   String _activeTripDuration = '';
   String _activeTripPayout = '';
+  /// Number of stops not yet completed on the active trip.
+  int _activeTripStopsRemaining = 0;
+  /// Current milestone of the active trip (e.g. 'en_route_pickup').
+  String _activeTripMilestone = '';
   bool _isLoadingLocation = true;
   String? _locationError;
-  final List<TripRecord> tripHistory = [];
-
   late final MarketplaceRepository _marketplaceRepo;
-  StreamSubscription<LoadOffer>? _loadSubscription;
+  StreamSubscription? _tripSubscription;
+  StreamSubscription? _loadSubscription;
+
+  String _hosStatus = 'off_duty';
+  int _hosDrivingMinutes = 0;
+  int _hosOnDutyMinutes = 0;
+
   Timer? _autoHideTimer;
   LoadOffer? _latestNewLoad;
   bool _dismissedNewLoad = false;
@@ -143,12 +175,16 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoadingMetrics = true;
   String? _metricsError;
   String? _networkError;
-  int _retryCount = 0;
+
+  final BatteryService _batteryService = BatteryService.instance;
+  int _batteryLevel = 100;
+  bool _isCharging = false;
+  bool _criticalDialogShown = false;
 
   String _sanitizeCoordinate(dynamic coord) {
     if (coord == null) return '0.0';
     if (coord is double) return coord.toStringAsFixed(6);
-    if (coord is int) return coord.toStringAsFixed(6);
+    if (coord is int) return coord.toDouble().toStringAsFixed(6);
     return (double.tryParse(coord.toString()) ?? 0.0).toStringAsFixed(6);
   }
 
@@ -159,17 +195,19 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _withRetry(Future<void> Function() fn) async {
-    try {
-      _retryCount = 0;
-      await fn();
-    } catch (e) {
-      _retryCount++;
-      if (_retryCount <= 3) {
-        await Future.delayed(Duration(seconds: _retryCount));
+    for (int i = 0; i < 3; i++) {
+      try {
         await fn();
-      } else {
-        setState(() => _networkError = 'Operation failed after $_retryCount retries');
+        return;
+      } catch (e) {
+        if (i < 2) {
+          await Future.delayed(Duration(seconds: i + 1));
+        }
       }
+    }
+    if (mounted) {
+      setState(() =>
+          _networkError = 'Network error. Please check your connection and try again.');
     }
   }
 
@@ -184,6 +222,152 @@ class _HomeScreenState extends State<HomeScreen> {
     _initLocation();
     _subscribeToNewLoads();
     _loadDashboardMetrics();
+    _loadHeatmapData();
+    _initBatteryMonitoring();
+  }
+
+  // ── Demand heatmap ─────────────────────────────────────────────────────────
+
+  Future<void> _loadHeatmapData() async {
+    try {
+      final heatmapData = await _marketplaceRepo.fetchDemandHeatmap();
+      if (mounted) {
+        setState(() {
+          _heatmapData = heatmapData;
+        });
+      }
+    } catch (e) {
+      debugPrint('Failed to load heatmap data: $e');
+    }
+  }
+
+  /// Builds a [MarkerLayer] with colour-coded circles for each demand zone.
+  ///
+  /// Expected backend shape (from [MarketplaceRepository.fetchDemandHeatmap]):
+  /// ```json
+  /// {
+  ///   "zones": [
+  ///     { "lat": 28.6, "lng": 77.2, "demand": 0.85 },
+  ///     ...
+  ///   ]
+  /// }
+  /// ```
+  /// `demand` is a normalised value in [0.0, 1.0]:
+  ///   ≥ 0.70  → red   (high demand)
+  ///   ≥ 0.40  → orange (medium demand)
+  ///   < 0.40  → green  (low demand)
+  Widget? _buildHeatmapLayer() {
+    final data = _heatmapData;
+    if (data == null) return null;
+
+    final rawZones = data['zones'];
+    if (rawZones == null || rawZones is! List || rawZones.isEmpty) return null;
+
+    final markers = <Marker>[];
+    for (final zone in rawZones) {
+      if (zone is! Map) continue;
+      final lat = (zone['lat'] as num?)?.toDouble();
+      final lng = (zone['lng'] as num?)?.toDouble();
+      final demand = (zone['demand'] as num?)?.toDouble() ?? 0.0;
+      if (lat == null || lng == null) continue;
+
+      final Color fillColor;
+      if (demand >= 0.70) {
+        fillColor = Colors.red.withValues(alpha: 0.45);
+      } else if (demand >= 0.40) {
+        fillColor = Colors.orange.withValues(alpha: 0.40);
+      } else {
+        fillColor = Colors.green.withValues(alpha: 0.35);
+      }
+
+      markers.add(
+        Marker(
+          point: ll.LatLng(lat, lng),
+          width: 64,
+          height: 64,
+          child: Container(
+            decoration: BoxDecoration(
+              color: fillColor,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: fillColor.withValues(alpha: 0.7),
+                width: 1.5,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (markers.isEmpty) return null;
+    return MarkerLayer(markers: markers);
+  }
+
+  // ── Battery monitoring ─────────────────────────────────────────────────────
+
+  void _initBatteryMonitoring() {
+    _batteryService.addListener(_onBatteryChanged);
+    _batteryService.startMonitoring();
+  }
+
+  void _onBatteryChanged() {
+    if (!mounted) return;
+    final info = _batteryService.currentInfo;
+    setState(() {
+      _batteryLevel = info.level;
+      _isCharging = info.isCharging;
+    });
+    if (info.isCritical && !_criticalDialogShown) {
+      _criticalDialogShown = true;
+      _showCriticalBatteryDialog();
+    }
+  }
+
+  void _showCriticalBatteryDialog() {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(
+          Icons.battery_alert_rounded,
+          color: TruxifyColors.errorRed,
+          size: 48,
+        ),
+        title: const Text('Critical Battery'),
+        content: Text(
+          'Battery is at $_batteryLevel%. '
+          'Please connect your charger immediately to continue tracking.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Dismiss'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              BatteryService.instance.openBatterySettings();
+            },
+            child: const Text('Open Battery Settings'),
+          ),
+        ],
+      ),
+    ).then((_) {
+      if (mounted && _batteryService.currentInfo.isCritical) {
+        _criticalDialogShown = false;
+      }
+    });
+  }
+
+  // ── HoS (Hours of Service) ─────────────────────────────────────────────────
+
+  /// Updates the driver's HoS status and persists the change.
+  /// Called from the HoS status banner buttons ('Off Duty', 'Driving', etc.).
+  void _toggleHosStatus(String status) {
+    setState(() => _hosStatus = status);
+    // TODO: persist to backend via TripService or dedicated HoS endpoint.
+    debugPrint('[HoS] status changed → $status');
   }
 
   @override
@@ -198,7 +382,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _batteryService.removeListener(_onBatteryChanged);
+    _connectivitySubscription?.cancel();
     _loadSubscription?.cancel();
+    _tripSubscription?.cancel();
     _autoHideTimer?.cancel();
     _mapController.dispose();
     _searchController.dispose();
@@ -261,30 +448,59 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       final results = await Future.wait([
-        _earningsService.fetchTodayEarningsSummary().catchError((_) => null),
-        _earningsService.fetchDriverStats().catchError((_) => <String, dynamic>{}),
-        _tripService.fetchTripHistory(limit: 50).catchError((_) => <String, dynamic>{'trips': []}),
+        _earningsService.fetchTodayEarningsSummary().catchError((e) {
+          debugPrint('Failed to fetch earnings summary: $e');
+          return null;
+        }),
+        _earningsService.fetchDriverStats().catchError((e) {
+          debugPrint('Failed to fetch driver stats: $e');
+          return <String, dynamic>{};
+        }),
+        _tripService.fetchTripHistory(limit: 50).catchError((e) {
+          debugPrint('Failed to fetch trip history: $e');
+          return <String, dynamic>{'trips': []};
+        }),
       ]);
 
       if (!mounted) return;
 
       final historyData = results[2] as Map<String, dynamic>;
-      final historyList = (historyData['trips'] as List?)
-          ?.map((t) => TripRecord(
-                route: (t['route'] as String?) ?? (t['route_label'] as String?) ?? '',
-                date: (t['date'] as String?) ?? (t['trip_date'] as String?) ?? '',
-                earnings: (t['earnings'] as String?) ?? (t['payout'] as String?) ?? '',
-                statusLabel: (t['status_label'] as String?) ?? (t['status'] as String?) ?? '',
-                tripId: (t['trip_display_id'] as String?) ?? (t['trip_id'] as String?) ?? '',
-                hash: (t['hash'] as String?) ?? (t['blockchain_hash'] as String?) ?? '',
+      final historyRows = historyData['trips'] is List
+          ? (historyData['trips'] as List)
+              .whereType<Map>()
+              .map((t) => Map<String, dynamic>.from(t))
+          : const Iterable<Map<String, dynamic>>.empty();
+      final historyList = historyRows
+          .map((t) => TripRecord(
+                route: (t['route'] as String?) ??
+                    (t['route_label'] as String?) ??
+                    '',
+                date: (t['date'] as String?) ??
+                    (t['trip_date'] as String?) ??
+                    '',
+                earnings: (t['earnings'] as String?) ??
+                    (t['payout'] as String?) ??
+                    '',
+                statusLabel: (t['status_label'] as String?) ??
+                    (t['status'] as String?) ??
+                    '',
+                tripId: (t['trip_display_id'] as String?) ??
+                    (t['trip_id'] as String?) ??
+                    '',
+                hash: (t['hash'] as String?) ??
+                    (t['blockchain_hash'] as String?) ??
+                    '',
                 verifiedBadge: (t['verified_badge'] as String?) ?? '',
-                completed: (t['completed'] as bool?) ?? (t['is_completed'] as bool?) ?? false,
+                completed: (t['completed'] as bool?) ??
+                    (t['is_completed'] as bool?) ??
+                    false,
               ))
-          .toList() ?? [];
+          .toList();
 
       setState(() {
         _todayEarnings = results[0] as EarningsDailyModel?;
-        final stats = results[1] as Map<String, dynamic>? ?? <String, dynamic>{};
+        final stats =
+            results[1] as Map<String, dynamic>? ?? <String, dynamic>{};
         _driverRating = (stats['rating'] as num?)?.toDouble();
         _tripHistory = historyList;
         _isLoadingMetrics = false;
@@ -334,19 +550,15 @@ class _HomeScreenState extends State<HomeScreen> {
     } else {
       setState(() {
         _isLoadingLocation = false;
-        // _currentLocation stays null — map shows error state
         _currentLocationText = null;
       });
     }
   }
 
   /// Requests permission and fetches the current GPS position.
-  /// Returns null if permission denied or location unavailable.
   Future<Position?> _fetchGpsPosition() async {
     try {
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      debugPrint('Location service enabled: $serviceEnabled');
-
       if (!serviceEnabled) {
         if (mounted) {
           setState(() {
@@ -358,12 +570,8 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       LocationPermission permission = await Geolocator.checkPermission();
-      debugPrint('Initial permission: $permission');
-
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
-        debugPrint('Permission after request: $permission');
-
         if (permission == LocationPermission.denied) {
           if (mounted) {
             setState(() {
@@ -385,22 +593,12 @@ class _HomeScreenState extends State<HomeScreen> {
         return null;
       }
 
-      final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      return await Geolocator.getCurrentPosition(
+        locationSettings:
+            const LocationSettings(accuracy: LocationAccuracy.high),
       );
-
-      debugPrint(
-        'Latitude: ${position.latitude}, Longitude: ${position.longitude}',
-      );
-
-      return position;
     } catch (e, stackTrace) {
-      debugPrint('====================');
-      debugPrint('LOCATION ERROR');
-      debugPrint(e.toString());
-      debugPrint(stackTrace.toString());
-      debugPrint('====================');
-
+      debugPrint('LOCATION ERROR: $e\n$stackTrace');
       if (mounted) {
         setState(() {
           _locationError = e.toString();
@@ -414,28 +612,25 @@ class _HomeScreenState extends State<HomeScreen> {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Location Permission Required'),
-        content: const Text(
-          'Location access is permanently denied. Please enable it in your device Settings to use this feature.',
-        ),
+        title: Text(AppLocalizations.of(context)!.locationPermissionRequired),
+        content: Text(AppLocalizations.of(context)!.locationPermDenied),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel'),
+            child: Text(AppLocalizations.of(context)!.cancel),
           ),
           TextButton(
             onPressed: () {
               Navigator.of(ctx).pop();
               Geolocator.openAppSettings();
             },
-            child: const Text('Open Settings'),
+            child: Text(AppLocalizations.of(context)!.openSettings),
           ),
         ],
       ),
     );
   }
 
-  /// Tap on the current location row — refreshes GPS + address.
   Future<void> _fetchCurrentLocation() async {
     setState(() {
       _isRefreshingLocation = true;
@@ -464,7 +659,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Reverse geocodes `_currentLocation` using Nominatim.
+  /// Reverse geocodes [_currentLocation] using Nominatim.
   Future<String> _resolveCurrentLocationAddress() async {
     if (_currentLocation == null) return 'Location Unavailable';
 
@@ -486,9 +681,7 @@ class _HomeScreenState extends State<HomeScreen> {
           'User-Agent': 'Truxify Driver App',
         },
       );
-
       if (response.statusCode != 200) return 'Location Unavailable';
-
       final decoded = jsonDecode(response.body);
       if (decoded is Map<String, dynamic>) {
         final displayName = (decoded['display_name'] as String?)?.trim();
@@ -497,13 +690,44 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {
       return 'Location Unavailable';
     }
-
     return 'Location Unavailable';
   }
 
   void _centerMapOnCurrentLocation() {
     if (_currentLocation == null) return;
     _mapController.move(_currentLocation!, _mapZoom);
+  }
+
+  // ── Active trip loading ────────────────────────────────────────────────────
+
+  /// Parses a duration string such as "2h 30m" or "45 min" into minutes,
+  /// then returns a human-readable ETA relative to now.
+  String _computeEtaFromDuration(String duration) {
+    if (duration.isEmpty) return '';
+    int totalMinutes = 0;
+    final hoursMatch = RegExp(r'(\d+)\s*h').firstMatch(duration);
+    final minsMatch = RegExp(r'(\d+)\s*m').firstMatch(duration);
+    if (hoursMatch != null) {
+      totalMinutes += int.tryParse(hoursMatch.group(1) ?? '0') ?? 0;
+      totalMinutes *= 60;
+    }
+    if (minsMatch != null) {
+      totalMinutes += int.tryParse(minsMatch.group(1) ?? '0') ?? 0;
+    }
+    if (totalMinutes == 0) return '';
+    final eta = DateTime.now().add(Duration(minutes: totalMinutes));
+    final h = eta.hour;
+    final m = eta.minute.toString().padLeft(2, '0');
+    final period = h >= 12 ? 'PM' : 'AM';
+    final h12 = h % 12 == 0 ? 12 : h % 12;
+    return 'ETA $h12:$m $period';
+  }
+
+  /// Computes trip progress [0.0 – 1.0] from stop completion data.
+  double _computeProgressFromStops(List<Map<String, dynamic>> stops) {
+    if (stops.isEmpty) return 0.0;
+    final completed = stops.where((s) => s['is_completed'] == true).length;
+    return completed / stops.length;
   }
 
   Future<void> _loadActiveTrip() async {
@@ -523,43 +747,67 @@ class _HomeScreenState extends State<HomeScreen> {
             : (activeTrip['truck_label'] as String?) ?? 'Truck assigned';
 
         final prefs = await SharedPreferences.getInstance();
+        final distanceStr = (activeTrip['distance'] as String?) ??
+            (activeTrip['trip_distance'] as String?) ??
+            '';
+        final durationStr = (activeTrip['duration'] as String?) ??
+            (activeTrip['trip_duration'] as String?) ??
+            '';
+        final payoutStr = (activeTrip['estimated_payout'] as String?) ??
+            (activeTrip['price'] as String?) ??
+            (activeTrip['payout'] as String?) ??
+            '';
+
         await prefs.setString('cached_trip_id', tripId);
         await prefs.setString('cached_truck_label', truckLabel);
-        await prefs.setString('cached_distance', (activeTrip['distance'] as String?) ?? (activeTrip['trip_distance'] as String?) ?? '');
-        await prefs.setString('cached_duration', (activeTrip['duration'] as String?) ?? (activeTrip['trip_duration'] as String?) ?? '');
-        await prefs.setString('cached_payout', (activeTrip['estimated_payout'] as String?) ?? (activeTrip['price'] as String?) ?? (activeTrip['payout'] as String?) ?? '');
-        
-        final isTripStarted = stops.any((s) => s['is_completed'] == true || s['is_current'] == true);
+        await prefs.setString('cached_distance', distanceStr);
+        await prefs.setString('cached_duration', durationStr);
+        await prefs.setString('cached_payout', payoutStr);
+
+        final isTripStarted = stops.any(
+          (s) => s['is_completed'] == true || s['is_current'] == true,
+        );
         await prefs.setBool('cached_is_started', isTripStarted);
+
+        // Compute stops remaining and current milestone for the home card.
+        final pendingStops = stops.where((s) => s['is_completed'] != true).length;
+        final currentStop = stops.where((s) => s['is_current'] == true).firstOrNull;
+        final milestone = (currentStop?['status'] as String?) ??
+            (currentStop?['milestone'] as String?) ?? '';
 
         setState(() {
           _isOffline = false;
           _activeTripId = tripId;
           _activeTruckLabel = truckLabel;
-          _activeTripDistance = prefs.getString('cached_distance') ?? '';
-          _activeTripDuration = prefs.getString('cached_duration') ?? '';
-          _activeTripPayout = prefs.getString('cached_payout') ?? '';
+          _activeTripDistance = distanceStr;
+          _activeTripDuration = durationStr;
+          _activeTripPayout = payoutStr;
           _isTripStarted = isTripStarted;
+          _activeTripStopsRemaining = pendingStops;
+          _activeTripMilestone = milestone;
         });
-        
+
         if (stops.isNotEmpty) {
           final lastStop = stops.last;
-          final address = lastStop['drop_location'] as String;
+          final address = lastStop['drop_location'] as String? ?? '';
           await prefs.setString('cached_address', address);
-          
+
           final dropPoint = await GeocodeService.resolvePlace(address);
           if (dropPoint != null) {
             await prefs.setDouble('cached_drop_lat', dropPoint.latitude);
             await prefs.setDouble('cached_drop_lng', dropPoint.longitude);
           }
-          
+
           if (dropPoint != null && mounted) {
             setState(() {
-              _destination = DestinationPickResult(address: address, point: dropPoint);
-              final routePoints = <ll.LatLng>[_currentLocation ?? dropPoint, dropPoint];
-              _routeFuture = RouteService.fetchRouteGeoJson(routePoints).onError(
-                (_, __) => routePoints,
-              );
+              _destination =
+                  DestinationPickResult(address: address, point: dropPoint);
+              final routePoints = <ll.LatLng>[
+                _currentLocation ?? dropPoint,
+                dropPoint
+              ];
+              _routeFuture = RouteService.fetchRouteGeoJson(routePoints)
+                  .onError((_, __) => routePoints);
             });
           }
         }
@@ -573,6 +821,9 @@ class _HomeScreenState extends State<HomeScreen> {
             _isTripStarted = false;
             _destination = null;
             _routeFuture = null;
+            _activeTripEta = '';
+            _activeTripProgress = 0.0;
+            _activeTripStatus = '';
           });
         }
       }
@@ -588,14 +839,17 @@ class _HomeScreenState extends State<HomeScreen> {
           _activeTripDuration = prefs.getString('cached_duration') ?? '';
           _activeTripPayout = prefs.getString('cached_payout') ?? '';
           _isTripStarted = prefs.getBool('cached_is_started') ?? false;
+          _activeTripStatus = _isTripStarted ? 'EN-ROUTE' : 'ASSIGNED LOAD';
         });
         final address = prefs.getString('cached_address');
         final lat = prefs.getDouble('cached_drop_lat');
         final lng = prefs.getDouble('cached_drop_lng');
         if (address != null && lat != null && lng != null) {
-          final dropPoint = ll.LatLng(lat, lng);
           setState(() {
-            _destination = DestinationPickResult(address: address, point: dropPoint);
+            _destination = DestinationPickResult(
+              address: address,
+              point: ll.LatLng(lat, lng),
+            );
           });
         }
       }
@@ -612,12 +866,16 @@ class _HomeScreenState extends State<HomeScreen> {
         await LocationService.instance.startTracking();
       } else {
         LocationService.instance.stopTracking();
+        WeighStationService.instance.resetAlertedStations();
         if (mounted) {
           setState(() {
             _activeTripId = null;
             _isTripStarted = false;
             _destination = null;
             _routeFuture = null;
+            _activeTripEta = '';
+            _activeTripProgress = 0.0;
+            _activeTripStatus = '';
           });
         }
       }
@@ -625,7 +883,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) {
         setState(() => _isOnline = !newStatus);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to update status: $e')),
+          SnackBar(content: Text(AppLocalizations.of(context)!.error)),
         );
       }
     }
@@ -635,7 +893,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_currentLocation == null) return;
     if (!_isOnline) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please go online to set destinations')),
+        SnackBar(content: Text(AppLocalizations.of(context)!.pleaseGoOnline)),
       );
       return;
     }
@@ -646,17 +904,16 @@ class _HomeScreenState extends State<HomeScreen> {
       _searchController.text = _destination!.address;
       _isDestinationExpanded = false;
       final routePoints = <ll.LatLng>[_currentLocation!, point];
-      _routeFuture = RouteService.fetchRouteGeoJson(routePoints).onError(
-        (_, __) => routePoints,
-      );
+      _routeFuture = RouteService.fetchRouteGeoJson(routePoints)
+          .onError((_, __) => routePoints);
     });
   }
 
   Future<void> _openDestinationPicker() async {
     if (!_isOnline) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Please go online to search destinations')),
+        SnackBar(
+            content: Text(AppLocalizations.of(context)!.pleaseGoOnline)),
       );
       return;
     }
@@ -664,7 +921,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final result = await Navigator.of(context, rootNavigator: true).pushNamed(
       AppRoutes.destinationPicker,
       arguments: DestinationPickerArgs(
-        title: 'Where are you going?',
+        title: AppLocalizations.of(context)!.whereAreYouHeading,
         initialQuery: query.isNotEmpty ? query : _destination?.address,
         initialPoint: _destination?.point,
       ),
@@ -681,9 +938,8 @@ class _HomeScreenState extends State<HomeScreen> {
           if (_currentLocation != null) _currentLocation!,
           result.point,
         ];
-        _routeFuture = RouteService.fetchRouteGeoJson(routePoints).onError(
-          (_, __) => routePoints,
-        );
+        _routeFuture = RouteService.fetchRouteGeoJson(routePoints)
+            .onError((_, __) => routePoints);
       });
     }
   }
@@ -699,48 +955,124 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _completeRide() async {
-  if (_activeTripId != null) {
-    try {
-      final stops = await _tripService.fetchTripStops(_activeTripId!);
-      final currentStop = stops.where((s) => s['is_current'] == true).firstOrNull;
-      if (currentStop != null) {
-        await _tripService.markStopCompleted(currentStop['id'], _activeTripId!);
+    if (_activeTripId != null) {
+      try {
+        final stops = await _tripService.fetchTripStops(_activeTripId!);
+        final currentStop =
+            stops.where((s) => s['is_current'] == true).firstOrNull;
+        if (currentStop != null) {
+          await _tripService.markStopCompleted(
+              currentStop['id'].toString(), _activeTripId!);
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content: Text(
+                    AppLocalizations.of(context)!.failedToCompleteTrip)),
+          );
+        }
+        return;
       }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to complete trip: $e')),
-        );
-      }
-      return;
+    }
+    _clearDestination();
+    WeighStationService.instance.resetAlertedStations();
+    if (mounted) {
+      setState(() {
+        _activeTripId = null;
+        _isTripStarted = false;
+        _activeTripEta = '';
+        _activeTripProgress = 0.0;
+        _activeTripStatus = '';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              AppLocalizations.of(context)!.tripCompletedNetEarnings('')),
+          backgroundColor: TruxifyColors.success,
+        ),
+      );
+      _loadDashboardMetrics();
     }
   }
-  _clearDestination();
-  if (mounted) {
-    setState(() {
-      _activeTripId = null;
-      _isTripStarted = false;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text('Trip completed! Net earnings added to wallet.'),
-        backgroundColor: TruxifyColors.success,
+
+  Future<void> _checkPendingPods() async {
+    try {
+      final hasPending =
+          await SyncService.instance.isStopPendingSync(_activeTripId ?? '');
+      if (hasPending && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Some deliveries are pending sync.')),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error checking pending PoDs: $e');
+    }
+  }
+
+  // ── Google Maps deep-link ──────────────────────────────────────────────────
+
+  Future<void> _openGoogleMapsRoute() async {
+    final dest = _destination;
+    if (dest == null) return;
+    final uri = Uri.parse(
+      'https://www.google.com/maps/dir/?api=1'
+      '&destination=${dest.point.latitude},${dest.point.longitude}'
+      '&travelmode=driving',
+    );
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  // ── eBoL QR ───────────────────────────────────────────────────────────────
+
+  void _showEbolQrCode() {
+    if (_activeTripId == null) return;
+    final payload = jsonEncode({'order_id': _activeTripId, 'type': 'eBoL'});
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Digital Bill of Lading (eBoL)'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+                'Show this QR code to the warehouse clerk for instant verification.'),
+            const SizedBox(height: 20),
+            QrImageView(data: payload, version: QrVersions.auto, size: 200.0),
+            const SizedBox(height: 10),
+            Text('Order ID: $_activeTripId',
+                style: const TextStyle(fontSize: 10, color: Colors.grey)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
       ),
     );
-    _loadDashboardMetrics();
   }
-}
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
 
   /// Short readable label for the current location.
-  String get _currentLocationLabel {
-    if (_isLoadingLocation) return 'Locating...';
-    if (_locationError != null) return 'Location Unavailable';
+  String _currentLocationLabel(BuildContext context) {
+    if (_isLoadingLocation) return AppLocalizations.of(context)!.locating;
+    if (_locationError != null) {
+      return AppLocalizations.of(context)!.locationUnavailable;
+    }
     if (_currentLocationText != null && _currentLocationText!.isNotEmpty) {
       final parts = _currentLocationText!.split(',');
       return parts.first.trim();
     }
-    return 'Current Location';
+    return AppLocalizations.of(context)!.currentLocation;
   }
+
+  // ── Build ──────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -749,15 +1081,33 @@ class _HomeScreenState extends State<HomeScreen> {
         bottom: false,
         child: Stack(
           children: [
-            // Map
+            // ── Map ───────────────────────────────────────────────────────
             Positioned.fill(
-              child: _buildMapBody(
-                context,
-                showDestinationChip: _destination != null,
-              ),
+              child: _buildMapBody(context),
             ),
 
-            // Top Bar
+            // ── Offline pending-pod banner ────────────────────────────────
+            if (_hasPendingPods)
+              Positioned(
+                left: 0,
+                right: 0,
+                top: 0,
+                child: Container(
+                  color: Colors.orange,
+                  padding: const EdgeInsets.symmetric(
+                      vertical: 4, horizontal: 16),
+                  child: const Text(
+                    'Offline Mode - Pending Sync',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12),
+                  ),
+                ),
+              ),
+
+            // ── Top search / navigation header ────────────────────────────
             Positioned(
               left: 12,
               right: 12,
@@ -770,7 +1120,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     if (_isOffline)
                       Container(
                         margin: const EdgeInsets.only(bottom: 12),
-                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 8, horizontal: 16),
                         decoration: BoxDecoration(
                           color: TruxifyColors.errorRed,
                           borderRadius: BorderRadius.circular(8),
@@ -778,37 +1129,133 @@ class _HomeScreenState extends State<HomeScreen> {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(Icons.cloud_off_rounded, color: Colors.white, size: 16),
+                            const Icon(Icons.cloud_off_rounded,
+                                color: Colors.white, size: 16),
                             const SizedBox(width: 8),
                             Text(
-                              'You are offline. Using cached trip details.',
-                              style: GoogleFonts.dmSans(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                              AppLocalizations.of(context)!
+                                  .offlineUsingCachedData,
+                              style: GoogleFonts.dmSans(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600),
                             ),
                           ],
                         ),
                       ),
+                    if (_isOffline) const OfflineBanner(),
+                    if (!_isCharging && _batteryLevel <= 20)
+                      LowBatteryBanner(
+                        batteryLevel: _batteryLevel,
+                        isCritical: _batteryLevel <= 10,
+                      ),
                     _isTripStarted
-                        ? _buildActiveNavigationHeader(context)
-                        : _buildSearchCard(context),
+                        ? ActiveTripSheet(
+                            isTripStarted: _isTripStarted,
+                            truckLabel: _activeTruckLabel,
+                            currentLocationLabel: _currentLocationLabel,
+                            destinationAddress:
+                                _destination?.address ?? 'Destination',
+                            distance: _activeTripDistance,
+                            duration: _activeTripDuration,
+                            payout: _activeTripPayout,
+                            stopsRemaining: _activeTripStopsRemaining > 0
+                                ? _activeTripStopsRemaining
+                                : null,
+                            currentMilestone: _activeTripMilestone.isNotEmpty
+                                ? _activeTripMilestone
+                                : null,
+                          )
+                        : SearchDestinationCard(
+                            currentLocationText: _currentLocationText,
+                            destination: _destination,
+                            isLoadingLocation: _isLoadingLocation,
+                            isRefreshingLocation: _isRefreshingLocation,
+                            locationError: _locationError,
+                            onRefreshLocation: _fetchCurrentLocation,
+                            onOpenDestinationPicker: _openDestinationPicker,
+                          ),
                   ],
                 ),
               ),
             ),
 
-            // New Load Notification Banner
+            // ── HoS over-limit warning ────────────────────────────────────
+            if (_hosDrivingMinutes >= 660 || _hosOnDutyMinutes >= 840)
+              Positioned(
+                left: 12,
+                right: 12,
+                top: 96,
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.redAccent,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'HoS Limit Exceeded! Mandatory 30-min rest break required.',
+                    style: TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+
+            // ── HoS status card ───────────────────────────────────────────
+            Positioned(
+              left: 12,
+              right: 12,
+              top: (_hosDrivingMinutes >= 660 || _hosOnDutyMinutes >= 840)
+                  ? 156
+                  : 96,
+              child: Card(
+                elevation: 4,
+                child: Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'HoS Status: ${_hosStatus.toUpperCase()}',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          Text(
+                            'Driving: ${(_hosDrivingMinutes / 60).toStringAsFixed(1)}h / 11h',
+                          ),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          TextButton(
+                            onPressed: () => _toggleHosStatus('off_duty'),
+                            child: const Text('Off Duty',
+                                style: TextStyle(fontSize: 12)),
+                          ),
+                          TextButton(
+                            onPressed: () => _toggleHosStatus('driving'),
+                            child: const Text('Driving',
+                                style: TextStyle(fontSize: 12)),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+            // ── New load notification banner ──────────────────────────────
             if (_latestNewLoad != null && !_dismissedNewLoad)
               Positioned(
                 left: 12,
                 right: 12,
                 top: 96,
-                child: GestureDetector(
-                  onTap: () {
-                    setState(() => _dismissedNewLoad = true);
-                    Navigator.of(context).pushNamed(
-                      AppRoutes.loadDetail,
-                      arguments: _latestNewLoad,
-                    );
-                  },
+                child: NewLoadNotificationBanner(
+                  load: _latestNewLoad!,
+                  onView: () {},
+                  onDismiss: () => setState(() => _dismissedNewLoad = true),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 14, vertical: 10),
@@ -834,7 +1281,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               Text(
-                                'New Load Available!',
+                                AppLocalizations.of(context)!.newLoadAvailable,
                                 style: GoogleFonts.dmSans(
                                   fontSize: 13,
                                   fontWeight: FontWeight.bold,
@@ -847,20 +1294,20 @@ class _HomeScreenState extends State<HomeScreen> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: GoogleFonts.dmSans(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w500,
-                                  color: Colors.white,
-                                ),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w500,
+                                    color: Colors.white),
                               ),
                               const SizedBox(height: 1),
                               Text(
-                                '${_latestNewLoad!.weight != '—' ? '${_latestNewLoad!.weight} ' : ''}${_latestNewLoad!.goods} • ${_latestNewLoad!.estimatedProfit}',
+                                '${_latestNewLoad!.weight != '—' ? '${_latestNewLoad!.weight} ' : ''}'
+                                '${_latestNewLoad!.goods} • ${_latestNewLoad!.estimatedProfit}',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: GoogleFonts.dmSans(
-                                  fontSize: 10,
-                                  color: Colors.white.withValues(alpha: 0.85),
-                                ),
+                                    fontSize: 10,
+                                    color:
+                                        Colors.white.withValues(alpha: 0.85)),
                               ),
                             ],
                           ),
@@ -883,7 +1330,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               borderRadius: BorderRadius.circular(8),
                             ),
                             child: Text(
-                              'View',
+                              AppLocalizations.of(context)!.view,
                               style: GoogleFonts.dmSans(
                                 fontSize: 11,
                                 fontWeight: FontWeight.bold,
@@ -894,10 +1341,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         const SizedBox(width: 10),
                         GestureDetector(
-                          key: const Key('realtime_notification_close_button'),
-                          onTap: () {
-                            setState(() => _dismissedNewLoad = true);
-                          },
+                          key: const Key(
+                              'realtime_notification_close_button'),
+                          onTap: () =>
+                              setState(() => _dismissedNewLoad = true),
                           child: Icon(
                             Icons.close_rounded,
                             color: Colors.white.withValues(alpha: 0.7),
@@ -910,14 +1357,26 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-            // Recenter FAB — hidden until GPS is ready
+            // Heatmap legend — shown bottom-left when heatmap data is loaded
+            if (_heatmapData != null)
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut,
+                left: 16,
+                bottom:
+                    _showStatusCard ? (_destination == null ? 228 : 278) : 40,
+                child: _buildHeatmapLegend(context),
+              ),
+
+            // Recenter FAB
             if (_currentLocation != null)
               AnimatedPositioned(
                 duration: const Duration(milliseconds: 300),
                 curve: Curves.easeInOut,
                 right: 16,
-                bottom:
-                    _showStatusCard ? (_destination == null ? 220 : 270) : 32,
+                bottom: _showStatusCard
+                    ? (_destination == null ? 220 : 270)
+                    : 32,
                 child: FloatingActionButton(
                   heroTag: 'driver-home-recenter',
                   onPressed: _centerMapOnCurrentLocation,
@@ -929,7 +1388,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-            // Bottom Controller Card
+            // ── Bottom controller card ────────────────────────────────────
             Positioned(
               left: 0,
               right: 0,
@@ -939,17 +1398,74 @@ class _HomeScreenState extends State<HomeScreen> {
                 minimum: EdgeInsets.zero,
                 child: AnimatedSlide(
                   duration: const Duration(milliseconds: 300),
-                  offset:
-                      _showStatusCard ? Offset.zero : const Offset(0, 1.2),
+                  offset: _showStatusCard
+                      ? Offset.zero
+                      : const Offset(0, 1.2),
                   child: GestureDetector(
-                    onTap: () {
-                      setState(() {
-                        _showStatusCard = !_showStatusCard;
-                      });
-                    },
+                    onTap: () =>
+                        setState(() => _showStatusCard = !_showStatusCard),
                     child: _destination == null
-                        ? _buildBottomSheet(context)
-                        : _buildActiveTripSheet(context),
+                        ? DriverStatusSheet(
+                            isOnline: _isOnline,
+                            isLoadingLocation: _isLoadingLocation,
+                            currentLocationLabel:
+                                _currentLocationLabel(context),
+                            isLoadingMetrics: _isLoadingMetrics,
+                            metricsError: _metricsError,
+                            todayEarnings: _todayEarnings,
+                            driverRating: _driverRating,
+                            onToggleOnline: _toggleOnlineState,
+                            batteryLevel: _batteryLevel,
+                            isCharging: _isCharging,
+                            hasActiveTrip: _activeTripId != null,
+                            onFindLoad: widget.onNavigateToLoads,
+                            onViewTrip: _activeTripId != null
+                                ? widget.onNavigateToActiveTrip
+                                : null,
+                          )
+                        : ActiveTripSheet(
+                            isTripStarted: _isTripStarted,
+                            truckLabel: _activeTruckLabel,
+                            currentLocationLabel:
+                                _currentLocationLabel(context),
+                            destinationAddress:
+                                _destination?.address ?? 'Destination',
+                            distance: _activeTripDistance,
+                            duration: _activeTripDuration,
+                            payout: _activeTripPayout,
+                            stopsRemaining: _activeTripStopsRemaining > 0
+                                ? _activeTripStopsRemaining
+                                : null,
+                            currentMilestone: _activeTripMilestone.isNotEmpty
+                                ? _activeTripMilestone
+                                : null,
+                            onStartTrip: () async {
+                              if (_activeTripId == null) {
+                                setState(() => _isTripStarted = true);
+                                return;
+                              }
+                              try {
+                                await _tripService.startTrip(_activeTripId!);
+                                if (mounted) {
+                                  setState(() {
+                                    _isTripStarted = true;
+                                    _activeTripStatus = 'EN-ROUTE';
+                                  });
+                                }
+                              } catch (e) {
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                        content: Text(
+                                            'Failed to start trip: $e')),
+                                  );
+                                }
+                              }
+                            },
+                            onCompleteTrip: _completeRide,
+                            onCancel: _clearDestination,
+                            onOpenMaps: _openGoogleMapsRoute,
+                          ),
                   ),
                 ),
               ),
@@ -960,119 +1476,25 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildActiveNavigationHeader(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: TruxifyColors.border),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.08),
-            blurRadius: 18,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Row(
-        children: [
-          const LivePulseDot(color: TruxifyColors.success, size: 10),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'NAVIGATION ACTIVE',
-                  style: GoogleFonts.dmSans(
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                    color: TruxifyColors.success,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-                Text(
-                  'Heading to ${_destination?.address ?? "Destination"}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: GoogleFonts.dmSans(
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                    color: Theme.of(context).colorScheme.onSurface,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  // ── Map builder ────────────────────────────────────────────────────────────
 
-  String _formatTimeSinceLastTrip() {
-    DateTime? latest;
-    for (final record in _tripHistory) {
-      if (!record.completed) continue;
-      final parsed = _parseTripHistoryDate(record.date);
-      if (parsed == null) continue;
-      if (latest == null || parsed.isAfter(latest)) {
-        latest = parsed;
-      }
-    }
-
-    if (latest == null) return '-';
-
-    final now = DateTime.now();
-    var diff = now.difference(latest);
-    if (diff.isNegative) diff = diff * -1;
-
-    if (diff.inDays >= 1) return '${diff.inDays}d ago';
-    if (diff.inHours >= 1) return '${diff.inHours}h ago';
-    if (diff.inMinutes >= 1) return '${diff.inMinutes}m ago';
-    return 'Just now';
-  }
-
-  DateTime? _parseTripHistoryDate(String raw) {
-    final parts = raw.trim().split(RegExp(r'\s+'));
-    if (parts.length < 3) return null;
-
-    final day = int.tryParse(parts[0]);
-    final year = int.tryParse(parts[2]);
-    if (day == null || year == null) return null;
-
-    final monthMap = <String, int>{
-      'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
-      'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
-      'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
-    };
-    final month = monthMap[parts[1].toLowerCase()];
-    if (month == null) return null;
-
-    return DateTime(year, month, day);
-  }
-
-  Widget _buildMapBody(BuildContext context,
-      {required bool showDestinationChip}) {
-    // Show loading spinner while GPS is being fetched
+  Widget _buildMapBody(BuildContext context) {
     if (_isLoadingLocation) {
       return Container(
         color: Theme.of(context).colorScheme.surfaceContainerLowest,
-        child: const Center(
+        child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text('Fetching your location...'),
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(AppLocalizations.of(context)!.fetchingLocation),
             ],
           ),
         ),
       );
     }
 
-    // Show error state if GPS failed and no location available
     if (_currentLocation == null) {
       return Container(
         color: Theme.of(context).colorScheme.surfaceContainerLowest,
@@ -1084,7 +1506,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   size: 48, color: TruxifyColors.errorRed),
               const SizedBox(height: 12),
               Text(
-                _locationError ?? 'Location unavailable',
+                _locationError ??
+                    AppLocalizations.of(context)!.locationUnavailable,
                 textAlign: TextAlign.center,
                 style: GoogleFonts.dmSans(fontSize: 14),
               ),
@@ -1092,7 +1515,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ElevatedButton.icon(
                 onPressed: _initLocation,
                 icon: const Icon(Icons.refresh_rounded),
-                label: const Text('Retry'),
+                label: Text(AppLocalizations.of(context)!.retry),
               ),
             ],
           ),
@@ -1110,16 +1533,12 @@ class _HomeScreenState extends State<HomeScreen> {
             flags: InteractiveFlag.all,
           ),
           onTap: (tapPosition, point) {
-            setState(() {
-              _showStatusCard = !_showStatusCard;
-            });
+            setState(() => _showStatusCard = !_showStatusCard);
             _onMapTap(point);
           },
           onPositionChanged: (position, hasGesture) {
             if (hasGesture && _showStatusCard) {
-              setState(() {
-                _showStatusCard = false;
-              });
+              setState(() => _showStatusCard = false);
             }
           },
         ),
@@ -1128,6 +1547,7 @@ class _HomeScreenState extends State<HomeScreen> {
             urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
             userAgentPackageName: 'com.truxify.driver',
           ),
+          if (_buildHeatmapLayer() != null) _buildHeatmapLayer()!,
         ],
       );
     }
@@ -1135,12 +1555,15 @@ class _HomeScreenState extends State<HomeScreen> {
     return FutureBuilder<List<ll.LatLng>>(
       future: _routeFuture ??
           Future.value(<ll.LatLng>[_currentLocation!, _destination!.point]),
-      builder: (context, snap) {
-        final routePoints = (snap.connectionState == ConnectionState.done &&
-                snap.hasData &&
-                snap.data!.length >= 2)
-            ? snap.data!
-            : <ll.LatLng>[_currentLocation!, _destination!.point];
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final routePoints = snapshot.data ?? [];
+        if (routePoints.isEmpty) {
+          return const Center(child: Text('Failed to load route'));
+        }
 
         final center = _routeCenter(routePoints);
         final zoom = _routeZoom(routePoints);
@@ -1161,6 +1584,7 @@ class _HomeScreenState extends State<HomeScreen> {
               urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
               userAgentPackageName: 'com.truxify.driver',
             ),
+            if (_buildHeatmapLayer() != null) _buildHeatmapLayer()!,
             PolylineLayer(
               polylines: [
                 Polyline(
@@ -1181,23 +1605,24 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ── Route geometry helpers ─────────────────────────────────────────────────
+
   ll.LatLng _routeCenter(List<ll.LatLng> points) {
     final lats = points.map((p) => p.latitude).toList(growable: false);
     final lngs = points.map((p) => p.longitude).toList(growable: false);
-    final minLat = lats.reduce(math.min);
-    final maxLat = lats.reduce(math.max);
-    final minLng = lngs.reduce(math.min);
-    final maxLng = lngs.reduce(math.max);
-    return ll.LatLng((minLat + maxLat) / 2, (minLng + maxLng) / 2);
+    return ll.LatLng(
+      (lats.reduce(math.min) + lats.reduce(math.max)) / 2,
+      (lngs.reduce(math.min) + lngs.reduce(math.max)) / 2,
+    );
   }
 
   double _routeZoom(List<ll.LatLng> points) {
     final lats = points.map((p) => p.latitude).toList(growable: false);
     final lngs = points.map((p) => p.longitude).toList(growable: false);
-    final latSpan = lats.reduce(math.max) - lats.reduce(math.min);
-    final lngSpan = lngs.reduce(math.max) - lngs.reduce(math.min);
-    final span = math.max(latSpan, lngSpan);
-
+    final span = math.max(
+      lats.reduce(math.max) - lats.reduce(math.min),
+      lngs.reduce(math.max) - lngs.reduce(math.min),
+    );
     if (span < 0.05) return 13.5;
     if (span < 0.15) return 12.0;
     if (span < 0.35) return 10.4;
@@ -1208,13 +1633,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<ll.LatLng> _buildCheckpointPoints(List<ll.LatLng> routePoints) {
     if (routePoints.length < 4) return const <ll.LatLng>[];
-
     final totalSegments = routePoints.length - 1;
     final indexes = <int>{};
     for (var step = 1; step <= 3; step++) {
-      final index =
-          ((totalSegments * step) / 4).round().clamp(1, totalSegments - 1);
-      indexes.add(index);
+      indexes.add(
+          ((totalSegments * step) / 4).round().clamp(1, totalSegments - 1));
     }
 
     return indexes.map((index) => routePoints[index]).toList(growable: false);
@@ -1263,7 +1686,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           Expanded(
                             child: _isLoadingLocation
                                 ? Text(
-                                    'Fetching your location...',
+                                    AppLocalizations.of(context)!.fetchingLocation,
                                     style: GoogleFonts.dmSans(
                                       fontSize: 13,
                                       color:
@@ -1283,7 +1706,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       )
                                     : Text(
                                         _currentLocationText ??
-                                            'Tap to refresh location',
+                                            AppLocalizations.of(context)!.tapToRefresh,
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                         style: GoogleFonts.dmSans(
@@ -1297,11 +1720,14 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                           _isRefreshingLocation || _isLoadingLocation
                               ? const SizedBox(
-                                  width: 14,
-                                  height: 14,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 1.5,
-                                    color: TruxifyColors.accent,
+                                  width: 24,
+                                  height: 24,
+                                  child: Padding(
+                                    padding: EdgeInsets.all(4.0),
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.0,
+                                      color: TruxifyColors.accent,
+                                    ),
                                   ),
                                 )
                               : Icon(
@@ -1325,7 +1751,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       width: double.infinity,
                       padding: const EdgeInsets.symmetric(vertical: 4),
                       child: Text(
-                        _destination?.address ?? 'Where are you heading?',
+                        _destination?.address ?? AppLocalizations.of(context)!.whereAreYouHeading,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: GoogleFonts.dmSans(
@@ -1390,7 +1816,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    _isOnline ? 'Online & Ready' : 'Offline',
+                    _isOnline ? AppLocalizations.of(context)!.onlineAndReady : AppLocalizations.of(context)!.offline,
                     style: GoogleFonts.dmSans(
                       fontSize: 15,
                       fontWeight: FontWeight.bold,
@@ -1409,10 +1835,10 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 8),
           Text(
             !_isOnline
-                ? 'Offline. Go online to receive load assignments.'
+                ? AppLocalizations.of(context)!.offlineGoOnline
                 : _isLoadingLocation
-                    ? 'Radar active. Fetching your location...'
-                    : 'Radar active. Looking for load assignments near $_currentLocationLabel...',
+                    ? AppLocalizations.of(context)!.radarActiveFetching
+                    : '${AppLocalizations.of(context)!.radarActiveLooking} ${_currentLocationLabel(context)}...',
             style: GoogleFonts.dmSans(
               fontSize: 11,
               color: TruxifyColors.adaptiveSecondaryText(context),
@@ -1447,7 +1873,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: _buildShiftMetric(
             icon: Icons.account_balance_wallet_outlined,
             value: payValue,
-            label: 'Today\'s Pay',
+            label: AppLocalizations.of(context)!.todayPay,
             labelKey: const Key('today_pay_label'),
           ),
         ),
@@ -1456,7 +1882,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: _buildShiftMetric(
             icon: Icons.timer_outlined,
             value: hoursValue,
-            label: 'Shift Hours',
+            label: AppLocalizations.of(context)!.shiftHours,
           ),
         ),
         const SizedBox(width: 8),
@@ -1464,7 +1890,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: _buildShiftMetric(
             icon: Icons.star_border_rounded,
             value: ratingValue,
-            label: 'Rating',
+            label: AppLocalizations.of(context)!.rating,
           ),
         ),
       ],
@@ -1488,7 +1914,7 @@ class _HomeScreenState extends State<HomeScreen> {
               size: 14, color: TruxifyColors.errorRed),
           const SizedBox(width: 6),
           Text(
-            'Metrics unavailable',
+            AppLocalizations.of(context)!.metricsUnavailable,
             style: GoogleFonts.dmSans(
               fontSize: 11,
               color: TruxifyColors.errorRed,
@@ -1538,18 +1964,112 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// Maps an intensity value [0–1] to a demand zone colour.
+  ///
+  /// - ≥ 0.7 → red   (high demand)
+  /// - ≥ 0.4 → orange (medium demand)
+  /// -  < 0.4 → green  (low demand)
+  Color _heatmapZoneColor(double intensity) {
+    if (intensity >= 0.7) return Colors.red;
+    if (intensity >= 0.4) return Colors.orange;
+    return Colors.green;
+  }
+
+  Widget? _buildHeatmapLayer() {
+    if (_heatmapData == null) return null;
+    final features = _heatmapData!['features'] as List?;
+    if (features == null || features.isEmpty) return null;
+
+    final circles = <CircleMarker>[];
+    for (final feature in features) {
+      try {
+        final geom = feature['geometry'];
+        final coords = geom['coordinates'] as List;
+        final props = feature['properties'] ?? {};
+        final intensity = (props['intensity'] as num?)?.toDouble() ?? 0.5;
+        final zoneColor = _heatmapZoneColor(intensity);
+
+        circles.add(CircleMarker(
+          point: ll.LatLng(coords[1], coords[0]),
+          // Fill: zone colour with intensity-scaled alpha for depth effect
+          color: zoneColor.withValues(alpha: (intensity * 0.45).clamp(0.08, 0.45)),
+          borderColor: zoneColor.withValues(alpha: 0.6),
+          borderStrokeWidth: 1.0,
+          useRadiusInMeter: true,
+          radius: 2000,
+        ));
+      } catch (e) {
+        // Ignore invalid features
+      }
+    }
+
+    if (circles.isEmpty) return null;
+
+    return CircleLayer(circles: circles);
+  }
+
+  /// Compact demand-heatmap legend shown in the bottom-left of the map.
+  Widget _buildHeatmapLegend(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg = isDark
+        ? Colors.black.withValues(alpha: 0.72)
+        : Colors.white.withValues(alpha: 0.88);
+
+    Widget _dot(Color c) => Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(color: c, shape: BoxShape.circle),
+        );
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(10),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.12),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'DEMAND',
+            style: GoogleFonts.dmSans(
+              fontSize: 8,
+              fontWeight: FontWeight.bold,
+              color: isDark ? Colors.white70 : TruxifyColors.secondaryText,
+              letterSpacing: 0.6,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Row(children: [_dot(Colors.red), const SizedBox(width: 5), Text('High', style: GoogleFonts.dmSans(fontSize: 9, color: isDark ? Colors.white : TruxifyColors.primaryText))]),
+          const SizedBox(height: 3),
+          Row(children: [_dot(Colors.orange), const SizedBox(width: 5), Text('Med', style: GoogleFonts.dmSans(fontSize: 9, color: isDark ? Colors.white : TruxifyColors.primaryText))]),
+          const SizedBox(height: 3),
+          Row(children: [_dot(Colors.green), const SizedBox(width: 5), Text('Low', style: GoogleFonts.dmSans(fontSize: 9, color: isDark ? Colors.white : TruxifyColors.primaryText))]),
+        ],
+      ),
+    );
+  }
+
   Future<void> _openGoogleMapsRoute() async {
     if (_destination == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No destination available')),
+        SnackBar(content: Text(AppLocalizations.of(context)!.noDestinationAvailable)),
       );
       return;
     }
 
     if (_currentLocation == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Current location unavailable. Please retry.')),
+        SnackBar(
+            content: Text(AppLocalizations.of(context)!.currentLocationUnavailable)),
       );
       return;
     }
@@ -1576,13 +2096,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (!launched && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Unable to open Google Maps')),
+          SnackBar(content: Text(AppLocalizations.of(context)!.unableToOpenGoogleMaps)),
         );
       }
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to generate route')),
+          SnackBar(content: Text(AppLocalizations.of(context)!.failedToGenerateRoute)),
         );
       }
     }
@@ -1620,7 +2140,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(
-                  _isTripStarted ? 'EN-ROUTE' : 'ASSIGNED LOAD',
+                  _isTripStarted ? AppLocalizations.of(context)!.enRoute : AppLocalizations.of(context)!.assignedLoad,
                   style: GoogleFonts.dmSans(
                     fontSize: 9,
                     fontWeight: FontWeight.bold,
@@ -1649,7 +2169,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            '$_currentLocationLabel → $routeStr',
+            '${_currentLocationLabel(context)} → $routeStr',
             style: GoogleFonts.dmSans(
               fontSize: 15,
               fontWeight: FontWeight.bold,
@@ -1660,15 +2180,27 @@ class _HomeScreenState extends State<HomeScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              _buildTripSpec('Distance', _activeTripDistance.isNotEmpty ? _activeTripDistance : '--'),
-              _buildTripSpec('Est. Duration', _activeTripDuration.isNotEmpty ? _activeTripDuration : '--'),
-              _buildTripSpec('Est. Payout', _activeTripPayout.isNotEmpty ? _activeTripPayout : '--'),
+              _buildTripSpec(AppLocalizations.of(context)!.distance, _activeTripDistance.isNotEmpty ? _activeTripDistance : '--'),
+              _buildTripSpec(AppLocalizations.of(context)!.estDuration, _activeTripDuration.isNotEmpty ? _activeTripDuration : '--'),
+              _buildTripSpec(AppLocalizations.of(context)!.estPayout, _activeTripPayout.isNotEmpty ? _activeTripPayout : '--'),
             ],
           ),
-          const SizedBox(height: 16),
-          if (_isTripStarted) ...[
+            const SizedBox(height: 16),
+            if (_isTripStarted && _activeTripId != null) ...[
+              ElevatedButton.icon(
+                onPressed: () async {
+                  await Navigator.push(context, MaterialPageRoute(builder: (_) => PodCaptureScreen(orderId: _activeTripId!)));
+                  _checkPendingPods();
+                },
+                icon: const Icon(Icons.camera_alt),
+                label: const Text('Capture Proof of Delivery'),
+                style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(48)),
+              ),
+              const SizedBox(height: 12),
+            ],
+            if (_isTripStarted) ...[
             SlideToConfirmButton(
-              label: 'Slide to Complete Trip',
+              label: AppLocalizations.of(context)!.slideToCompleteTrip,
               backgroundColor: TruxifyColors.success,
               onConfirmed: () async {
               await _completeRide();
@@ -1676,7 +2208,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ] else ...[
             SlideToConfirmButton(
-              label: 'Slide to Start Trip',
+              label: AppLocalizations.of(context)!.slideToStartTrip,
               backgroundColor: TruxifyColors.accent,
               onConfirmed: () async {
                 if (_activeTripId == null) {
@@ -1691,7 +2223,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 } catch (e) {
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Failed to start trip: $e')),
+                      SnackBar(content: Text(AppLocalizations.of(context)!.failedToStartTrip)),
                     );
                   }
                 }
@@ -1704,7 +2236,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4),
                   child: Text(
-                    'Cancel Assignment',
+                    AppLocalizations.of(context)!.cancelAssignment,
                     style: GoogleFonts.dmSans(
                       fontSize: 12,
                       fontWeight: FontWeight.w500,

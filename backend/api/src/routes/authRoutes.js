@@ -1,4 +1,35 @@
 /**
+ * @openapi
+ * components:
+ *   schemas:
+ *     LogoutResponse:
+ *       type: object
+ *       properties:
+ *         success:
+ *           type: boolean
+ *         message:
+ *           type: string
+ *     SessionResponse:
+ *       type: object
+ *       properties:
+ *         user:
+ *           type: object
+ *   securitySchemes:
+ *     BearerAuth:
+ *       type: http
+ *       scheme: bearer
+ *       bearerFormat: JWT
+ *     UserIdHeader:
+ *       type: apiKey
+ *       in: header
+ *       name: x-user-id
+ *     UserRoleHeader:
+ *       type: apiKey
+ *       in: header
+ *       name: x-user-role
+ */
+
+/**
  * Authentication Routes
  *
  * POST /api/auth/logout
@@ -9,13 +40,34 @@
  *   connection never blocks the logout response.
  */
 
-import express from 'express';
-import { authenticate } from '../middleware/auth.js';
-import { invalidateCachedProfile, invalidateCachedSupabaseProfile } from '../lib/profileCache.js';
-import { firebaseAdmin } from '../config/db.js';
-import logger from '../middleware/logger.js';
+import express from "express";
+import rateLimit from "express-rate-limit";
+import { authenticate } from "../middleware/auth.js";
+import {
+  userLimiter,
+  otpVerificationLimiter,
+} from "../middleware/rateLimiter.js";
+import {
+  invalidateCachedProfile,
+  invalidateCachedSupabaseProfile,
+} from "../lib/profileCache.js";
+import { firebaseAdmin } from "../config/db.js";
+import logger from "../middleware/logger.js";
 
 const router = express.Router();
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
+  message: {
+    success: false,
+    message: "Too many requests from this IP, please try again later.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+router.use(authLimiter);
 
 export function withTimeout(operation, timeoutMs, message) {
   let timer;
@@ -29,11 +81,23 @@ export function withTimeout(operation, timeoutMs, message) {
 }
 
 /**
- * POST /api/auth/logout
- * Requires: Bearer token (Firebase or Supabase)
- * Response: { success: true, message: 'Logged out successfully' }
+ * @openapi
+ * /api/auth/logout:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Logout and invalidate session
+ *     description: Invalidates the authenticated user's Redis profile cache and optionally revokes Firebase refresh tokens. Both operations are bounded by timeouts so a hanging connection never blocks the response.
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Logged out successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/LogoutResponse'
  */
-router.post('/logout', authenticate, async (req, res) => {
+router.post("/logout", authenticate, async (req, res) => {
   const { uid } = req.user;
 
   // ── 1. Invalidate Redis profile cache ──────────────────────────────
@@ -42,13 +106,17 @@ router.post('/logout', authenticate, async (req, res) => {
     await withTimeout(
       Promise.all([
         uid ? invalidateCachedProfile(uid) : Promise.resolve(),
-        req.user && req.user.id ? invalidateCachedSupabaseProfile(req.user.id) : Promise.resolve(),
+        req.user && req.user.id
+          ? invalidateCachedSupabaseProfile(req.user.id)
+          : Promise.resolve(),
       ]),
       2000,
-      'Redis invalidation timeout'
+      "Redis invalidation timeout",
     );
   } catch (err) {
-    logger.warn(`[auth/logout] Cache invalidation skipped for uid=${uid}: ${err?.message}`);
+    logger.warn(
+      `[auth/logout] Cache invalidation skipped for uid=${uid}: ${err?.message}`,
+    );
   }
 
   // ── 2. Firebase refresh token revocation (optional) ────────────────
@@ -58,16 +126,18 @@ router.post('/logout', authenticate, async (req, res) => {
       await withTimeout(
         firebaseAdmin.auth().revokeRefreshTokens(uid),
         3000,
-        'Firebase revocation timeout'
+        "Firebase revocation timeout",
       );
     } catch (err) {
-      logger.error(`[auth/logout] Firebase token revocation failed for uid=${uid}: ${err?.message}`);
+      logger.error(
+        `[auth/logout] Firebase token revocation failed for uid=${uid}: ${err?.message}`,
+      );
     }
   }
 
   return res.status(200).json({
     success: true,
-    message: 'Logged out successfully',
+    message: "Logged out successfully",
   });
 });
 
@@ -75,17 +145,45 @@ router.post('/logout', authenticate, async (req, res) => {
  * @openapi
  * /api/auth/session:
  *   get:
- *     summary: Retrieve current authenticated session user details
+ *     tags: [Authentication]
+ *     summary: Get current authenticated session
+ *     description: Returns the current authenticated user's session details including profile, role, and cached data.
  *     security:
- *       - bearerAuth: []
+ *       - BearerAuth: []
  *     responses:
  *       200:
- *         description: Current session user
+ *         description: Session details
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/SessionResponse'
  */
 // GET /api/auth/session
-router.get('/session', authenticate, userLimiter, (req, res) => {
+router.get("/session", authenticate, userLimiter, (req, res) => {
   return res.json({
-    user: req.user
+    user: req.user,
+  });
+});
+
+/**
+ * @openapi
+ * /api/auth/verify-otp:
+ *   post:
+ *     tags: [Authentication]
+ *     summary: Verify OTP
+ *     description: Endpoint for verifying OTPs. Protected by strict rate limiting to prevent brute-forcing.
+ *     responses:
+ *       501:
+ *         description: Not Implemented
+ */
+router.post("/verify-otp", otpVerificationLimiter, async (req, res) => {
+  // To be implemented: backend OTP verification logic.
+  // This endpoint serves as a rate-limited proxy/placeholder to satisfy
+  // security requirements preventing OTP brute forcing.
+  return res.status(501).json({
+    success: false,
+    error: "Not Implemented",
+    message: "OTP verification logic should be executed here.",
   });
 });
 

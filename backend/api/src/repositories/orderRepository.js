@@ -1,5 +1,7 @@
 import { getRequestCache } from '../lib/requestContext.js';
 import { executeWithRetry, isRetryable } from '../core/retry.js';
+import { measureExecution } from '../core/performanceMetrics.js';
+import { buildPagination } from '../utils/pagination.js';
 
 export class OrderRepository {
   constructor(supabase) {
@@ -16,11 +18,13 @@ export class OrderRepository {
       cache.set(key, result);
     }
     return result;
+  }
+
   async _retryableQuery(queryFn, operationName) {
     return executeWithRetry(async () => {
       let result;
       try {
-        result = await queryFn();
+        result = await measureExecution(`OrderRepository.${operationName}`, queryFn);
       } catch (err) {
         if (isRetryable(err)) {
           throw err;
@@ -53,25 +57,6 @@ export class OrderRepository {
   }
 
   async findOrderById(id, columns = '*') {
-<<<<<<< feature/request-scoped-order-cache
-    return this._cachedQuery(`order:id:${id}:${columns}`, () =>
-      this.supabase
-        .from('orders')
-        .select(columns)
-        .eq('id', id)
-        .maybeSingle()
-    );
-  }
-
-  async findOrderByDisplayId(displayId, columns = '*') {
-    return this._cachedQuery(`order:display:${displayId}:${columns}`, () =>
-      this.supabase
-        .from('orders')
-        .select(columns)
-        .eq('order_display_id', displayId)
-        .maybeSingle()
-    );
-=======
     return this._retryableQuery(() => this.supabase
       .from('orders')
       .select(columns)
@@ -85,9 +70,8 @@ export class OrderRepository {
       .select(columns)
       .eq('order_display_id', displayId)
       .maybeSingle(), 'findOrderByDisplayId');
->>>>>>> main
   }
-
+  
   async findOrderByAnyId(id, columns = '*') {
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (uuidRegex.test(id)) {
@@ -97,13 +81,32 @@ export class OrderRepository {
     return this.findOrderByDisplayId(id, columns);
   }
 
-  async findOrdersByCustomer(customerId, columns, statuses, orderColumn, ascending) {
+  async findOrdersByCustomer(customerId, columns, statuses, orderColumn, ascending, pagination) {
+    return this._retryableQuery(() => {
+      let query = this.supabase
+        .from('orders')
+        .select(columns)
+        .eq('customer_id', customerId)
+        .in('status', statuses)
+        .order(orderColumn || 'pickup_date', { ascending: ascending ?? false });
+      if (pagination) {
+        const { from, to } = buildPagination(pagination);
+        query = query.range(from, to);
+      }
+      return query;
+    }, 'findOrdersByCustomer');
+  }
+
+  async findActiveOrderForDriverByCustomer(customerId, driverId, columns) {
+    const activeStatuses = ['pending', 'active', 'truck_assigned', 'en_route_pickup', 'arrived_pickup', 'picked_up', 'in_transit', 'arriving'];
     return this._retryableQuery(() => this.supabase
       .from('orders')
-      .select(columns)
+      .select(columns || 'id, order_display_id')
       .eq('customer_id', customerId)
-      .in('status', statuses)
-      .order(orderColumn || 'pickup_date', { ascending: ascending ?? false }), 'findOrdersByCustomer');
+      .eq('driver_id', driverId)
+      .in('status', activeStatuses)
+      .limit(1)
+      .maybeSingle(), 'findActiveOrderForDriverByCustomer');
   }
 
   async findOrdersWithCount(customerId, columns, pagination) {
@@ -119,40 +122,12 @@ export class OrderRepository {
   }
 
   async findOrderForTimeline(id) {
-<<<<<<< feature/request-scoped-order-cache
-    return this._cachedQuery(`order:timeline:${id}`, () =>
-      this.supabase
-        .from('orders')
-        .select('customer_id, driver_id, order_display_id')
-        .eq('id', id)
-        .maybeSingle()
-    );
-  }
-
-  async findOrderByDisplayForTimeline(displayId) {
-    return this._cachedQuery(`order:displayTimeline:${displayId}`, () =>
-      this.supabase
-        .from('orders')
-        .select('customer_id, driver_id, order_display_id')
-        .eq('order_display_id', displayId)
-        .maybeSingle()
-    );
-=======
     return this._retryableQuery(() => this.supabase
       .from('orders')
       .select('customer_id, driver_id, order_display_id')
       .eq('id', id)
       .maybeSingle(), 'findOrderForTimeline');
-  }
-
-  async findOrderByDisplayForTimeline(displayId) {
-    return this._retryableQuery(() => this.supabase
-      .from('orders')
-      .select('customer_id, driver_id, order_display_id')
-      .eq('order_display_id', displayId)
-      .maybeSingle(), 'findOrderByDisplayForTimeline');
->>>>>>> main
-  }
+  } 
 
   async updateOrder(id, updates) {
     return this._retryableQuery(() => this.supabase
@@ -229,25 +204,6 @@ export class OrderRepository {
   }
 
   async getTimeline(orderDisplayId) {
-<<<<<<< feature/request-scoped-order-cache
-    return this._cachedQuery(`timeline:${orderDisplayId}`, () =>
-      this.supabase
-        .from('order_timeline')
-        .select('milestone, milestone_time, completed, sort_order')
-        .eq('order_display_id', orderDisplayId)
-        .order('sort_order', { ascending: true })
-    );
-  }
-
-  async getTimelineWithSortCheck(orderDisplayId) {
-    return this._cachedQuery(`timeline:sort:${orderDisplayId}`, () =>
-      this.supabase
-        .from('order_timeline')
-        .select('milestone, sort_order, completed')
-        .eq('order_display_id', orderDisplayId)
-        .order('sort_order', { ascending: true })
-    );
-=======
     return this._retryableQuery(() => this.supabase
       .from('order_timeline')
       .select('milestone, milestone_time, completed, sort_order')
@@ -261,7 +217,6 @@ export class OrderRepository {
       .select('milestone, sort_order, completed')
       .eq('order_display_id', orderDisplayId)
       .order('sort_order', { ascending: true }), 'getTimelineWithSortCheck');
->>>>>>> main
   }
 
   async updateTimelineMilestone(orderDisplayId, milestone, updates) {
@@ -296,25 +251,6 @@ export class OrderRepository {
   }
 
   async findLoadOfferById(id, columns = '*') {
-<<<<<<< feature/request-scoped-order-cache
-    return this._cachedQuery(`load_offer:id:${id}:${columns}`, () =>
-      this.supabase
-        .from('load_offers')
-        .select(columns)
-        .eq('id', id)
-        .maybeSingle()
-    );
-  }
-
-  async findLoadOfferByOrderDisplayId(displayId) {
-    return this._cachedQuery(`load_offer:display:${displayId}`, () =>
-      this.supabase
-        .from('load_offers')
-        .select('id')
-        .eq('order_display_id', displayId)
-        .maybeSingle()
-    );
-=======
     return this._retryableQuery(() => this.supabase
       .from('load_offers')
       .select(columns)
@@ -328,18 +264,22 @@ export class OrderRepository {
       .select('id')
       .eq('order_display_id', displayId)
       .maybeSingle(), 'findLoadOfferByOrderDisplayId');
->>>>>>> main
   }
 
-  async findLoadOffers(filters, options) {
+  async findLoadOffers(filters, options = {}) {
     return this._retryableQuery(() => {
-      let query = this.supabase.from('load_offers').select('*');
+      let query = this.supabase.from('load_offers').select('*', options.count ? { count: 'exact' } : undefined);
       if (filters) {
         for (const [col, val] of Object.entries(filters)) {
           query = query.eq(col, val);
         }
       }
-      return query.order('created_at', { ascending: false });
+      query = query.order('created_at', { ascending: false });
+      if (options.pagination) {
+        const { from, to } = buildPagination(options.pagination);
+        query = query.range(from, to);
+      }
+      return query;
     }, 'findLoadOffers');
   }
 
@@ -370,34 +310,28 @@ export class OrderRepository {
   }
 
   async findBidById(id) {
-<<<<<<< feature/request-scoped-order-cache
-    return this._cachedQuery(`bid:${id}`, () =>
-      this.supabase
-        .from('load_bids')
-        .select('*')
-        .eq('id', id)
-        .maybeSingle()
-    );
-=======
     return this._retryableQuery(() => this.supabase
       .from('load_bids')
       .select('*')
       .eq('id', id)
       .maybeSingle(), 'findBidById');
->>>>>>> main
   }
 
-  async findBidsByLoad(loadId, status, options) {
+  async findBidsByLoad(loadId, status, options = {}) {
     return this._retryableQuery(() => {
       let query = this.supabase
         .from('load_bids')
-        .select('*')
+        .select('*', options.count ? { count: 'exact' } : undefined)
         .eq('load_id', loadId);
       if (status) {
         query = query.eq('status', status);
       }
-      if (options?.orderBy) {
+      if (options.orderBy) {
         query = query.order(options.orderBy, { ascending: options.ascending ?? true });
+      }
+      if (options.pagination) {
+        const { from, to } = buildPagination(options.pagination);
+        query = query.range(from, to);
       }
       return query;
     }, 'findBidsByLoad');
@@ -434,8 +368,13 @@ export class OrderRepository {
   // RPC
   // ===================================================================
 
-  async executeRpc(name, params) {
-    return this._retryableQuery(() => this.supabase.rpc(name, params), `executeRpc:${name}`);
+  async executeRpc(name, params, client) {
+    if (!client) {
+      throw new Error(
+        `executeRpc("${name}") requires a Supabase client. Pass the per-request user client so auth.uid() resolves to the caller instead of falling back to the shared anon-key client.`
+      );
+    }
+    return this._retryableQuery(() => client.rpc(name, params), `executeRpc:${name}`);
   }
 
   // ===================================================================
@@ -450,35 +389,6 @@ export class OrderRepository {
   }
 
   async findProfile(userId, columns = 'full_name, phone, avatar_url') {
-<<<<<<< feature/request-scoped-order-cache
-    return this._cachedQuery(`profile:${userId}:${columns}`, () =>
-      this.supabase
-        .from('profiles')
-        .select(columns)
-        .eq('id', userId)
-        .maybeSingle()
-    );
-  }
-
-  async findCustomerWallet(userId) {
-    return this._cachedQuery(`profile:wallet:${userId}`, () =>
-      this.supabase
-        .from('profiles')
-        .select('polygon_wallet_address')
-        .eq('id', userId)
-        .maybeSingle()
-    );
-  }
-
-  async findProfileWallet(userId) {
-    return this._cachedQuery(`profile:wallet:${userId}`, () =>
-      this.supabase
-        .from('profiles')
-        .select('polygon_wallet_address')
-        .eq('id', userId)
-        .maybeSingle()
-    );
-=======
     return this._retryableQuery(() => this.supabase
       .from('profiles')
       .select(columns)
@@ -500,7 +410,6 @@ export class OrderRepository {
       .select('polygon_wallet_address')
       .eq('id', userId)
       .maybeSingle(), 'findProfileWallet');
->>>>>>> main
   }
 
   // ===================================================================
@@ -508,21 +417,11 @@ export class OrderRepository {
   // ===================================================================
 
   async findDriverDetail(userId, columns = 'polygon_wallet_address, rating, truck_id, total_trips') {
-<<<<<<< feature/request-scoped-order-cache
-    return this._cachedQuery(`driver:detail:${userId}:${columns}`, () =>
-      this.supabase
-        .from('driver_details')
-        .select(columns)
-        .eq('user_id', userId)
-        .maybeSingle()
-    );
-=======
     return this._retryableQuery(() => this.supabase
       .from('driver_details')
       .select(columns)
       .eq('user_id', userId)
       .maybeSingle(), 'findDriverDetail');
->>>>>>> main
   }
 
   async findDriverDetails(userIds) {
@@ -533,35 +432,6 @@ export class OrderRepository {
   }
 
   async findDriverDetailMinimal(userId) {
-<<<<<<< feature/request-scoped-order-cache
-    return this._cachedQuery(`driver:minimal:${userId}`, () =>
-      this.supabase
-        .from('driver_details')
-        .select('truck_id')
-        .eq('user_id', userId)
-        .maybeSingle()
-    );
-  }
-
-  async findDriverWallet(userId) {
-    return this._cachedQuery(`driver:wallet:${userId}`, () =>
-      this.supabase
-        .from('driver_details')
-        .select('polygon_wallet_address')
-        .eq('user_id', userId)
-        .maybeSingle()
-    );
-  }
-
-  async findDriverDetailWithRating(userId) {
-    return this._cachedQuery(`driver:rating:${userId}`, () =>
-      this.supabase
-        .from('driver_details')
-        .select('rating, truck_id')
-        .eq('user_id', userId)
-        .maybeSingle()
-    );
-=======
     return this._retryableQuery(() => this.supabase
       .from('driver_details')
       .select('truck_id')
@@ -583,7 +453,6 @@ export class OrderRepository {
       .select('rating, truck_id')
       .eq('user_id', userId)
       .maybeSingle(), 'findDriverDetailWithRating');
->>>>>>> main
   }
 
   // ===================================================================
@@ -591,25 +460,6 @@ export class OrderRepository {
   // ===================================================================
 
   async findTruckById(id, columns = 'id') {
-<<<<<<< feature/request-scoped-order-cache
-    return this._cachedQuery(`truck:${id}:${columns}`, () =>
-      this.supabase
-        .from('trucks')
-        .select(columns)
-        .eq('id', id)
-        .maybeSingle()
-    );
-  }
-
-  async findTruckWithDetails(id) {
-    return this._cachedQuery(`truck:detail:${id}`, () =>
-      this.supabase
-        .from('trucks')
-        .select('id, name, number_plate')
-        .eq('id', id)
-        .maybeSingle()
-    );
-=======
     return this._retryableQuery(() => this.supabase
       .from('trucks')
       .select(columns)
@@ -623,7 +473,6 @@ export class OrderRepository {
       .select('id, name, number_plate')
       .eq('id', id)
       .maybeSingle(), 'findTruckWithDetails');
->>>>>>> main
   }
 
   async findTrucksByIds(ids) {
@@ -657,19 +506,22 @@ export class OrderRepository {
       .update(updates)
       .eq('driver_id', driverId)
       .eq('order_display_id', orderDisplayId)
-      .eq('txn_type', 'credit'), 'updateWalletTransaction');
+      .eq('txn_type', 'credit')
+      .order('created_at', { ascending: false })
+      .limit(1), 'updateWalletTransaction');
   }
 
   // ===================================================================
   // ESCROW
   // ===================================================================
 
-  async updateEscrowBooking(orderId, bookingId, escrowStatus) {
+  async updateEscrowBooking(orderId, bookingId, escrowStatus, extra = {}) {
     return this._retryableQuery(() => this.supabase
       .from('orders')
       .update({
         escrow_booking_id: bookingId,
         escrow_status: escrowStatus,
+        ...extra,
       })
       .eq('id', orderId), 'updateEscrowBooking');
   }
@@ -682,6 +534,15 @@ export class OrderRepository {
         escrow_booking_id: null,
       })
       .eq('id', orderId), 'revertEscrowStatus');
+  }
+
+  async findStaleFundingOrders(cutoff) {
+    return this._retryableQuery(() => this.supabase
+      .from('orders')
+      .select('id, order_display_id, customer_id, escrow_booking_id, pending_bid_acceptance, escrow_funding_attempts, escrow_funding_last_attempt_at')
+      .eq('escrow_status', 'funding')
+      .not('pending_bid_acceptance', 'is', null)
+      .or(`escrow_funding_started_at.lt.${cutoff},and(escrow_funding_started_at.is.null,updated_at.lt.${cutoff})`), 'findStaleFundingOrders');
   }
 
   // ===================================================================
@@ -701,16 +562,18 @@ export class OrderRepository {
   async findPendingEscrowRefunds() {
     return this._retryableQuery(() => this.supabase
       .from('orders')
-      .select('id, order_display_id, refund_tx_hash, escrow_status, escrow_refund_retry_count')
+      .select('id, order_display_id, refund_tx_hash, escrow_status, escrow_refund_retry_count, updated_at')
       .in('escrow_status', ['refund_pending', 'refund_failed'])
       .limit(50), 'findPendingEscrowRefunds');
   }
 
-  async claimRefundReconciliation(orderId, instanceId) {
-    return this._retryableQuery(() => this.supabase
+  async claimRefundReconciliation(orderId, instanceId, client) {
+    const supabaseClient = client || this.supabase;
+    return this._retryableQuery(() => supabaseClient
       .rpc('claim_refund_reconciliation', {
         p_order_id: orderId,
         p_instance_id: instanceId,
       }), 'claimRefundReconciliation');
   }
 }
+

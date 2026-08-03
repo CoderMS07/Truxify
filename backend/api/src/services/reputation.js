@@ -21,20 +21,25 @@
 
 import { ethers } from 'ethers';
 import logger from '../middleware/logger.js';
+import { measureExecution } from '../core/performanceMetrics.js';
 
-// Safe math utilities for reputation calculations
+// Safe math utilities for reputation calculations.
+// Boundary clamping (0–MAX_REPUTATION) is handled by clampReputation.
 function safeAdd(a, b) {
   const result = Number(a) + Number(b);
   return Number.isFinite(result) ? result : 0;
 }
 
 function safeSubtract(a, b) {
-  const result = Math.max(0, Number(a) - Number(b));
+  const result = Number(a) - Number(b);
   return Number.isFinite(result) ? result : 0;
 }
 
+/** @type {number} Must match Reputation.sol MAX_REPUTATION constant */
+const MAX_REPUTATION = 10000;
+
 function clampReputation(value) {
-  return Math.max(0, Math.min(100, Number(value) || 0));
+  return Math.max(0, Math.min(MAX_REPUTATION, Number(value) || 0));
 }
 
 // Minimal ABI — only the subset the backend needs to call.
@@ -107,6 +112,7 @@ async function retryWithBackoff(fn, maxRetries, baseDelayMs) {
 }
 
 export async function awardReputationPoints(driverWalletAddress, stars) {
+  return measureExecution('ReputationService.awardReputationPoints', async () => {
   if (!reputationContract) {
     logger.warn('[reputation] Contract not initialised — skipping on-chain update.');
     return;
@@ -120,16 +126,24 @@ export async function awardReputationPoints(driverWalletAddress, stars) {
     return;
   }
   try {
+    // Submit the transaction ONCE — retrying submission would re-award the
+    // points if a previous tx was already mined but its confirmation wait timed
+    // out. Only the confirmation wait is retried below.
+    const tx = await reputationContract.increaseReputation(driverWalletAddress, stars);
+    logger.info(`[reputation] increaseReputation tx submitted: ${tx.hash}`);
     await retryWithBackoff(async () => {
-      const tx = await reputationContract.increaseReputation(driverWalletAddress, stars);
-      logger.info(`[reputation] increaseReputation tx submitted: ${tx.hash}`);
-      await tx.wait(1);
+      const provider = reputationContract.provider || reputationContract.runner?.provider;
+      const receipt = provider ? await provider.waitForTransaction(tx.hash, 1, 60_000) : await tx?.wait?.(1);
+      if (!receipt || receipt.status === 0) {
+        throw new Error(`increaseReputation transaction ${tx.hash} reverted or was not found on chain.`);
+      }
       logger.info(`[reputation] increaseReputation confirmed for driver ${driverWalletAddress} (+${stars} pts).`);
     }, REPUTATION_RETRY_MAX, REPUTATION_RETRY_DELAY_MS);
   } catch (err) {
     logger.error(`[reputation] increaseReputation failed for driver ${driverWalletAddress} after ${REPUTATION_RETRY_MAX} retries: ${err.message}`);
     throw err;
   }
+  });
 }
 
 /**
@@ -139,6 +153,7 @@ export async function awardReputationPoints(driverWalletAddress, stars) {
  * @returns {Promise<number|null>}
  */
 export async function getDriverReputation(walletAddress) {
+  return measureExecution('ReputationService.getDriverReputation', async () => {
   if (!reputationContract) {
     logger.warn('[reputation] Contract not initialised — skipping on-chain retrieval.');
     return null;
@@ -162,4 +177,5 @@ export async function getDriverReputation(walletAddress) {
     logger.error(`[reputation] Failed to fetch on-chain reputation for ${walletAddress}: ${err.message}`);
     return null;
   }
+  });
 }
