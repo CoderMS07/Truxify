@@ -13,6 +13,7 @@ dependencies:
   firebase_messaging: ^16.4.1
   flutter:
     sdk: flutter
+  lottie: ^3.1.2
   flutter_localizations:
     sdk: flutter
   truxify_shared:
