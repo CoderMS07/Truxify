@@ -107,7 +107,7 @@ export async function predictPrice({
 } = {}) {
   guardMlApiKey();
   
-  const cacheKey = JSON.stringify({ distanceKm, cargoWeightKg, truckType, routeOrigin, routeDestination });
+  const cacheKey = JSON.stringify({ distanceKm, cargoWeightKg, truckType, routeOrigin, routeDestination, trafficMultiplier });
   const cached = priceCache.get(cacheKey);
   if (cached !== undefined) return cached;
 
@@ -148,8 +148,8 @@ export async function predictPrice({
 
   const result = {
       ...validated.validated,
-      estimatedPricePaisa: convertToPaisa(validated.validated.estimated_price),
-      estimatedPriceInr: validated.validated.estimated_price,
+      estimatedPricePaisa: convertToPaisa(validated.validated.estimated_price * trafficMultiplier),
+      estimatedPriceInr: validated.validated.estimated_price * trafficMultiplier,
   };
   priceCache.set(cacheKey, result);
   return result;
@@ -459,7 +459,7 @@ export async function matchDeadhead({ driverDestination, truckSpecs, arrivalTime
  */
 export async function optimiseMidTrip(routeData) {
   guardMlApiKey();
-  const baseUrl = process.env.ML_ENGINE_URL || DEFAULT_ML_ENGINE_URL;
+  const baseUrl = getBaseUrl();
   const url = `${baseUrl}/optimise/mid-trip`;
   const response = await fetch(url, {
     method: 'POST',
@@ -477,7 +477,7 @@ export async function optimiseMidTrip(routeData) {
  */
 export async function trainDemandModel(force = false) {
   guardMlApiKey();
-  const baseUrl = process.env.ML_ENGINE_URL || DEFAULT_ML_ENGINE_URL;
+  const baseUrl = getBaseUrl();
   const url = `${baseUrl}/train/demand`;
   const response = await fetch(url, {
     method: 'POST',
@@ -495,7 +495,7 @@ export async function trainDemandModel(force = false) {
  */
 export async function trainPriceModel(force = false) {
   guardMlApiKey();
-  const baseUrl = process.env.ML_ENGINE_URL || DEFAULT_ML_ENGINE_URL;
+  const baseUrl = getBaseUrl();
   const url = `${baseUrl}/train/price`;
   const response = await fetch(url, {
     method: 'POST',
@@ -512,7 +512,7 @@ export async function trainPriceModel(force = false) {
  */
 export async function listModels() {
   guardMlApiKey();
-  const baseUrl = process.env.ML_ENGINE_URL || DEFAULT_ML_ENGINE_URL;
+  const baseUrl = getBaseUrl();
   const url = `${baseUrl}/models`;
   const response = await fetch(url, {
     method: 'GET',
@@ -522,7 +522,134 @@ export async function listModels() {
   return handleResponse(response);
 }
 
+/**
+ * Finds en-route load opportunities for an active driver using the Deadhead
+ * Eliminator ML model. When the ML engine is unavailable (no ML_API_KEY,
+ * network error, etc.) it falls back to a pure haversine-distance ranking so
+ * the endpoint never returns an empty list when offers exist in the DB.
+ *
+ * @param {object} params
+ * @param {number}   params.currentLat       - Driver's current latitude
+ * @param {number}   params.currentLng       - Driver's current longitude
+ * @param {Array}    params.offers           - Raw load_offer rows from DB
+ * @param {object}   [params.truckSpecs]     - Truck capacity; defaults to generous values
+ * @param {number}   [params.maxDetourKm=50] - Max acceptable detour in km
+ * @returns {Promise<Array>} - offers enriched with detour_km, extra_earnings, match_score
+ */
+export async function matchEnRouteLoads({
+  currentLat,
+  currentLng,
+  offers,
+  truckSpecs,
+  maxDetourKm = 50,
+}) {
+  if (!offers || offers.length === 0) return [];
+
+  // Build the available_loads list the ML model expects
+  const availableLoads = offers
+    .filter(o => o.origin_lat && o.origin_lng && o.dest_lat && o.dest_lng && o.weight_kg)
+    .map(o => ({
+      load_id: o.id,
+      origin_lat: Number(o.origin_lat),
+      origin_lng: Number(o.origin_lng),
+      dest_lat: Number(o.dest_lat),
+      dest_lng: Number(o.dest_lng),
+      weight_kg: Number(o.weight_kg),
+      length_m: Number(o.length_m || 1),
+      width_m: Number(o.width_m || 1),
+      height_m: Number(o.height_m || 1),
+      pickup_deadline: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
+      payment_inr: Number(o.payment_inr || (o.freight_value ? o.freight_value / 100 : 0)),
+    }));
+
+  const specs = truckSpecs || {
+    max_weight_kg: 25000,
+    max_length_m: 12,
+    max_width_m: 2.5,
+    max_height_m: 4,
+  };
+
+  let recommendations = [];
+  let mlUsed = false;
+
+  // Try the FastAPI ML engine first
+  if (availableLoads.length > 0) {
+    try {
+      const result = await matchDeadhead({
+        driverDestination: { lat: currentLat, lng: currentLng },
+        truckSpecs: specs,
+        arrivalTime: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
+        availableLoads,
+      });
+      recommendations = result.recommendations || [];
+      mlUsed = true;
+    } catch (err) {
+      logger.warn('[ML] matchEnRouteLoads: falling back to haversine. Reason: ' + err.message);
+    }
+  }
+
+  // Haversine fallback — score by distance to pickup
+  if (!mlUsed) {
+    recommendations = offers
+      .filter(o => o.origin_lat && o.origin_lng)
+      .map(o => {
+        const dtKm = _haversineKm(currentLat, currentLng, Number(o.origin_lat), Number(o.origin_lng));
+        return {
+          load_id: o.id,
+          detour_km: dtKm,
+          distance_to_pickup_km: dtKm,
+          match_score: Math.max(0, 1 - dtKm / maxDetourKm),
+          estimated_earnings: Number(o.payment_inr || (o.freight_value ? o.freight_value / 100 : 0)),
+          _fallback: true,
+        };
+      })
+      .filter(r => r.detour_km <= maxDetourKm)
+      .sort((a, b) => b.match_score - a.match_score);
+  }
+
+  // Build a lookup map of ML results keyed by load_id
+  const recMap = new Map(recommendations.map(r => [r.load_id, r]));
+
+  // Merge ML/haversine annotations back onto the original offer rows
+  const enriched = offers
+    .map(o => {
+      const rec = recMap.get(o.id);
+      if (!rec) return null; // not recommended by ML — exclude
+      return {
+        ...o,
+        detour_km: rec.detour_km ?? rec.distance_to_pickup_km ?? 0,
+        extra_earnings: rec.estimated_earnings
+          ? Math.round(rec.estimated_earnings * 100) // convert to paisa for consistency
+          : (o.freight_value || 0),
+        match_score: rec.match_score ?? 0,
+        extra_distance_km: rec.detour_km ?? 0,
+        ml_used: mlUsed,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.match_score - a.match_score);
+
+  return enriched;
+}
+
+/**
+ * Haversine great-circle distance in km between two lat/lng points.
+ * @private
+ */
+function _haversineKm(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 export const __testing = {
   demandCache,
-  priceCache
+  priceCache,
+  _haversineKm,
 };

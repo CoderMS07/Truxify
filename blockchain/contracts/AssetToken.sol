@@ -94,7 +94,8 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
         _assetCounter++;
         uint256 assetId = _assetCounter;
 
-        uint256 tokenPrice = totalValue / totalTokens;
+        uint256 tokenPrice = (totalValue * 1e18) / totalTokens;
+        require(tokenPrice > 0, "Price too small");
 
         assets[assetId] = Asset({
             id: assetId,
@@ -153,7 +154,7 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
         require(amount > 0, "Amount must be > 0");
         require(asset.availableTokens >= amount, "Insufficient tokens");
 
-        uint256 totalCost = amount * asset.tokenPrice;
+        uint256 totalCost = (amount * asset.tokenPrice + 1e18 - 1) / 1e18;
         require(msg.value >= totalCost, "Insufficient payment");
 
         // Update asset
@@ -168,11 +169,6 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
         ownership.tokenId = assetId;
         ownership.amount += amount;
         ownership.purchasedAt = block.timestamp;
-        bool isNewHolder = fractionalOwnership[assetId][msg.sender].amount == 0;
-        fractionalOwnership[assetId][msg.sender].owner = msg.sender;
-        fractionalOwnership[assetId][msg.sender].tokenId = assetId;
-        fractionalOwnership[assetId][msg.sender].amount += amount;
-        fractionalOwnership[assetId][msg.sender].purchasedAt = block.timestamp;
 
         // Mint tokens
         _mint(msg.sender, amount);
@@ -181,10 +177,6 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
         if (msg.value > totalCost) {
             (bool refunded, ) = payable(msg.sender).call{value: msg.value - totalCost}("");
             require(refunded, "Refund failed");
-        }
-
-        if (isNewHolder) {
-            userAssets[msg.sender].push(assetId);
         }
 
         emit FractionalPurchase(assetId, msg.sender, amount);

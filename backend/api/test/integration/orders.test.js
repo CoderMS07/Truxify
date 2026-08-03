@@ -61,17 +61,43 @@ m.supabase.rpc = vi.fn().mockImplementation(async (fnName, args) => {
   return originalRpc(fnName, args);
 });
 let mockRedis = null;
+let mockMongoDb = null;
 afterEach(() => { mockRedis = null; });
 
 vi.mock('../../src/config/db.js', () => ({
   supabase: m.supabase,
   firebaseAdmin: null,
   get redisClient() { return mockRedis; },
-  mongoDb: null,
+  get mongoDb() { return mockMongoDb; },
 }));
+
+function makeMongoDbMock(records) {
+  return {
+    collection: () => ({
+      find: () => ({
+        sort: () => ({
+          limit: () => ({
+            toArray: async () => records,
+          }),
+        }),
+      }),
+    }),
+  };
+}
+
+function seedDriverAtDropOff(orderId, driverId) {
+  mockMongoDb = makeMongoDbMock([{
+    driver_id: driverId,
+    order_id: orderId,
+    lat: 28.6139,
+    lng: 77.209,
+    server_received_at: new Date(),
+  }]);
+}
 
 vi.mock('../../src/sockets/tracker.js', () => ({
   initWebSocketServer: () => ({}),
+  broadcastOrderMilestone: vi.fn(),
 }));
 
 vi.mock('../../src/services/osrm.js', () => ({
@@ -134,7 +160,7 @@ const validOrderBody = {
   drop_address: '456 Drop Ave, Delhi',
   drop_lat: 28.7041,
   drop_lng: 77.1025,
-  pickup_date: '2026-06-10',
+  pickup_date: '2026-10-10',
   pickup_time: '09:00',
   goods_type: 'electronics',
   weight_tonnes: 10,
@@ -493,11 +519,12 @@ describe('POST /api/orders — server-side pricing contract', () => {
         milestone: 'Goods Loaded'
       });
 
+    if (res.status !== 403) console.log('ERROR:', res.body);
     expect(res.status).toBe(403);
   });
 
   it('returns 500 when orders insert fails', async () => {
-    routeEstimateMock.mockResolvedValue(null);
+    routeEstimateMock.mockResolvedValue({ distanceKm: 15, durationMin: 30 });
     m.programError('insert failed');
 
     const app = buildApp();
@@ -997,6 +1024,7 @@ describe('Delivery OTP Verification and Milestones', () => {
     m.calls.length = 0;
     completeTripRpcError = null;
     escrowReleaseMock.mockReset();
+    mockMongoDb = makeMongoDbMock([]);
   });
 
   it('blocks direct transition to Delivered milestone with descriptive message', async () => {
@@ -1143,7 +1171,9 @@ describe('Delivery OTP Verification and Milestones', () => {
       id: 'order-1',
       driver_id: 'driver-123',
       order_display_id: 'ORD001',
-      status: 'arriving'
+      status: 'arriving',
+      drop_lat: 28.6139,
+      drop_lng: 77.209
     }];
     m.store.delivery_otps = [{
       id: 'otp-1',
@@ -1153,6 +1183,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString()
     }];
+    seedDriverAtDropOff('order-1', 'driver-123');
     m.store.order_timeline = [{
       order_display_id: 'ORD001',
       milestone: 'Delivered',
@@ -1197,7 +1228,9 @@ describe('Delivery OTP Verification and Milestones', () => {
       id: 'order-retry',
       driver_id: 'driver-123',
       order_display_id: 'ORD-RETRY',
-      status: 'arriving'
+      status: 'arriving',
+      drop_lat: 28.6139,
+      drop_lng: 77.209
     }];
     m.store.delivery_otps = [{
       id: 'otp-retry',
@@ -1207,6 +1240,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString()
     }];
+    seedDriverAtDropOff('order-retry', 'driver-123');
 
     completeTripRpcError = { message: 'temporary database failure' };
 
@@ -1249,6 +1283,8 @@ describe('Delivery OTP Verification and Milestones', () => {
       status: 'arriving',
       total_amount: 125000,
       escrow_status: 'funded',
+      drop_lat: 28.6139,
+      drop_lng: 77.209,
     }];
     m.store.delivery_otps = [{
       id: 'otp-2',
@@ -1258,6 +1294,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString(),
     }];
+    seedDriverAtDropOff('order-2', 'driver-456');
     m.store.order_timeline = [{
       order_display_id: 'ORD002',
       milestone: 'Delivered',
@@ -1304,6 +1341,8 @@ describe('Delivery OTP Verification and Milestones', () => {
       total_amount: 125000,
       escrow_status: 'funded',
       escrow_release_attempts: 0,
+      drop_lat: 28.6139,
+      drop_lng: 77.209,
     }];
     m.store.delivery_otps = [{
       id: 'otp-release-failed',
@@ -1313,6 +1352,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString(),
     }];
+    seedDriverAtDropOff('order-release-failed', 'driver-456');
 
     const app = buildApp();
     const res = await request(app)
@@ -1355,6 +1395,8 @@ describe('Delivery OTP Verification and Milestones', () => {
       total_amount: 125000,
       escrow_status: 'funded',
       escrow_release_attempts: 2,
+      drop_lat: 28.6139,
+      drop_lng: 77.209,
     }];
     m.store.delivery_otps = [{
       id: 'otp-no-release-hash',
@@ -1364,6 +1406,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString(),
     }];
+    seedDriverAtDropOff('order-no-release-hash', 'driver-456');
 
     const app = buildApp();
     const res = await request(app)
@@ -1423,7 +1466,9 @@ describe('Delivery OTP Verification and Milestones', () => {
       id: orderId,
       driver_id: 'driver-123',
       order_display_id: 'ORD-LOCK',
-      status: 'arriving'
+      status: 'arriving',
+      drop_lat: 28.6139,
+      drop_lng: 77.209,
     }];
     m.store.delivery_otps = [{
       id: 'otp-lockout',
@@ -1433,6 +1478,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString()
     }];
+    seedDriverAtDropOff(orderId, 'driver-123');
 
     const app = buildApp();
 
@@ -1480,6 +1526,8 @@ describe('Delivery OTP Verification and Milestones', () => {
 
     // Update expires_at so the OTP itself isn't expired after lockout bypass
     m.store.delivery_otps[0].expires_at = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    // Re-seed telemetry so it stays fresh after the 31-minute time advance
+    seedDriverAtDropOff(orderId, 'driver-123');
 
     try {
       // Correct OTP should now succeed
@@ -1504,7 +1552,9 @@ describe('Delivery OTP Verification and Milestones', () => {
       id: orderId,
       driver_id: 'driver-123',
       order_display_id: 'ORD-CLEAR',
-      status: 'arriving'
+      status: 'arriving',
+      drop_lat: 28.6139,
+      drop_lng: 77.209,
     }];
     m.store.delivery_otps = [{
       id: 'otp-clear-state',
@@ -1514,6 +1564,7 @@ describe('Delivery OTP Verification and Milestones', () => {
       verified: false,
       created_at: new Date().toISOString()
     }];
+    seedDriverAtDropOff(orderId, 'driver-123');
 
     const app = buildApp();
 
@@ -2123,7 +2174,22 @@ describe('Customer actions: change-drop and cancel endpoints', () => {
     routeEstimateMock.mockResolvedValue({ distanceKm: 100 });
     submitEscrowRefundMock.mockReset();
     confirmEscrowRefundMock.mockReset();
-    mockRedis = null;
+    // Cancel/change-drop take the escrow lock (redisLock), so provide a
+    // working in-memory Redis mock instead of leaving it null.
+    const lockStore = new Map();
+    mockRedis = {
+      set: vi.fn(async (key, val) => {
+        lockStore.set(key, val);
+        return 'OK';
+      }),
+      eval: vi.fn(async (_script, _count, key, lockValue) => {
+        if (lockStore.get(key) === lockValue) {
+          lockStore.delete(key);
+          return 1;
+        }
+        return 0;
+      }),
+    };
   });
 
   it('allows customer to change drop and returns recalculated pricing', async () => {
@@ -2213,7 +2279,7 @@ describe('Customer actions: change-drop and cancel endpoints', () => {
       id: 'aaaa0004-0000-4000-8000-000000000004',
       customer_id: CUSTOMER_HEADERS['x-user-id'],
       order_display_id: 'OD-FUNDED-CANCEL',
-      status: 'in_transit',
+      status: 'assigned',
       escrow_status: 'funded',
       escrow_refund_attempts: 0,
       cancellation_fee: 500,
@@ -2247,7 +2313,7 @@ describe('Customer actions: change-drop and cancel endpoints', () => {
       id: 'aaaa0005-0000-4000-8000-000000000005',
       customer_id: CUSTOMER_HEADERS['x-user-id'],
       order_display_id: 'OD-REFUND-FAILS',
-      status: 'in_transit',
+      status: 'assigned',
       escrow_status: 'funded',
       cancellation_fee: 500,
     });
@@ -2266,6 +2332,31 @@ describe('Customer actions: change-drop and cancel endpoints', () => {
     expect(stored.status).toBe('cancelled');
     expect(stored.escrow_status).toBe('refund_failed');
     expect(stored.escrow_refund_error).toContain('Polygon unavailable');
+  });
+
+  it('rejects cancellation once the shipment has been picked up', async () => {
+    for (const status of ['picked_up', 'in_transit', 'arriving', 'arrived_dropoff']) {
+      m.store.orders = [{
+        id: 'aaaa0006-0000-4000-8000-000000000006',
+        customer_id: CUSTOMER_HEADERS['x-user-id'],
+        order_display_id: `OD-TRIP-${status}`,
+        status,
+        escrow_status: 'funded',
+      }];
+
+      const app = buildApp();
+      const res = await request(app)
+        .post('/api/orders/aaaa0006-0000-4000-8000-000000000006/cancel')
+        .set('X-Idempotency-Key', Math.random().toString())
+        .set(CUSTOMER_HEADERS)
+        .send({ reason: 'Change of plans' });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('Cannot cancel: the shipment has already been picked up and is in transit.');
+      const storedOrder = m.store.orders.find(o => o.id === 'aaaa0006-0000-4000-8000-000000000006');
+      expect(storedOrder.status).toBe(status);
+      expect(storedOrder.escrow_status).toBe('funded');
+    }
   });
 
   it('reconciles a previously submitted refund without submitting it twice', async () => {

@@ -1,6 +1,28 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+
+/// Backend connection settings, injected at build time via --dart-define.
+class AdminApiConfig {
+  static const String _envUrl = String.fromEnvironment('ADMIN_API_URL');
+  static const String _envToken = String.fromEnvironment('ADMIN_API_TOKEN');
+
+  static String get baseUrl {
+    final url = _envUrl.isNotEmpty ? _envUrl : 'http://localhost:5000';
+    if (kReleaseMode) {
+      if (!url.startsWith('https://')) {
+        throw StateError(
+          'ADMIN_API_URL must be an HTTPS URL in release mode. '
+          'Set --dart-define=ADMIN_API_URL=https://...',
+        );
+      }
+    }
+    return url;
+  }
+
+  static String? get authToken => _envToken.isNotEmpty ? _envToken : null;
+}
 
 void main() {
   runApp(const AdminDashboardApp());
@@ -125,8 +147,15 @@ class _SupportTicketsViewState extends State<SupportTicketsView> {
 
   Future<void> _fetchTickets() async {
     try {
-      // Connecting directly to the existing /api/support/admin/tickets endpoint
-      final response = await http.get(Uri.parse('/api/support/admin/tickets'));
+      // Base URL is injected via --dart-define=ADMIN_API_URL; the admin
+      // credential (Firebase ID token) via --dart-define=ADMIN_API_TOKEN.
+      final uri = Uri.parse('${AdminApiConfig.baseUrl}/api/support/admin/tickets');
+      final headers = <String, String>{
+        'Content-Type': 'application/json',
+        if (AdminApiConfig.authToken != null)
+          'Authorization': 'Bearer ${AdminApiConfig.authToken}',
+      };
+      final response = await http.get(uri, headers: headers);
       if (response.statusCode == 200) {
         setState(() {
           _tickets = json.decode(response.body);

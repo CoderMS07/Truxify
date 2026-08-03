@@ -16,7 +16,7 @@ import {
   OTP_LOCKOUT_MINUTES,
   DELIVERY_OTP_READY_STATUSES,
 } from './orderNotificationService.js';
-import { escrowRelease } from '../escrow.js';
+import { escrowRelease, markEscrowBookingStarted } from '../escrow.js';
 import { DomainError } from './domainError.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 import { broadcastOrderMilestone } from '../../sockets/tracker.js';
@@ -27,6 +27,7 @@ export class OrderMilestoneService {
     if (args.orderValidationService) this.validation = args.orderValidationService;
     if (args.orderTimelineService) this.orderTimelineService = args.orderTimelineService;
     if (args.orderNotificationService) this.orderNotificationService = args.orderNotificationService;
+    if (args.trackingTokenService) this.trackingTokenService = args.trackingTokenService;
   }
 
   async updateMilestone({ orderId, milestone, driverId }) {
@@ -93,6 +94,23 @@ export class OrderMilestoneService {
       throw new DomainError(500, { error: 'Failed to update order.', details: updateErr.message });
     }
 
+    // Once the goods are loaded, the trip has started on-chain. Mark the
+    // booking so cancelBooking / cancelWithPenalty revert for a full refund.
+    // Best-effort: a chain failure must not block the milestone itself.
+    if (status === 'picked_up' && ['funded', 'release_failed'].includes(order.escrow_status)) {
+      try {
+        const started = await markEscrowBookingStarted(order.order_display_id);
+        if (started?.txHash && started.waitForConfirmation) {
+          const startedReceipt = await started.waitForConfirmation();
+          logger.info(`[escrow] Booking marked started for order ${order.order_display_id} in block ${startedReceipt.blockNumber}`);
+        } else if (started?.error) {
+          logger.warn(`[escrow] Failed to mark booking started for order ${order.order_display_id}: ${started.error}`);
+        }
+      } catch (startErr) {
+        logger.warn(`[escrow] Failed to mark booking started for order ${order.order_display_id}: ${startErr.message}`);
+      }
+    }
+
     if (generatedOtp) {
       const notifResult = await sendDeliveryOtpNotification(order.customer_id, order.order_display_id, generatedOtp);
       if (!notifResult.success) {
@@ -111,7 +129,7 @@ export class OrderMilestoneService {
     });
   }
 
-  async verifyDelivery({ orderId, otp, driverId }) {
+  async verifyDelivery({ orderId, otp, driverId }, userClient) {
     return measureExecution('OrderMilestoneService.verifyDelivery', async () => {
     if (await checkOtpLockout(orderId)) {
       throw new DomainError(429, {
@@ -192,7 +210,7 @@ export class OrderMilestoneService {
       p_order_id: orderId,
       p_otp_id: otpRecord.id,
       p_release_tx_hash: releaseTxHash,
-    });
+    }, userClient);
     if (rpcErr) {
       logger.error('complete_trip_tx RPC failed:', rpcErr.message);
       throw new DomainError(500, { error: 'Failed to complete trip and release payment.', details: rpcErr.message });
@@ -211,6 +229,10 @@ export class OrderMilestoneService {
         error: 'Order status changed during processing. Payment was not released.',
       });
     }
+
+    // Trip complete — revoke any public tracking tokens so the shared link
+    // can no longer expose the driver's live location. Best-effort.
+    await this.trackingTokenService?.revokeAllForOrder(order.order_display_id);
 
     await verifyDeliveryOtp(otpRecord.id);
     await clearOtpState(orderId);

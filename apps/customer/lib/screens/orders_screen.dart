@@ -18,9 +18,11 @@ import 'live_tracking_screen.dart';
 import 'order_detail_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:truxify_shared/shimmer_widget.dart';
+import '../utils/driver_utils.dart';
 
 class OrdersScreen extends StatefulWidget {
-  const OrdersScreen({super.key});
+  final OrderService? orderService;
+  const OrdersScreen({super.key, this.orderService});
 
   @override
   State<OrdersScreen> createState() => _OrdersScreenState();
@@ -81,7 +83,7 @@ class _OrdersScreenState extends State<OrdersScreen>
   void initState() {
     super.initState();
 
-    _orderService = OrderService();
+    _orderService = widget.orderService ?? OrderService();
     _tabController = TabController(length: 2, vsync: this);
     _tabController.addListener(() {
       if (!_tabController.indexIsChanging) {
@@ -98,16 +100,7 @@ class _OrdersScreenState extends State<OrdersScreen>
   }
 
   String _resolveDriverName(Map<String, dynamic> order) {
-    final profile = order['profiles'];
-    if (profile is Map<String, dynamic>) {
-      final name = profile['full_name']?.toString().trim();
-      if (name != null && name.isNotEmpty) return name;
-    }
-
-    final driverName = order['driver_name']?.toString().trim();
-    if (driverName != null && driverName.isNotEmpty) return driverName;
-
-    return 'Driver Assigned';
+    return DriverUtils.resolveDriverName(order);
   }
 
   Future<void> _loadOrders() async {
@@ -324,6 +317,7 @@ class _OrdersScreenState extends State<OrdersScreen>
           ),
           callback: (payload) {
             debugPrint('Realtime customer orders list update: ${payload.newRecord}');
+            if (!mounted) return;
             _loadOrders();
           },
         )
@@ -488,7 +482,7 @@ class _OrdersScreenState extends State<OrdersScreen>
                               child: Row(
                                 children: [
                                   Text(
-                                    AppLocalizations.of(context)!.filterStatus,
+                                    'Status',
                                     style: Theme.of(context)
                                         .textTheme
                                         .bodySmall
@@ -557,9 +551,7 @@ class _OrdersScreenState extends State<OrdersScreen>
                                               ? AppLocalizations.of(
                                                       context)!
                                                   .noHistoryOrders
-                                              : AppLocalizations.of(
-                                                      context)!
-                                                  .noMatchingTrips,
+                                              : 'No matching trips',
                                           textAlign: TextAlign.center,
                                           style: Theme.of(context)
                                               .textTheme

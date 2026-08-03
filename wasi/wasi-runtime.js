@@ -2,7 +2,7 @@ import { WASI } from '@wasmer/wasi';
 import { WasmFs } from '@wasmer/wasmfs';
 import fs from 'fs';
 import path from 'path';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../backend/api/src/middleware/logger.js';
 
 class WASIRuntime {
     constructor() {

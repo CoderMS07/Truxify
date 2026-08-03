@@ -27,6 +27,7 @@ function makeRes(overrides = {}) {
     statusCode: 200,
     status: vi.fn(function(code) { this.statusCode = code; return this; }),
     json: vi.fn(function(body) { return this; }),
+    once: vi.fn(),
     ...overrides,
   };
 }
@@ -44,12 +45,16 @@ beforeEach(() => {
 
 describe('requireIdempotency middleware', () => {
   it('returns 400 when X-Idempotency-Key header is missing', async () => {
+    const originalEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
     const middleware = requireIdempotency();
     const req = makeReq({ headers: {} });
     const res = makeRes();
     const next = makeNext();
 
     await middleware(req, res, next);
+    
+    process.env.NODE_ENV = originalEnv;
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith({
@@ -65,6 +70,7 @@ describe('requireIdempotency middleware', () => {
     const next = makeNext();
 
     mockRedisRef.mock.get.mockResolvedValue(null);
+    mockRedisRef.mock.set.mockResolvedValue('OK');
 
     await middleware(req, res, next);
 
@@ -107,7 +113,7 @@ describe('requireIdempotency middleware', () => {
     res.json(responseBody);
 
     expect(mockRedisRef.mock.set).toHaveBeenCalled();
-    const [cacheKey, cacheData] = mockRedisRef.mock.set.mock.calls[0];
+    const [cacheKey, cacheData] = mockRedisRef.mock.set.mock.calls[1];
     expect(cacheKey).toBe('idempotency:user-1:key-def');
     const parsed = JSON.parse(cacheData);
     expect(parsed.statusCode).toBe(200);
@@ -148,16 +154,15 @@ describe('requireIdempotency middleware', () => {
   ])('does NOT cache %i responses', async (statusCode) => {
     const middleware = requireIdempotency();
     mockRedisRef.mock.get.mockResolvedValue(null);
-
+    mockRedisRef.mock.set.mockResolvedValue('OK');
     const req = makeReq({ headers: { 'x-idempotency-key': 'non-cacheable-key' } });
     const res = makeRes({ statusCode });
     const next = makeNext();
-
     await middleware(req, res, next);
     res.json({ error: 'some error' });
-
-    expect(mockRedisRef.mock.set).not.toHaveBeenCalled();
-  });
+    const cacheWriteCalls = mockRedisRef.mock.set.mock.calls.filter(([key]) => !key.endsWith(':lock'));
+    expect(cacheWriteCalls).toHaveLength(0);
+});
 
   it('fails open when Redis get throws an error', async () => {
     const middleware = requireIdempotency();
@@ -202,7 +207,7 @@ describe('requireIdempotency middleware', () => {
     await middleware(req, res, next);
     res.json({ result: 'done' });
 
-    const [cacheKey] = mockRedisRef.mock.set.mock.calls[0];
+    const [cacheKey] = mockRedisRef.mock.set.mock.calls[1];
     expect(cacheKey).toBe('idempotency:driver-42:my-unique-key-123');
   });
 
@@ -221,7 +226,7 @@ describe('requireIdempotency middleware', () => {
     await middleware(req, res, next);
     res.json({ result: 'done' });
 
-    const [cacheKey] = mockRedisRef.mock.set.mock.calls[0];
+    const [cacheKey] = mockRedisRef.mock.set.mock.calls[1];
     expect(cacheKey).toBe('idempotency:anonymous:anon-key');
   });
 
@@ -257,5 +262,52 @@ describe('requireIdempotency middleware', () => {
     await middleware(req, res2, next);
     expect(res2.status).toHaveBeenCalledWith(201);
     expect(res2.json).toHaveBeenCalledWith({ id: 'order-1' });
+  });
+
+  it('acquires the lock with a TTL that outlives the longest handler', async () => {
+    const middleware = requireIdempotency();
+    mockRedisRef.mock.get.mockResolvedValue(null);
+    mockRedisRef.mock.set.mockResolvedValue('OK');
+
+    const req = makeReq({ headers: { 'x-idempotency-key': 'slow-key' } });
+    const res = makeRes();
+    const next = makeNext();
+
+    await middleware(req, res, next);
+
+    const lockCall = mockRedisRef.mock.set.mock.calls.find(([key]) => key.endsWith(':lock'));
+    expect(lockCall).toBeDefined();
+    // Escrow handlers can wait 60s for on-chain confirmation, so the lock TTL
+    // must be at least double that — a 10s lock would expire mid-handler and
+    // let a duplicate re-acquire it.
+    expect(lockCall[3]).toBe('PX');
+    expect(lockCall[4]).toBeGreaterThanOrEqual(120000);
+  });
+
+  it('rejects a duplicate while the original slow handler still holds the lock', async () => {
+    vi.useFakeTimers();
+    try {
+      const middleware = requireIdempotency();
+      // No cached response yet, and the original request still holds the lock:
+      // the lock key is present and the re-acquire attempt fails.
+      mockRedisRef.mock.get.mockImplementation((key) =>
+        key.endsWith(':lock') ? Promise.resolve('1') : Promise.resolve(null)
+      );
+      mockRedisRef.mock.set.mockResolvedValue(null);
+
+      const req = makeReq({ headers: { 'x-idempotency-key': 'dup-key' } });
+      const res = makeRes();
+      const next = makeNext();
+
+      const duplicate = middleware(req, res, next);
+      await vi.advanceTimersByTimeAsync(200 * 50 + 10);
+      await duplicate;
+
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Duplicate request being processed' });
+      expect(next).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
