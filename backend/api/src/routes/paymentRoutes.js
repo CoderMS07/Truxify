@@ -316,7 +316,10 @@ router.post(
         try {
           await releaseLock(lockKey);
         } catch (releaseErr) {
-          logger.error({ err: releaseErr, lockKey }, 'Failed to release payment lock');
+          logger.error(
+            { err: releaseErr, lockKey },
+            'Failed to release payment lock'
+          );
         }
       }
     }

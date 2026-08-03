@@ -17,7 +17,10 @@ async function _publishProfileInvalidation(eventOpts) {
   }
   if (_publishFn) {
     _publishFn('profile', eventOpts).catch((err) => {
-      logger.warn({ err, eventOpts }, 'Failed to publish profile invalidation event');
+      logger.warn(
+        { err, eventOpts },
+        'Failed to publish profile invalidation event'
+      );
     });
   }
 }
