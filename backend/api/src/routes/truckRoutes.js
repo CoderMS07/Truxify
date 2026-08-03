@@ -80,7 +80,7 @@
  */
 
 import express from 'express';
-import { supabase, mongoDb } from '../config/db.js';
+import { supabase, mongoDb, redisClient } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
@@ -587,8 +587,8 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
     const driverIds = drivers.map(d => d.user_id);
 
     const [trucksRes, profilesRes] = await Promise.all([
-      supabase.from('trucks').select('id, name, number_plate, max_capacity_tons, truck_type').in('id', truckIds),
-      supabase.from('profiles').select('id, full_name, avatar_url').in('id', driverIds),
+      supabase.from('trucks').select('id, name, number_plate, max_capacity_tons').in('id', truckIds),
+      supabase.from('profiles').select('id, full_name, avatar_url, is_digilocker_verified').in('id', driverIds),
     ]);
 
     if (trucksRes.error) {
@@ -626,6 +626,7 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
         platformFee: finalPlatformFee,
         isAiEstimate,
         etaMinutes,
+        isDigilockerVerified: profile.is_digilocker_verified || false,
       };
     });
 

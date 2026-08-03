@@ -30,16 +30,24 @@ CREATE POLICY "Users select own profile"
   ON profiles FOR SELECT TO authenticated
   USING (firebase_uid = (auth.jwt() ->> 'sub'));
 
+-- Users may only ever create their own profile AS a customer. Self-claiming
+-- the driver (or admin) role on signup is not permitted; role upgrades must be
+-- assigned server-side (service_role / SECURITY DEFINER RPCs) after verification.
 DROP POLICY IF EXISTS "Users insert own profile" ON profiles;
 CREATE POLICY "Users insert own profile"
   ON profiles FOR INSERT TO authenticated
-  WITH CHECK (firebase_uid = (auth.jwt() ->> 'sub'));
+  WITH CHECK (firebase_uid = (auth.jwt() ->> 'sub') AND role = 'customer');
 
 DROP POLICY IF EXISTS "Users update own profile" ON profiles;
 CREATE POLICY "Users update own profile"
   ON profiles FOR UPDATE TO authenticated
   USING (firebase_uid = (auth.jwt() ->> 'sub'))
   WITH CHECK (firebase_uid = (auth.jwt() ->> 'sub'));
+
+-- Clients may never rewrite the role column (blocks flipping customer -> driver
+-- at will, matching the #5726 column-privilege hardening for orders/driver_details).
+-- service_role and SECURITY DEFINER RPCs are unaffected by this REVOKE.
+REVOKE UPDATE (role) ON profiles FROM anon, authenticated;
 
 
 -- ─── DRIVER DETAILS ───
@@ -238,11 +246,47 @@ DROP POLICY IF EXISTS "Service role full access on trips" ON trips;
 CREATE POLICY "Service role full access on trips"
   ON trips FOR ALL TO service_role USING (true) WITH CHECK (true);
 
+-- Drivers may only READ their own trips. Writes (create/complete/cancel) are
+-- deliberately NOT exposed to authenticated users: they must go through
+-- server-side, SECURITY DEFINER RPCs (e.g. complete_trip_tx) or the backend
+-- service role, so trip history can never be fabricated or edited by a driver.
 DROP POLICY IF EXISTS "Drivers access own trips" ON trips;
-CREATE POLICY "Drivers access own trips"
-  ON trips FOR ALL TO authenticated
-  USING (driver_id = get_profile_id())
-  WITH CHECK (driver_id = get_profile_id());
+DROP POLICY IF EXISTS "Drivers insert own trips" ON trips;
+DROP POLICY IF EXISTS "Drivers update own trips" ON trips;
+DROP POLICY IF EXISTS "Drivers delete own trips" ON trips;
+CREATE POLICY "Drivers read own trips"
+  ON trips FOR SELECT TO authenticated
+  USING (driver_id = get_profile_id());
+
+-- Trip lifecycle enforcement: a trip must be created as 'active' and can only
+-- transition active -> completed / active -> cancelled. Reverting a finished
+-- trip (or completing/cancelling one created finished) is rejected, so trip
+-- statistics can't be inflated or rewritten by any role.
+CREATE OR REPLACE FUNCTION enforce_trip_status_transitions()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'active' THEN
+      RAISE EXCEPTION 'Trips must be created with status = active (got %)', NEW.status;
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM NEW.status THEN
+    IF NOT (OLD.status = 'active' AND NEW.status IN ('completed', 'cancelled')) THEN
+      RAISE EXCEPTION 'Invalid trip status transition: % -> %', OLD.status, NEW.status;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_trips_status_transitions ON trips;
+CREATE TRIGGER trg_trips_status_transitions
+  BEFORE INSERT OR UPDATE OF status ON trips
+  FOR EACH ROW
+  EXECUTE FUNCTION enforce_trip_status_transitions();
 
 
 -- ─── TRIP ITEMS ───

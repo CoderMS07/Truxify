@@ -85,47 +85,42 @@ class DeferredRedisStore {
   }
 }
 
-export function normalizeIp(rawIp) {
-  if (typeof rawIp !== 'string' || !rawIp) return 'unknown';
-  let ip = rawIp.trim();
-  if (ip.includes(',')) ip = ip.split(',')[0].trim();
-  ip = ip.replace(/^::ffff:/, '');
-  if (ip === '::1') return '127.0.0.1';
+/**
+ * Generates a rate-limit key from the proxy-resolved IP address.
+ */
+export function safeIpKeyGenerator(req) {
+const forwarded = req.headers?.['x-forwarded-for'];
 
-  if (ip.includes(':')) {
-    const parts = ip.split(':');
-    const prefix = parts.slice(0, 4).join(':');
-    return `${prefix}::/64`;
+if (isSuspiciousForwardedHeader(forwarded)) {
+  logger.warn(
+    {
+      requestId: req.requestId,
+      header: forwarded,
+      socketIp: req.socket?.remoteAddress,
+    },
+    'Suspicious X-Forwarded-For header detected'
+  );
+  let ip = req.ip || req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
+  if (typeof ip === 'string') {
+    if (ip.includes(',')) ip = ip.split(',')[0].trim();
+    ip = ip.replace(/^::ffff:/, '');
+    if (ip === '::1') ip = '127.0.0.1';
   }
   return ip;
 }
 
-/**
- * Generates a rate-limit key from the proxy-resolved IP address with IPv6 /64 subnet masking.
- */
-export function safeIpKeyGenerator(req) {
-  const forwarded = req.headers?.['x-forwarded-for'];
+let ip =
+  req.ip ||
+  req.socket?.remoteAddress ||
+  req.connection?.remoteAddress ||
+  'unknown';
 
-  if (isSuspiciousForwardedHeader(forwarded)) {
-    logger.warn(
-      {
-        requestId: req.requestId,
-        header: forwarded,
-        socketIp: req.socket?.remoteAddress,
-      },
-      'Suspicious X-Forwarded-For header detected'
-    );
-    const raw = req.ip || req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
-    return normalizeIp(raw);
-  }
+if (typeof ip === 'string') {
+  ip = ip.replace(/^::ffff:/, '');
+  if (ip === '::1') ip = '127.0.0.1';
+}
 
-  const raw =
-    req.ip ||
-    req.socket?.remoteAddress ||
-    req.connection?.remoteAddress ||
-    'unknown';
-
-  return normalizeIp(raw);
+return ip;
 }
 
 /**
@@ -183,6 +178,9 @@ const BID_MAX_REQUESTS = Number(process.env.BID_RATE_LIMIT_MAX_REQUESTS) || 30;
 const DEVICE_WINDOW_MS = Number(process.env.DEVICE_RATE_LIMIT_WINDOW_MS) || 10 * 60 * 1000;
 const DEVICE_MAX_REQUESTS = Number(process.env.DEVICE_RATE_LIMIT_MAX_REQUESTS) || 10;
 
+const OTP_VERIFICATION_WINDOW_MS = Number(process.env.OTP_VERIFICATION_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000;
+const OTP_VERIFICATION_MAX_REQUESTS = Number(process.env.OTP_VERIFICATION_RATE_LIMIT_MAX_REQUESTS) || 5;
+
 
 export const globalLimiter = rateLimit({
   windowMs: GLOBAL_WINDOW_MS,
@@ -190,7 +188,6 @@ export const globalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
-  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:global:'),
   handler: sentryAlertHandler('globalLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 900 },
@@ -203,7 +200,6 @@ export const userLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: userKeyGenerator,
-  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:user:'),
   handler: sentryAlertHandler('userLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 900 },
@@ -215,7 +211,6 @@ export const healthLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
-  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:health:'),
   handler: sentryAlertHandler('healthLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 60 },
@@ -227,7 +222,6 @@ export const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: safeIpKeyGenerator,
-  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:auth:'),
 
   handler: (req, res) => {
@@ -255,7 +249,6 @@ export const bidLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: userKeyGenerator,
-  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:bid:'),
   handler: sentryAlertHandler('bidLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 60 },
@@ -271,10 +264,51 @@ export const deviceLimiter = rateLimit({
     if (req.user?.uid) return `uid:${req.user.uid}`;
     return safeIpKeyGenerator(req);
   },
-  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:device:'),
   handler: sentryAlertHandler('deviceLimiter'),
   message: { error: 'Rate limit exceeded', retryAfter: 600 },
+});
+
+export const otpVerificationLimiter = rateLimit({
+  windowMs: OTP_VERIFICATION_WINDOW_MS,
+  max: OTP_VERIFICATION_MAX_REQUESTS,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: safeIpKeyGenerator,
+  store: createStore('rl:otp-verification:'),
+  handler: sentryAlertHandler('otpVerificationLimiter'),
+  message: { error: 'Too many OTP verification attempts. Please try again after 15 minutes.' },
+const POD_WINDOW_MS = Number(process.env.POD_RATE_LIMIT_WINDOW_MS) || 60 * 60 * 1000;
+const POD_MAX_REQUESTS = Number(process.env.POD_RATE_LIMIT_MAX_REQUESTS) || 10;
+
+// PoD uploads carry up to 20MB each (signature + photo) and run a malware scan
+// per file, so they are throttled per driver *and* per order: a single assigned
+// driver can no longer fire an unbounded stream of uploads for one order.
+export const podUploadLimiter = rateLimit({
+  windowMs: POD_WINDOW_MS,
+  max: POD_MAX_REQUESTS,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const userKey = userKeyGenerator(req);
+    const orderId = req.params?.id || 'unknown';
+    return `${userKey}:order:${orderId}`;
+  },
+  validate: { keyGeneratorIpFallback: false },
+  store: createStore('rl:pod:'),
+  handler: (req, res) => {
+    logger.warn(
+      {
+        requestId: req.requestId,
+        path: req.originalUrl,
+        method: req.method,
+        userAgent: req.get('user-agent'),
+      },
+      'PoD upload rate limit exceeded'
+    );
+    Sentry.captureMessage('Rate limit exceeded: podUploadLimiter', 'warning');
+    res.status(429).json({ error: 'Rate limit exceeded', retryAfter: Math.ceil(POD_WINDOW_MS / 1000) });
+  },
 });
 
 const adminWindowMs = Number(process.env.ADMIN_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000;
@@ -286,7 +320,6 @@ export const adminRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: userKeyGenerator,
-  validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:admin:'),
   message: { error: 'Rate limit exceeded', retryAfter: Math.ceil(adminWindowMs / 1000) },
 });

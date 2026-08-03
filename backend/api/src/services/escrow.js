@@ -34,6 +34,7 @@ import { measureExecution } from '../core/performanceMetrics.js'
 
 const ESCROW_ABI = [
   'function createBooking(uint256 bookingId, address payable driver) external payable',
+  'function lockPayment(uint256 bookingId, address payable customer, address payable driver) external payable',
   'function releasePayment(uint256 bookingId) external',
   'function cancelBooking(uint256 bookingId) external',
   'function cancelWithPenalty(uint256 bookingId, uint256 driverFee) external',
@@ -444,69 +445,33 @@ export async function confirmEscrowRefund (txHash) {
   });
 }
 
-/**
- * Read a booking's on-chain state (used by the escrow funding reconciliation
- * worker to decide whether a 'funding' order was actually funded).
- * @param {string} bookingId - bytes32 booking id
- * @returns {Promise<{customer: string, driver: string, amount: bigint, status: bigint, paid: boolean, createdAt: bigint} | null>}
- */
-export async function getEscrowBooking (bookingId) {
-  if (!escrowContract || !bookingId) {
-    return null
-  }
-  try {
-    const booking = await escrowContract.bookings(bookingId)
-    if (!booking) {
-      return null
-    }
-    return {
-      customer: booking.customer,
-      driver: booking.driver,
-      amount: booking.amount,
-      status: booking.status,
-      paid: booking.paid,
-      started: booking.started,
-      createdAt: booking.createdAt,
-    }
-  } catch (err) {
-    logger.warn(`[escrow] Failed to read booking ${bookingId}: ${err.message}`)
-    return null
-  }
-}
-
-/**
- * Mark an escrow booking as started (driver picked up the goods).
- * Only the relayer (owner) may call markBookingStarted on-chain.
- * Once started, cancelBooking / cancelWithPenalty will revert.
- */
-export async function markEscrowBookingStarted (orderDisplayId) {
-  return measureExecution('EscrowService.markEscrowBookingStarted', async () => {
-    const bookingId = getEscrowBookingId(orderDisplayId)
+export async function escrowLockPayment(orderDisplayId, customerWalletAddress, driverWalletAddress, amountWei) {
+  return measureExecution('EscrowService.escrowLockPayment', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId);
 
     if (!escrowContract) {
-      logger.warn('[escrow] Contract not initialised — skipping markBookingStarted.')
-      return { txHash: null, bookingId }
+      logger.warn('[escrow] Contract not initialised — skipping lockPayment.');
+      return { txHash: null, bookingId };
     }
 
     try {
-      const tx = await escrowContract.markBookingStarted(bookingId)
-      logger.info(`[escrow] markBookingStarted tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
-      return {
-        txHash: tx.hash,
+      const tx = await escrowContract.lockPayment(
         bookingId,
-        waitForConfirmation: async () => {
-          const receipt = await tx.wait(1)
-          if (!receipt || receipt.status === 0) {
-            throw new Error('Escrow markBookingStarted transaction reverted or was not found.')
-          }
-          return receipt
-        },
-      }
+        customerWalletAddress,
+        driverWalletAddress,
+        {
+          value: amountWei
+        }
+      );
+      logger.info(`[escrow] lockPayment tx submitted: ${tx.hash} for booking ${orderDisplayId}`);
+      const receipt = await tx.wait(1);
+      logger.info(`[escrow] lockPayment confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`);
+      return { txHash: receipt.hash, bookingId };
     } catch (err) {
-      logger.error(`[escrow] markBookingStarted failed for booking ${orderDisplayId}: ${err.message}`)
-      return { txHash: null, bookingId, error: err.message }
+      logger.error(`[escrow] lockPayment failed for booking ${orderDisplayId}: ${err.message}`);
+      return { txHash: null, bookingId, error: err.message };
     }
-  })
+  });
 }
 
 export function bookingIdFromUuid (orderId) {

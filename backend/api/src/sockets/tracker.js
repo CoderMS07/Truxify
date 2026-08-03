@@ -6,6 +6,7 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import { GpsLog } from '../models/GpsLog.js';
 
 const TELEMETRY_SCHEMA = {
   lat: { type: 'number', required: false, min: -90, max: 90 },
@@ -857,6 +858,29 @@ export async function handleLocationPing(ws, data, req) {
     } catch (err) {
       logger.error('Redis cache telemetry error:', err.message);
     }
+  }
+
+  // Persist GPS log to MongoDB Atlas (GPS Logs collection) using the typed
+  // GpsLog mongoose schema. Fire-and-forget — the write must not block the
+  // WebSocket broadcast path. The bulk telemetry flush to the raw `telemetry`
+  // collection continues separately for batch analytics.
+  if (getMongoDb()) {
+    GpsLog.create({
+      bookingId: orderDisplayId || orderUUID || driver_id,
+      driverId: driver_id,
+      lat,
+      lng,
+      speed: speed || 0,
+      heading: bearing || 0,
+      timestamp: deviceTime || new Date(serverNow),
+      metadata: {
+        order_id: orderUUID || null,
+        order_display_id: orderDisplayId || null,
+        server_received_at: new Date(serverNow).toISOString(),
+      },
+    }).catch((err) => {
+      logger.error('[GpsLog] Failed to persist GPS coordinate to MongoDB:', err.message);
+    });
   }
 
   const broadcastPayload = JSON.stringify({

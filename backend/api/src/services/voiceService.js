@@ -167,3 +167,5 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
     audio_url: audioUrl
   };
 }
+
+export const __testing = { getBookingContext };
