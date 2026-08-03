@@ -392,6 +392,7 @@ describe('authenticate middleware - BYPASS_AUTH flow', () => {
   beforeEach(() => {
     process.env.BYPASS_AUTH = 'true';
     process.env.NODE_ENV = 'test';
+    process.env.ENABLE_TEST_AUTH = 'true';
     process.env.DEV_ACCESS_TOKEN = 'dev-token-123';
     vi.resetModules();
   });
@@ -399,6 +400,7 @@ describe('authenticate middleware - BYPASS_AUTH flow', () => {
   afterEach(() => {
     delete process.env.BYPASS_AUTH;
     delete process.env.NODE_ENV;
+    delete process.env.ENABLE_TEST_AUTH;
     delete process.env.DEV_ACCESS_TOKEN;
   });
 
@@ -508,6 +510,39 @@ describe('authenticate middleware - BYPASS_AUTH flow', () => {
       fullName: 'Test Driver',
       uid: 'test_firebase_uid_123',
     });
+  });
+
+  it('does not trust x-user-id/x-user-role headers when ENABLE_TEST_AUTH is unset', async () => {
+    delete process.env.ENABLE_TEST_AUTH;
+
+    vi.doMock('../../src/config/db.js', () => ({
+      firebaseAdmin: null,
+      supabase: null,
+    }));
+
+    const { authenticate } = await import('../../src/middleware/auth.js');
+
+    const req = {
+      headers: {
+        'x-user-id': 'victim-uuid',
+        'x-user-role': 'admin',
+        'authorization': 'Bearer token123',
+      },
+    };
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    };
+    const next = vi.fn();
+
+    await authenticate(req, res, next);
+
+    // Headers must be stripped (not trusted) and the request must fall
+    // through to real token verification rather than impersonating a user.
+    expect(req.headers['x-user-id']).toBeUndefined();
+    expect(req.headers['x-user-role']).toBeUndefined();
+    expect(req.user).toBeUndefined();
+    expect(next).not.toHaveBeenCalled();
   });
 
   it('defaults role to customer and name to Test User when headers are absent', async () => {
