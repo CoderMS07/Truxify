@@ -64,7 +64,7 @@ $$;
 create table if not exists profiles (
   id            uuid primary key default gen_random_uuid(),
   firebase_uid  text unique not null,                         -- Firebase Auth UID
-  role          text not null check (role in ('customer', 'driver')),
+  role          text not null check (role in ('customer', 'driver', 'admin')),
   full_name     text not null,
   phone         text not null,
   email         text,

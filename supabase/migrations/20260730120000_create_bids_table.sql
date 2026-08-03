@@ -23,18 +23,18 @@ ALTER TABLE public.bids ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Drivers can view their own bids"
     ON public.bids
     FOR SELECT
-    USING (auth.uid() = driver_id);
+    USING (get_profile_id() = driver_id);
 
 CREATE POLICY "Drivers can insert their own bids"
     ON public.bids
     FOR INSERT
-    WITH CHECK (auth.uid() = driver_id);
+    WITH CHECK (get_profile_id() = driver_id);
 
 CREATE POLICY "Drivers can update their own pending bids"
     ON public.bids
     FOR UPDATE
-    USING (auth.uid() = driver_id AND status = 'pending')
-    WITH CHECK (auth.uid() = driver_id);
+    USING (get_profile_id() = driver_id AND status = 'pending')
+    WITH CHECK (get_profile_id() = driver_id);
 
 -- RLS Policy: Customers can view bids placed on their loads
 -- (Assumes load_offers table has a customer_id column linking to the creator)
@@ -45,7 +45,7 @@ CREATE POLICY "Customers can view bids on their loads"
         EXISTS (
             SELECT 1 FROM public.load_offers lo 
             WHERE lo.id = bids.load_id 
-            AND lo.customer_id = auth.uid()
+            AND lo.customer_id = get_profile_id()
         )
     );
 
@@ -57,13 +57,13 @@ CREATE POLICY "Customers can update bids on their loads"
         EXISTS (
             SELECT 1 FROM public.load_offers lo 
             WHERE lo.id = bids.load_id 
-            AND lo.customer_id = auth.uid()
+            AND lo.customer_id = get_profile_id()
         )
     )
     WITH CHECK (
         EXISTS (
             SELECT 1 FROM public.load_offers lo 
             WHERE lo.id = bids.load_id 
-            AND lo.customer_id = auth.uid()
+            AND lo.customer_id = get_profile_id()
         )
     );
