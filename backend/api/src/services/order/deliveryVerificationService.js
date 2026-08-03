@@ -21,6 +21,20 @@ import {
 import { escrowRelease as defaultEscrowRelease } from '../escrow.js';
 import logger from '../../middleware/logger.js';
 import { OrderTimelineService } from './orderTimelineService.js';
+import upiPaymentService from '../payment/UpiPaymentService.js';
+
+/** Haversine great-circle distance in metres between two lat/lng points. */
+function _haversineM(lat1, lng1, lat2, lng2) {
+  const R = 6_371_000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
 /** Haversine great-circle distance in metres between two lat/lng points. */
 function _haversineM(lat1, lng1, lat2, lng2) {
@@ -323,6 +337,31 @@ export class DeliveryVerificationService {
           escrowAlreadyReleased = true;
         } else {
           throw new Error('Escrow release returned no transaction hash');
+        }
+
+        // Trigger UPI Payout to the Driver
+        try {
+          const driverId = order.driver_id;
+          const { data: driverProfile } = await supabase
+            .from('profiles')
+            .select('full_name')
+            .eq('id', driverId)
+            .maybeSingle();
+
+          const { data: driverPaymentMethod } = await supabase
+            .from('payment_methods')
+            .select('display_label')
+            .eq('user_id', driverId)
+            .eq('method_type', 'upi')
+            .maybeSingle();
+
+          const driverUpiId = driverPaymentMethod?.display_label || 
+            `${(driverProfile?.full_name || 'driver').toLowerCase().replace(/[^a-z0-9]/g, '')}@okaxis`;
+
+          const payoutResult = await upiPaymentService.processDriverPayout(driverUpiId, order.total_amount);
+          logger.info(`[payments] UPI Payout processed successfully for driver: ${driverUpiId}, payoutId: ${payoutResult.payout_id}`);
+        } catch (payoutErr) {
+          logger.error(`[payments] UPI payout to driver failed: ${payoutErr.message}`);
         }
       } catch (releaseErr) {
         logger.error('[escrow] Blockchain release failed for order', orderId, ':', releaseErr.message);

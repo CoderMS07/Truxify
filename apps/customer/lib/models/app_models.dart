@@ -228,6 +228,7 @@ class HistoryOrderData {
     this.requiresRefrigeration,
     this.targetTemperatureMin,
     this.targetTemperatureMax,
+    this.escrowStatus,
   });
 
   final String orderId;
@@ -250,9 +251,7 @@ class HistoryOrderData {
   final bool? isStackable;
   final bool? isFragile;
   final String? specialRequirements;
-  final bool? requiresRefrigeration;
-  final double? targetTemperatureMin;
-  final double? targetTemperatureMax;
+  final String? escrowStatus;
 }
 
 class TimelineStepData {

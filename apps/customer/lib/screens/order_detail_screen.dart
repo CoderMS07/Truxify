@@ -156,6 +156,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                 (orderMap['profiles'] is Map<String, dynamic>
                     ? orderMap['profiles']['phone']?.toString()
                     : null),
+            escrowStatus: orderMap['escrow_status']?.toString(),
           );
           // Trigger rating flow if status becomes completed and rating dialog hasn't been shown yet
           final orderStatus = orderMap['status']?.toString() ?? '';
@@ -577,6 +578,11 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                     _PriceLine(label: 'Platform Fee', amount: _currentOrder.platformFee!),
                 ],
                 _PriceLine(label: 'Total', amount: _currentOrder.amount, isTotal: true),
+                const Divider(),
+                _PriceLine(
+                  label: 'Payment Escrow',
+                  amount: (_currentOrder.escrowStatus ?? 'pending').toUpperCase(),
+                ),
               ],
             ),
           ),

@@ -1660,9 +1660,15 @@ $$;
 -- RPC 4: complete_trip_tx (overload) — Atomically verify delivery and release payment
 -- ────────────────────────────────────────────────────────────────────────────
 drop function if exists complete_trip_tx(uuid);
+drop function if exists complete_trip_tx(uuid, uuid);
+drop function if exists complete_trip_tx(uuid, uuid, text);
 
-create or replace function complete_trip_tx(p_order_id uuid, p_otp_id uuid)
-returns void
+create or replace function complete_trip_tx(
+  p_order_id uuid,
+  p_otp_id uuid,
+  p_release_tx_hash text default null
+)
+returns table(driver_id uuid)
 language plpgsql
 security definer
 as $$
@@ -1670,6 +1676,7 @@ declare
   v_order record;
   v_trip_display_id text;
   v_updated_count int;
+  v_otp_updated int;
 begin
   -- Use FOR UPDATE to lock the order row and prevent concurrent modifications
   select * into v_order from orders where id = p_order_id for update;
@@ -1684,6 +1691,8 @@ begin
 
   -- Idempotency guard: check if the order status is already payment_released
   if v_order.status = 'payment_released' then
+    driver_id := v_order.driver_id;
+    return next;
     return;
   end if;
 
@@ -1698,6 +1707,8 @@ begin
   get diagnostics v_otp_updated = row_count;
   if v_otp_updated <> 1 then
     raise exception 'Delivery OTP is invalid, expired, or already verified';
+  end if;
+
   -- Check if the order was cancelled
   if v_order.status = 'cancelled' then
     raise exception 'Order has been cancelled — cannot complete trip';
@@ -1739,9 +1750,12 @@ begin
       updated_at = now()
   where trip_display_id = v_trip_display_id;
 
-  -- Update order status to payment_released with defensive WHERE guards
+  -- Update order status and escrow details
   update orders
   set status = 'payment_released',
+      escrow_status = 'released',
+      escrow_released_at = now(),
+      blockchain_tx_hash = coalesce(p_release_tx_hash, blockchain_tx_hash),
       updated_at = now()
   where id = p_order_id
     and status != 'cancelled'
@@ -1787,6 +1801,9 @@ begin
   do update set
     amount = earnings_daily.amount + excluded.amount,
     trip_count = earnings_daily.trip_count + 1;
+
+  driver_id := v_order.driver_id;
+  return next;
 end;
 $$;
 

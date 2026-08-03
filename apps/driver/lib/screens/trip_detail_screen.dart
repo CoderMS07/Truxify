@@ -868,6 +868,9 @@ Widget _cargoBadge({
                   ),
                   const SizedBox(height: 12),
                   _buildPaymentRow(
+                      'Escrow status', (widget.trip.escrowStatus ?? 'pending').toUpperCase()),
+                  const Divider(),
+                  _buildPaymentRow(
                       'Base freight', breakdown?.baseFreight ?? '₹0'),
                   const Divider(),
                   _buildPaymentRow(

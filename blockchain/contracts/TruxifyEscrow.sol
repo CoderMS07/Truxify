@@ -166,6 +166,39 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
     }
 
     /**
+     * @dev Create a booking and lock payment in escrow via owner relayer.
+     * @param bookingId Unique booking ID from the Node.js backend
+     * @param customer   Customer's wallet address
+     * @param driver     Truck driver's wallet address
+     */
+    function lockPayment(
+        uint256 bookingId,
+        address payable customer,
+        address payable driver
+    ) external payable onlyOwner {
+        require(msg.value > 0, "TruxifyEscrow: Payment required");
+        require(customer != address(0), "TruxifyEscrow: Invalid customer address");
+        require(driver != address(0), "TruxifyEscrow: Invalid driver address");
+        require(
+            bookings[bookingId].customer == address(0),
+            "TruxifyEscrow: Booking already exists"
+        );
+
+        bookings[bookingId] = Booking({
+            customer:  customer,
+            driver:    driver,
+            amount:    msg.value,
+            status:    BookingStatus.Active,
+            paid:      false,
+            createdAt: block.timestamp
+        });
+
+        bookingCount++;
+
+        emit BookingCreated(bookingId, customer, driver, msg.value);
+    }
+
+    /**
      * @dev Release payment to driver after GPS geofence + OTP confirmation.
      *      Called by the Truxify backend (owner) after both conditions are met.
      *
