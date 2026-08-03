@@ -1107,7 +1107,8 @@ router.post(
       const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(
         req.params.id,
         req.user.id,
-        req.body.otp
+        req.body.otp,
+        req.token ? createUserClient(req.token) : undefined
       );
 
       // Fetch the released amount to include in the response
