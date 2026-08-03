@@ -53,6 +53,7 @@ import { getRoot, notFound } from './controllers/rootController.js'
 import webhookRoutes from './routes/webhookRoutes.js'
 import auditRoutes from './routes/auditRoutes.js'
 import paymentRoutes from './routes/paymentRoutes.js'
+import userRoutes from './routes/userRoutes.js'
 
 // ============================================================================
 // 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
@@ -452,6 +453,7 @@ app.use('/api/driver', driverRoutes)
 app.use('/api/loads', loadRoutes)
 app.use('/api/support', supportRoutes)
 app.use('/api/profile', profileRoutes)
+app.use('/api/users', userRoutes)
 app.use('/api/devices', deviceRoutes)
 app.use('/api/driver/documents', documentRoutes)
 app.use('/api/maintenance', maintenancePhotoRoutes)
