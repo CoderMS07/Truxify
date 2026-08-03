@@ -348,6 +348,9 @@ if (process.env.NODE_ENV === 'production') {
   })
 }
 
+const earningsRouter = require('../routes/earnings');
+app.use('/api/earnings', earningsRouter);
+
 // Payload parsers
 const jsonBodyLimit =
   process.env.JSON_BODY_LIMIT || '1mb';
