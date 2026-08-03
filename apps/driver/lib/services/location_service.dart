@@ -41,9 +41,10 @@ class LocationService {
   DateTime? _lastSentTime;
   String? _lastTriggeredMilestone;
 
-  // Throttling configuration: send ping if moved 15m+ OR 30 seconds passed
-  static const double _minDistanceMeters = 15.0;
-  static const Duration _maxInterval = Duration(seconds: 30);
+  // Throttling configuration: send ping if moved 10m+ OR 5 seconds passed
+  // (Issue: Driver app must emit GPS updates every 5 seconds during active trip)
+  static const double _minDistanceMeters = 10.0;
+  static const Duration _maxInterval = Duration(seconds: 5);
   static const List<String> _activeOrderStatuses = [
     'truck_assigned',
     'en_route_pickup',
@@ -55,7 +56,22 @@ class LocationService {
 
   bool get isTracking => _isTracking;
 
-  Future<void> startTracking() async {
+  // ── Connection status stream ──────────────────────────────────────────────
+  final StreamController<WsConnectionStatus> _statusController =
+      StreamController<WsConnectionStatus>.broadcast();
+
+  /// Broadcast stream of WebSocket connection state changes.
+  Stream<WsConnectionStatus> get connectionStatus => _statusController.stream;
+
+  void _emitStatus(WsConnectionStatus status) {
+    if (!_statusController.isClosed) _statusController.add(status);
+  }
+
+  /// Start GPS tracking for a given [tripId] (order display ID).
+  /// If [tripId] is provided it is cached immediately so the first ping
+  /// can include the correct order context without waiting for a Supabase
+  /// lookup — reducing initial latency.
+  Future<void> startTracking({String? tripId}) async {
     _assertNotLocalhost();
     if (_isTracking) return;
 
@@ -73,7 +89,14 @@ class LocationService {
       throw Exception('Location permissions are permanently denied. Please enable in app settings.');
     }
 
+    // Pre-seed active order display ID if the caller already knows it.
+    if (tripId != null && tripId.isNotEmpty) {
+      _activeOrderDisplayId = tripId;
+      debugPrint('[LocationService] Pre-seeded active order display ID: $tripId');
+    }
+
     _isTracking = true;
+    _emitStatus(WsConnectionStatus.connecting);
     debugPrint('[LocationService] Starting driver location tracking...');
     _startPositionSubscription();
   }
@@ -91,6 +114,7 @@ class LocationService {
     _activeOrderId = null;
     _activeOrderDisplayId = null;
     _closeWebSocket();
+    _emitStatus(WsConnectionStatus.disconnected);
   }
 
   void _startPositionSubscription() {
@@ -329,7 +353,7 @@ class LocationService {
       _channel = WebSocketChannel.connect(wsUri);
       _reconnectAttempts = 0;
       _lastCloseCode = null;
-      
+      _emitStatus(WsConnectionStatus.connected);
       _startHeartbeat();
 
       _socketSubscription = _channel!.stream.listen(
@@ -345,6 +369,7 @@ class LocationService {
         },
         onDone: () {
           debugPrint('[LocationService] WebSocket closed (code: $_lastCloseCode)');
+          _emitStatus(WsConnectionStatus.disconnected);
           if (_lastCloseCode == 4001 || _lastCloseCode == 4003) {
             debugPrint('[LocationService] Auth rejected (code $_lastCloseCode) — not reconnecting');
             _isTracking = false;
@@ -354,11 +379,13 @@ class LocationService {
         },
         onError: (error) {
           debugPrint('[LocationService] WebSocket error: $error');
+          _emitStatus(WsConnectionStatus.disconnected);
           _scheduleReconnect();
         },
       );
     } catch (e) {
       debugPrint('[LocationService] Error connecting to WebSocket: $e');
+      _emitStatus(WsConnectionStatus.disconnected);
       _scheduleReconnect();
     }
   }
@@ -376,6 +403,7 @@ class LocationService {
 
     if (!_isTracking) return;
 
+    _emitStatus(WsConnectionStatus.reconnecting);
     final delay = Duration(seconds: _reconnectAttempts == 0 ? 2 : 2 * _reconnectAttempts);
     final capped = delay > const Duration(seconds: 30) ? const Duration(seconds: 30) : delay;
     _reconnectAttempts++;
@@ -406,4 +434,19 @@ class LocationService {
     _channel?.sink.close();
     _channel = null;
   }
+
+  /// Call once when the app is permanently shutting down to close the status
+  /// stream and prevent resource leaks.
+  void dispose() {
+    stopTracking();
+    _statusController.close();
+  }
+}
+
+/// WebSocket connection state emitted by [LocationService.connectionStatus].
+enum WsConnectionStatus {
+  connecting,
+  connected,
+  reconnecting,
+  disconnected,
 }

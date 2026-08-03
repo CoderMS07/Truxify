@@ -59,6 +59,9 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   bool _isRouteLoading = false;
   static const Duration _routeRefreshInterval = Duration(seconds: 30);
 
+  // ── WebSocket connection state ────────────────────────────────────
+  bool _wsConnected = false;
+
   @override
   void initState() {
     super.initState();
@@ -135,6 +138,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
       urlFactory: buildUrl,
       onConnect: () {
         debugPrint('WebSocket connected, subscribing to order updates...');
+        if (mounted) setState(() => _wsConnected = true);
         _trackingWebSocket?.send({
           'event': 'subscribe_tracking',
           'data': {
@@ -161,10 +165,21 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
               _updateTruckPosition(LatLng(lat, lng));
             }
           }
+        } else if (payload['event'] == 'milestone_update') {
+          // Refresh timeline whenever the driver hits a new milestone.
+          debugPrint('[LiveTracking] Milestone update received: ${payload['data']}');
+          _loadTimeline();
+        } else if (payload['event'] == null && payload['error'] != null) {
+          debugPrint('[LiveTracking] WS server error: ${payload['error']}');
+          if (mounted) setState(() => _wsConnected = false);
         }
       } catch (e) {
         debugPrint('Error parsing tracking WebSocket message: $e');
       }
+    }, onError: (_) {
+      if (mounted) setState(() => _wsConnected = false);
+    }, onDone: () {
+      if (mounted) setState(() => _wsConnected = false);
     });
 
     _trackingWebSocket!.connect();
@@ -989,7 +1004,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
                                             fontWeight: FontWeight.w700,
                                           ),
                                         ),
-                                      ] else ...[
+                                      ] else if (_wsConnected) ...[
                                         const LiveDot(
                                           color: TruxifyColors.accent,
                                           size: 8,
@@ -1000,6 +1015,24 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
                                           style: TextStyle(
                                             fontSize: 12,
                                             color: TruxifyColors.accent,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ] else ...[
+                                        const SizedBox(
+                                          width: 8,
+                                          height: 8,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 1.5,
+                                            color: Colors.orangeAccent,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          'Connecting...',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.orangeAccent,
                                             fontWeight: FontWeight.w700,
                                           ),
                                         ),
