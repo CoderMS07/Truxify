@@ -102,12 +102,6 @@ import zkpRoutes from './routes/zkp.routes.js'
 
 
 // ============================================================================
-// 🆕 MULTI-CLOUD DISASTER RECOVERY
-// ============================================================================
-import drRoutes from '../../dr/routes.js'
-import multiCloudService from '../../dr/multi-cloud.service.js'
-
-// ============================================================================
 // 🆕 OPENTELEMETRY DISTRIBUTED TRACING
 // ============================================================================
 import tracing from './tracing/tracing.js'
@@ -579,29 +573,6 @@ app.get('/api/zkp/health', (req, res) => {
 })
 
 
-
-// ============================================================================
-// 🆕 MULTI-CLOUD DISASTER RECOVERY ROUTES
-// ============================================================================
-app.use('/api', drRoutes)
-
-// 🆕 DR Health Check Endpoint
-app.get('/api/dr/health', async (req, res) => {
-  try {
-    const health = await multiCloudService.checkHealth();
-    res.json({
-      status: 'healthy',
-      data: health,
-      activeCloud: multiCloudService.activeCloud,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'unhealthy',
-      error: error.message
-    });
-  }
-})
 
 // ============================================================================
 // 🆕 OPENTELEMETRY HEALTH CHECK
