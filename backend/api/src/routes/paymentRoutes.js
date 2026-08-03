@@ -312,11 +312,12 @@ router.post(
       return res.status(500).json({ error: 'Internal Server Error' });
 
     } finally {
-      // Release using the owner token so we never delete another process's lock.
-      if (lockValue) {
-        await releaseLock(lockKey, lockValue).catch(releaseErr =>
-          logger.warn('[payments] releaseLock failed in finally:', releaseErr.message)
-        );
+      if (lockAcquired) {
+        try {
+          await releaseLock(lockKey);
+        } catch (releaseErr) {
+          logger.error({ err: releaseErr, lockKey }, 'Failed to release payment lock');
+        }
       }
     }
   }
