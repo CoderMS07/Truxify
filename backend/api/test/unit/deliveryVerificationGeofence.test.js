@@ -37,6 +37,7 @@ vi.mock("../../src/services/notificationService.js", () => ({
   storeDeliveryOtp: vi.fn(),
   getActiveDeliveryOtp: vi.fn(),
   verifyDeliveryOtp: vi.fn(),
+  verifyDeliveryOtpHash: vi.fn(),
   sendPushNotification: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -125,6 +126,7 @@ function makeService({ repoOverrides = {}, escrowReleaseFn } = {}) {
   const notificationService = {
     getActiveDeliveryOtp: vi.fn().mockResolvedValue(makeOtpRecord()),
     verifyDeliveryOtp: vi.fn().mockResolvedValue(true),
+    verifyDeliveryOtpHash: vi.fn().mockReturnValue(true),
   };
   const service = new DeliveryVerificationService(repo, {
     notificationService,

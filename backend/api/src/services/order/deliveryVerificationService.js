@@ -8,6 +8,7 @@ import {
   storeDeliveryOtp,
   getActiveDeliveryOtp,
   verifyDeliveryOtp,
+  verifyDeliveryOtpHash,
   sendPushNotification,
 } from "../notificationService.js";
 import {
@@ -52,6 +53,7 @@ export class DeliveryVerificationService {
       storeDeliveryOtp,
       getActiveDeliveryOtp,
       verifyDeliveryOtp,
+      verifyDeliveryOtpHash,
     };
     this.escrowReleaseFn = deps.escrowReleaseFn || defaultEscrowRelease;
     this.trackingTokenService = deps.trackingTokenService || null;
@@ -106,20 +108,8 @@ export class DeliveryVerificationService {
           });
         }
 
-        const submittedHash = crypto
-          .createHash("sha256")
-          .update(String(otp))
-          .digest("hex");
-        let isMatch = false;
-        if (
-          otpRecord.otp_hash &&
-          otpRecord.otp_hash.length === submittedHash.length
-        ) {
-          isMatch = crypto.timingSafeEqual(
-            Buffer.from(otpRecord.otp_hash, "hex"),
-            Buffer.from(submittedHash, "hex"),
-          );
-        }
+        const isMatch =
+          this.notificationService.verifyDeliveryOtpHash(otp, otpRecord);
 
         if (!isMatch) {
           const count = await recordOtpFailure(orderId);
