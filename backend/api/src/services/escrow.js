@@ -34,6 +34,7 @@ import { measureExecution } from '../core/performanceMetrics.js'
 
 const ESCROW_ABI = [
   'function createBooking(uint256 bookingId, address payable driver) external payable',
+  'function lockPayment(uint256 bookingId, address payable customer, address payable driver) external payable',
   'function releasePayment(uint256 bookingId) external',
   'function cancelBooking(uint256 bookingId) external',
   'function bookings(uint256 bookingId) external view returns (address customer, address driver, uint256 amount, uint8 status, bool paid, uint256 createdAt)'
@@ -404,6 +405,35 @@ export async function confirmEscrowRefund (txHash) {
     throw new Error('Escrow refund transaction reverted or was not found.')
   }
   return receipt
+  });
+}
+
+export async function escrowLockPayment(orderDisplayId, customerWalletAddress, driverWalletAddress, amountWei) {
+  return measureExecution('EscrowService.escrowLockPayment', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId);
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping lockPayment.');
+      return { txHash: null, bookingId };
+    }
+
+    try {
+      const tx = await escrowContract.lockPayment(
+        bookingId,
+        customerWalletAddress,
+        driverWalletAddress,
+        {
+          value: amountWei
+        }
+      );
+      logger.info(`[escrow] lockPayment tx submitted: ${tx.hash} for booking ${orderDisplayId}`);
+      const receipt = await tx.wait(1);
+      logger.info(`[escrow] lockPayment confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`);
+      return { txHash: receipt.hash, bookingId };
+    } catch (err) {
+      logger.error(`[escrow] lockPayment failed for booking ${orderDisplayId}: ${err.message}`);
+      return { txHash: null, bookingId, error: err.message };
+    }
   });
 }
 

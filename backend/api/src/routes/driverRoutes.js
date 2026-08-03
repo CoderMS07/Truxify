@@ -565,12 +565,29 @@ router.get('/trips', authenticate, userLimiter, requirePolicy('driver:view-trips
     const { data: trips, error, count } = await query.order('trip_date', { ascending: false }).range(from, to);
 
     if (error) return res.status(500).json({ error: 'Failed to fetch trips.', details: error.message });
+
+    // Enrich trips with escrow_status from orders
+    const tripDisplayIds = (trips || []).map(t => t.trip_display_id).filter(Boolean);
+    let escrowMap = {};
+    if (tripDisplayIds.length > 0) {
+      const { data: orders } = await supabase
+        .from('orders')
+        .select('order_display_id, escrow_status')
+        .in('order_display_id', tripDisplayIds);
+      escrowMap = Object.fromEntries((orders || []).map(o => [o.order_display_id, o.escrow_status]));
+    }
+
+    const enrichedTrips = (trips || []).map(t => ({
+      ...t,
+      escrow_status: escrowMap[t.trip_display_id] || 'pending'
+    }));
+
     res.json({
       page,
       limit,
       total: count || 0,
       totalPages: Math.ceil((count || 0) / limit),
-      trips: trips || []
+      trips: enrichedTrips
     });
   } catch (err) {
     logger.error('Driver trips fetch error:', err);

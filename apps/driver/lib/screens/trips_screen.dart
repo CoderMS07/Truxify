@@ -311,6 +311,7 @@ class _TripsScreenState extends State<TripsScreen> {
         netEarnings: '₹${((row['net_earnings'] ?? 0) / 100).toStringAsFixed(0)}',
       ),
       tripItems: tripItems,
+      escrowStatus: row['escrow_status']?.toString(),
     );
   }).toList();
 }

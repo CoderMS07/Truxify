@@ -291,6 +291,7 @@ class Trip {
     this.endTime = '',
     this.paymentBreakdown,
     this.tripItems = const [],
+    this.escrowStatus,
   });
 
   final String route;
@@ -306,6 +307,7 @@ class Trip {
   final String endTime;
   final PaymentBreakdown? paymentBreakdown;
   final List<TripItem> tripItems;
+  final String? escrowStatus;
 }
 
 class TripItem {
