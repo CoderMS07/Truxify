@@ -4,6 +4,7 @@ import {
   validateDocumentBuffer,
   DocumentValidationError,
 } from '../lib/documentValidation.js';
+import { scanDocument, MalwareScanError } from '../lib/malwareScanner.js';
 
 const ALLOWED_DOCUMENT_TYPES = Object.freeze([
   'aadhaar_card',
@@ -46,6 +47,26 @@ export async function uploadDriverDocument(req, res) {
         return res.status(422).json({ error: validationError.message });
       }
       throw validationError;
+    }
+
+    try {
+      const scanResult = await scanDocument(req.file.buffer, req.file.originalname);
+      if (!scanResult.clean) {
+        return res.status(422).json({
+          error: 'Uploaded document failed malware scanning.',
+        });
+      }
+    } catch (scanError) {
+      if (scanError instanceof MalwareScanError) {
+        logger.warn(
+          { driverId, documentType, reason: scanError.message },
+          '[DocumentController] Upload rejected by malware scanner',
+        );
+        return res.status(422).json({
+          error: scanError.message,
+        });
+      }
+      throw scanError;
     }
 
     const extension = verifiedMimeType === 'application/pdf' ? 'pdf'
