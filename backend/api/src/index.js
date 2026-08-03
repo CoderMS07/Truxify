@@ -3,6 +3,14 @@ import { corsMiddleware } from './middleware/cors.js'
 import helmet from 'helmet' // 🔒 ADDED HELMET IMPORT FOR ISSUES #361 & #944
 import http from 'http'
 import dotenv from 'dotenv'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+
+dotenv.config({ path: path.resolve(__dirname, '../.env') })
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') })
 import hppProtection from './middleware/hppProtection.js';
 
 import { globalLimiter, authLimiter, healthLimiter } from './middleware/rateLimiter.js'
