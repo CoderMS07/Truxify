@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { supabase, redisClient, mongoDb } from '../../config/db.js';
+import { supabase, redisClient, mongoDb, supabaseAdmin } from '../../config/db.js';
 import { DomainError } from './domainError.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 import { haversineKm } from '../../lib/pricing.js';
@@ -22,19 +22,6 @@ import { escrowRelease as defaultEscrowRelease } from '../escrow.js';
 import logger from '../../middleware/logger.js';
 import { OrderTimelineService } from './orderTimelineService.js';
 import upiPaymentService from '../payment/UpiPaymentService.js';
-
-/** Haversine great-circle distance in metres between two lat/lng points. */
-function _haversineM(lat1, lng1, lat2, lng2) {
-  const R = 6_371_000;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
 
 /** Haversine great-circle distance in metres between two lat/lng points. */
 function _haversineM(lat1, lng1, lat2, lng2) {
@@ -300,11 +287,13 @@ export class DeliveryVerificationService {
       updated_at: new Date().toISOString(),
     }).catch(err => logger.warn('[geofence] Failed to persist geofence flag:', err.message));
 
-    // Generate a one-time bypass OTP and immediately verify delivery
+    // Generate a one-time bypass OTP and immediately verify delivery.
+    // Use supabaseAdmin for the internal call since there is no per-request
+    // user client available in the geofence auto-confirm path.
     const bypassOtp = crypto.randomInt(100000, 1000000).toString();
     await this.notificationService.storeDeliveryOtp(orderId, bypassOtp, 5); // 5-minute TTL
 
-    await this.verifyDelivery({ orderId, driverId, otp: bypassOtp });
+    await this.verifyDelivery({ orderId, driverId, otp: bypassOtp }, supabaseAdmin);
 
     return {
       autoConfirmed: true,
@@ -314,7 +303,19 @@ export class DeliveryVerificationService {
     });
   }
 
-  async verifyDelivery({ orderId, driverId, otp }) {
+  /**
+   * Verifies delivery by validating the OTP, releasing the on-chain escrow,
+   * and executing the complete_trip_tx Postgres RPC.
+   *
+   * @param {object} params
+   * @param {string} params.orderId   - Order UUID
+   * @param {string} params.driverId  - Driver's Supabase user ID
+   * @param {string} params.otp       - One-time password submitted by the driver
+   * @param {object} [userClient]     - Per-request Supabase client (carries RLS context).
+   *                                    Falls back to supabaseAdmin when not provided
+   *                                    (e.g. geofence auto-confirm path).
+   */
+  async verifyDelivery({ orderId, driverId, otp }, userClient = supabaseAdmin) {
     return measureExecution('DeliveryVerificationService.verifyDelivery', async () => {
     const { order, otpRecord } = await this.validateDeliveryOtp({ orderId, driverId, otp });
 
@@ -355,7 +356,7 @@ export class DeliveryVerificationService {
             .eq('method_type', 'upi')
             .maybeSingle();
 
-          const driverUpiId = driverPaymentMethod?.display_label || 
+          const driverUpiId = driverPaymentMethod?.display_label ||
             `${(driverProfile?.full_name || 'driver').toLowerCase().replace(/[^a-z0-9]/g, '')}@okaxis`;
 
           const payoutResult = await upiPaymentService.processDriverPayout(driverUpiId, order.total_amount);
