@@ -194,15 +194,25 @@ export async function processDocumentExpiryBatch() {
     if (leaseExtender) {
       clearInterval(leaseExtender);
     }
+
     if (lockAcquired && redisClient) {
-      await redisClient.eval(RELEASE_LOCK_SCRIPT, 1, LOCK_KEY, lockToken).catch(() => {});
+      await redisClient
+        .eval(RELEASE_LOCK_SCRIPT, 1, LOCK_KEY, lockToken)
+        .catch((err) => {
+          logger.error(
+            { err, lockKey: LOCK_KEY },
+            '[document-expiry] Failed to release Redis lock.'
+          );
+        });
     }
+
     if (!lockAcquired) {
       workerRunning = false;
     }
   }
-
-  logger.info(`[document-expiry] Batch complete. Total notifications sent: ${totalNotificationsSent}`);
+  logger.info(`[document-expiry] Batch complete. Total notifications sent: ${totalNotificationsSent}`
+    
+  );
 }
 
 export function startDocumentExpiryWorker() {

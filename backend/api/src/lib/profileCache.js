@@ -16,7 +16,12 @@ async function _publishProfileInvalidation(eventOpts) {
     }
   }
   if (_publishFn) {
-    _publishFn('profile', eventOpts).catch(() => {});
+    _publishFn('profile', eventOpts).catch((err) => {
+  logger.error(
+    { err, eventOpts },
+    '[profileCache] Failed to publish profile cache invalidation.'
+  );
+});
   }
 }
 

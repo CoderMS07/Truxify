@@ -196,14 +196,21 @@ async function readLoadOfferCache(cacheKey) {
     return Array.isArray(parsed) ? parsed : null;
   } catch (err) {
     logger.warn(`[orderRoutes] Ignoring malformed load-offer cache entry for ${cacheKey}: ${err.message}`);
-    await redisClient.del(cacheKey).catch(() => {});
+    await redisClient.del(cacheKey).catch((err) => {logger.error({ err, cacheKey },'[profileCache] Failed to delete cache entry.');});
     return null;
   }
 }
 
 async function writeLoadOfferCache(cacheKey, offers) {
   if (!redisClient) return;
-  await redisClient.set(cacheKey, JSON.stringify(offers), 'EX', LOAD_OFFER_CACHE_TTL_SECONDS).catch(() => {});
+  await redisClient
+  .set(cacheKey, JSON.stringify(offers), 'EX', LOAD_OFFER_CACHE_TTL_SECONDS)
+  .catch((err) => {
+    logger.error(
+      { err, cacheKey },
+      '[profileCache] Failed to write cache entry.'
+    );
+  });
 }
 
 const verifyDeliveryLimiter = rateLimit({
