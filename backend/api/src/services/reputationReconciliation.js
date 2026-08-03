@@ -102,7 +102,12 @@ export async function reconcileFailedReputationUpdates() {
       clearInterval(leaseExtender);
     }
     if (lockAcquired && redisClient) {
-      await redisClient.del(LOCK_KEY).catch(() => {});
+      try {
+        await redisClient.del(LOCK_KEY);
+        logger.debug('[reputation-reconciliation] Lock released successfully');
+      } catch (err) {
+        logger.error({ err, lockKey: LOCK_KEY }, 'Failed to release reputation reconciliation lock');
+      }
     }
     // Always reset running flag so fallback/single-instance logic doesn't permanently deadlock
     reconciliationRunning = false;
