@@ -192,7 +192,7 @@ contract ZKPrivacy is Ownable, ReentrancyGuard, Pausable {
         require(amount > 0, "Amount must be > 0");
 
         // Verify zk-STARK proof
-        bool isValid = this.verifySTARK(proof, publicInputs);
+        bool isValid = verifySTARK(proof, publicInputs);
         require(isValid, "Invalid STARK proof");
 
         // Process transaction

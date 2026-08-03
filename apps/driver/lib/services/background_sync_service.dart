@@ -5,6 +5,7 @@ import 'package:workmanager/workmanager.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'pod_storage_service.dart';
+import 'secure_storage.dart';
 
 const syncTaskName = 'syncPendingPods';
 
@@ -49,11 +50,13 @@ class BackgroundSyncService {
         token = Supabase.instance.client.auth.currentSession?.accessToken;
       }
     } catch (_) {
-      // Firebase/Supabase not initialized in background isolate.
-      // Token should be persisted to SharedPreferences for background sync.
+      // Firebase/Supabase are not initialized in the background isolate.
+      // Fall back to the auth token persisted by the main isolate in
+      // OS-backed secure storage (issue #5739) — never SharedPreferences.
+      token = await AuthTokenStore.read();
     }
 
-    if (token == null) return;
+    if (token == null || token.isEmpty) return;
 
     const envUrl = String.fromEnvironment('TRUXIFY_API_BASE_URL');
     final apiBaseUri = Uri.tryParse(envUrl);

@@ -140,8 +140,9 @@ export async function reconcilePendingEscrowRefunds(orderRepository) {
           refund_tx_hash: receipt.hash ?? refundTxHash,
           escrow_refunded_at: refundedAt,
           escrow_refund_error: null,
+          reconciled_by: null,
           updated_at: refundedAt,
-        }, [{ op: 'in', column: 'escrow_status', value: ['refund_pending', 'refund_failed'] }], 'id');
+        }, [{ op: 'in', column: 'escrow_status', value: ['refund_pending', 'refund_failed'] }, { op: 'eq', column: 'reconciled_by', value: instanceId }], 'id');
 
         if (updateError) {
           logger.error(
@@ -154,6 +155,7 @@ export async function reconcilePendingEscrowRefunds(orderRepository) {
         await orderRepository.updateOrder(order.id, {
           escrow_refund_retry_count: newRetryCount,
           escrow_refund_error: err.message,
+          reconciled_by: null,
           updated_at: new Date().toISOString(),
         });
         logger.warn(

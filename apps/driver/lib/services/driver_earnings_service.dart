@@ -184,15 +184,19 @@ class DriverEarningsService {
 
     final day = date.toIso8601String().split('T').first;
 
-    final response = await _client
-        .from('trips')
-        .select()
-        .eq('driver_id', driverId!)
-        .eq('status', 'completed')
-        .eq('trip_date', day)
-        .order('created_at', ascending: false);
+    try {
+      final response = await _client
+          .from('trips')
+          .select()
+          .eq('driver_id', driverId!)
+          .eq('status', 'completed')
+          .eq('trip_date', day)
+          .order('created_at', ascending: false);
 
-    return _mapResponseRows(response, 'completed trips');
+      return _mapResponseRows(response, 'completed trips');
+    } catch (e) {
+      throw Exception('Failed to fetch completed trips: $e');
+    }
   }
 
   /// Fetches today's earnings summary (amount, hours driven, trip count).
@@ -341,6 +345,27 @@ class DriverEarningsService {
       rethrow;
     } catch (e) {
       throw Exception('Network error: Failed to fetch earnings statement.');
+    }
+  }
+
+  Future<Map<String, dynamic>> fetchEarningsAnalytics({
+    required String period,
+  }) async {
+    if (driverId == null) return {};
+
+    final path = '/api/driver/$driverId/earnings?period=$period';
+
+    try {
+      final decoded = await _apiClient.get(path);
+      if (decoded is! Map) {
+        throw StateError('Unexpected earnings analytics response format');
+      }
+      return Map<String, dynamic>.from(decoded);
+    } catch (e) {
+      if (e is ApiException) {
+        throw Exception(e.message.isNotEmpty ? e.message : 'Failed to load earnings analytics.');
+      }
+      throw Exception('Network error: Failed to fetch earnings analytics.');
     }
   }
 

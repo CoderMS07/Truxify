@@ -91,7 +91,13 @@ class TruxifyScope extends InheritedNotifier<TruxifyController> {
 
   static TruxifyController of(BuildContext context) {
     final scope = context.dependOnInheritedWidgetOfExactType<TruxifyScope>();
-    assert(scope != null, 'TruxifyScope not found in widget tree.');
-    return scope!.notifier!;
+    if (scope == null) {
+      throw FlutterError('TruxifyScope not found in widget tree.');
+    }
+    final controller = scope.notifier;
+    if (controller == null) {
+      throw FlutterError('TruxifyScope.notifier is null.');
+    }
+    return controller;
   }
 }
