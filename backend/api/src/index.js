@@ -640,6 +640,8 @@ server.listen(PORT, () => {
 
 
   startEscrowRefundReconciliation(orderRepository)
+  startEscrowReleaseReconciliation()
+  startEscrowFundingReconciliation(orderRepository)
   startReputationReconciliation(orderRepository)
   startDlqWorker()
   startStaleOrderWorker()
@@ -648,6 +650,8 @@ server.listen(PORT, () => {
   // Register worker states for health aggregation
   globalThis.__truxify_workers = {
     escrowRefundReconciliation: true,
+    escrowReleaseReconciliation: true,
+    escrowFundingReconciliation: true,
     reputationReconciliation: true,
     dlqWorker: true,
     staleOrderWorker: true,
@@ -677,6 +681,7 @@ async function shutdown (signal) {
   // Stop background workers
   stopEscrowReleaseReconciliation()
   stopEscrowRefundReconciliation()
+  stopEscrowFundingReconciliation()
   stopReputationReconciliation()
   stopDlqWorker()
   stopDocumentExpiryWorker()
