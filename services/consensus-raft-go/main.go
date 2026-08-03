@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"log"
 	"math/rand"
@@ -35,6 +36,56 @@ type RequestVoteRequest struct {
 	CandidateID  string `json:"candidate_id"`
 	LastLogIndex uint64 `json:"last_log_index"`
 	LastLogTerm  uint64 `json:"last_log_term"`
+}
+
+// allowedCommands is the allow-list of order lifecycle commands this service
+// will commit. Configure via RAFT_ALLOWED_COMMANDS (comma-separated).
+var allowedCommands = map[string]bool{
+	"CREATED":    true,
+	"DISPATCHED": true,
+	"IN_TRANSIT": true,
+	"DELIVERED":  true,
+	"COMPLETED":  true,
+	"CANCELLED":  true,
+}
+
+var (
+	raftAPIKey []byte
+	bypassAuth bool
+)
+
+// requireAuth rejects requests that do not carry the service-to-service API
+// key (X-API-Key header) configured via RAFT_API_KEY.
+func requireAuth(w http.ResponseWriter, r *http.Request) bool {
+	if bypassAuth {
+		return true
+	}
+
+	if len(raftAPIKey) == 0 {
+		http.Error(w, "authentication is not configured", http.StatusServiceUnavailable)
+		return false
+	}
+
+	provided := r.Header.Get("X-API-Key")
+	if subtle.ConstantTimeCompare([]byte(provided), raftAPIKey) != 1 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+
+	return true
+}
+
+// isValidOrderID reports whether an order id is well-formed.
+func isValidOrderID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != '-' && c != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // RequestVoteResponse is the Raft RequestVote RPC result.
@@ -215,7 +266,13 @@ func (rn *RaftNode) callVote(peerURL string, req RequestVoteRequest) (RequestVot
 	if err != nil {
 		return resp, err
 	}
-	res, err := rn.httpClient.Post(peerURL+"/api/v1/raft/vote", "application/json", bytes.NewReader(body))
+	reqHTTP, err := http.NewRequest(http.MethodPost, peerURL+"/api/v1/raft/vote", bytes.NewReader(body))
+	if err != nil {
+		return resp, err
+	}
+	reqHTTP.Header.Set("Content-Type", "application/json")
+	reqHTTP.Header.Set("X-API-Key", string(raftAPIKey))
+	res, err := rn.httpClient.Do(reqHTTP)
 	if err != nil {
 		return resp, err
 	}
@@ -231,7 +288,13 @@ func (rn *RaftNode) callAppend(peerURL string, req AppendEntriesRequest) (Append
 	if err != nil {
 		return resp, err
 	}
-	res, err := rn.httpClient.Post(peerURL+"/api/v1/raft/append", "application/json", bytes.NewReader(body))
+	reqHTTP, err := http.NewRequest(http.MethodPost, peerURL+"/api/v1/raft/append", bytes.NewReader(body))
+	if err != nil {
+		return resp, err
+	}
+	reqHTTP.Header.Set("Content-Type", "application/json")
+	reqHTTP.Header.Set("X-API-Key", string(raftAPIKey))
+	res, err := rn.httpClient.Do(reqHTTP)
 	if err != nil {
 		return resp, err
 	}
@@ -347,6 +410,10 @@ func (rn *RaftNode) run() {
 
 // HandleStatus reports node state and cluster health.
 func (rn *RaftNode) HandleStatus(w http.ResponseWriter, r *http.Request) {
+	if !requireAuth(w, r) {
+		return
+	}
+
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 
@@ -368,6 +435,10 @@ func (rn *RaftNode) HandleStatus(w http.ResponseWriter, r *http.Request) {
 
 // HandleVote implements the Raft RequestVote RPC.
 func (rn *RaftNode) HandleVote(w http.ResponseWriter, r *http.Request) {
+	if !requireAuth(w, r) {
+		return
+	}
+
 	var req RequestVoteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid payload", http.StatusBadRequest)
@@ -408,6 +479,10 @@ func (rn *RaftNode) isLogUpToDate(lastLogIndex, lastLogTerm uint64) bool {
 
 // HandleAppend implements the Raft AppendEntries RPC.
 func (rn *RaftNode) HandleAppend(w http.ResponseWriter, r *http.Request) {
+	if !requireAuth(w, r) {
+		return
+	}
+
 	var req AppendEntriesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid payload", http.StatusBadRequest)
@@ -482,6 +557,10 @@ func (rn *RaftNode) HandleCommitOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !requireAuth(w, r) {
+		return
+	}
+
 	var req struct {
 		OrderID string `json:"order_id"`
 		Command string `json:"command"`
@@ -489,6 +568,16 @@ func (rn *RaftNode) HandleCommitOrder(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	if !isValidOrderID(req.OrderID) {
+		http.Error(w, "Invalid order_id", http.StatusBadRequest)
+		return
+	}
+
+	if !allowedCommands[req.Command] {
+		http.Error(w, "Invalid command", http.StatusBadRequest)
 		return
 	}
 
@@ -567,6 +656,21 @@ func main() {
 	nodeID := os.Getenv("NODE_ID")
 	if nodeID == "" {
 		nodeID = "raft-node-north-1"
+	}
+
+	raftAPIKey = []byte(os.Getenv("RAFT_API_KEY"))
+	bypassAuth = os.Getenv("BYPASS_AUTH") == "true" && os.Getenv("NODE_ENV") != "production"
+	if v := os.Getenv("RAFT_ALLOWED_COMMANDS"); v != "" {
+		cmds := strings.Split(v, ",")
+		allowed := make(map[string]bool, len(cmds))
+		for _, c := range cmds {
+			if c = strings.TrimSpace(c); c != "" {
+				allowed[c] = true
+			}
+		}
+		if len(allowed) > 0 {
+			allowedCommands = allowed
+		}
 	}
 
 	peers := []string{"raft-node-south-1", "raft-node-east-1", "raft-node-west-1"}
