@@ -94,7 +94,8 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
         _assetCounter++;
         uint256 assetId = _assetCounter;
 
-        uint256 tokenPrice = totalValue / totalTokens;
+        uint256 tokenPrice = (totalValue * 1e18) / totalTokens;
+        require(tokenPrice > 0, "Price too small");
 
         assets[assetId] = Asset({
             id: assetId,
@@ -153,7 +154,7 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
         require(amount > 0, "Amount must be > 0");
         require(asset.availableTokens >= amount, "Insufficient tokens");
 
-        uint256 totalCost = amount * asset.tokenPrice;
+        uint256 totalCost = (amount * asset.tokenPrice + 1e18 - 1) / 1e18;
         require(msg.value >= totalCost, "Insufficient payment");
 
         // Update asset
