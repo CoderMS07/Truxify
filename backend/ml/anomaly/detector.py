@@ -247,7 +247,7 @@ class AnomalyDetector:
         """Get recent alerts"""
         alerts = []
         cursor = 0
-        pattern = 'anomaly:alert:*'
+        pattern = 'anomaly:latest:*'
 
         while True:
             cursor, keys = self.redis.scan(cursor=cursor, match=pattern, count=100)

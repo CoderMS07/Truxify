@@ -1,11 +1,10 @@
 import asyncio
-import hmac
 import logging
 import os
 import time
 import numpy as np
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Header, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -16,7 +15,11 @@ from app.models.demand_forecast import (
     train_demand_forecast_model,
     FEATURE_NAMES,
 )
-from app.models.price_prediction import predict_price, train_price_model
+from app.models.price_prediction import (
+    predict_price,
+    train_price_model,
+    PriceModelDataUnavailableError,
+)
 from app.models.bilateral_matcher import match_bilateral
 from app.models.driver_profit import driver_profit_predictor
 from app.models.bin_packing import optimise_packing
@@ -27,12 +30,7 @@ from app.models.mid_trip_reoptimiser import find_mid_trip_loads
 from app.models.base import model_exists
 from app.models.demand_forecast import MODEL_NAME as DEMAND_MODEL_NAME
 from app.models.price_prediction import MODEL_NAME as PRICE_MODEL_NAME
-from routes import register_ml_routers
-
-# ============================================================================
-# 🆕 REAL-TIME TRAFFIC ETA IMPORTS
-# ============================================================================
-from services.traffic_pipeline import TrafficPipeline
+from routes import register_ml_routers, verify_api_key
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,29 +41,13 @@ logger = logging.getLogger(__name__)
 # Track loaded models for health reporting
 loaded_models: set[str] = set()
 
-# ============================================================================
-# 🆕 TRAFFIC PIPELINE INITIALIZATION
-# ============================================================================
-db_url = os.getenv('DATABASE_URL', 'sqlite:///./traffic.db')
-redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
-traffic_pipeline = TrafficPipeline(db_url, redis_url)
-
-
-async def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
-    ml_api_key = os.environ.get("ML_API_KEY")
-    if not ml_api_key:
-        logger.warning("ML_API_KEY not set - ML engine is unavailable (503)")
-        raise HTTPException(status_code=503, detail="ML engine not configured: missing ML_API_KEY")
-    if not x_api_key or not hmac.compare_digest(x_api_key, ml_api_key):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-
 app = FastAPI(
     title="Truxify ML Engine",
     description="ML prediction service for load matching, pricing, ETA, and route optimization",
     version="1.0.0",
-    docs_url="/docs",      # Swagger UI at /docs
-    redoc_url="/redoc", 
+    # Swagger/ReDoc interactive docs are disabled in production.
+    docs_url=None if os.environ.get("ENVIRONMENT") == "production" else "/docs",
+    redoc_url=None if os.environ.get("ENVIRONMENT") == "production" else "/redoc",
 )
 
 
@@ -98,8 +80,6 @@ async def startup_event():
     loaded_models.update(persisted_models)
     if eta_predictor.model is not None:
         loaded_models.add("eta_prediction")
-    if traffic_pipeline.model is not None:
-        loaded_models.add("traffic_eta")
     logger.info("ML Engine startup complete — loaded: %s", sorted(loaded_models))
 
 
@@ -144,42 +124,6 @@ class PricePredictOutput(BaseModel):
     min_price: float
     max_price: float
     currency: str = "INR"
-
-
-# ---------------------------------------------------------------------------
-# 🆕 Schemas — Real-Time Traffic ETA Prediction
-# ---------------------------------------------------------------------------
-
-class ETAPredictInput(BaseModel):
-    route_distance: float = Field(..., gt=0)
-    time_of_day: int = Field(..., ge=0, le=23)
-    day_of_week: int = Field(..., ge=0, le=6)
-    route_type: str = Field(..., description="highway or city")
-    historical_speed: float = Field(..., gt=0)
-
-
-class ETAPredictOutput(BaseModel):
-    eta_minutes: float
-    confidence_interval: dict
-
-
-# 🆕 Enhanced ETA with Traffic
-class TrafficETARequest(BaseModel):
-    order_id: str
-    source_lat: float = Field(..., ge=-90, le=90)
-    source_lng: float = Field(..., ge=-180, le=180)
-    dest_lat: float = Field(..., ge=-90, le=90)
-    dest_lng: float = Field(..., ge=-180, le=180)
-
-
-class TrafficETAResponse(BaseModel):
-    order_id: str
-    eta_seconds: Optional[float] = None
-    eta_minutes: Optional[float] = None
-    eta_string: Optional[str] = None
-    traffic_speed: Optional[float] = None
-    congestion_level: Optional[float] = None
-    timestamp: str
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +369,6 @@ async def health():
         "trust_scorer": model_exists("trust_scorer"),
         "collaborative_filter": model_exists("collaborative_filter"),
         "eta_predictor": eta_predictor.model is not None,
-        "traffic_eta": traffic_pipeline.model is not None,
     }
     non_optional = {k: v for k, v in models.items() if k != 'eta_predictor'}
     all_ready = all(non_optional.values())
@@ -481,158 +424,20 @@ async def predict_price_endpoint(input: PricePredictInput, _auth=Depends(verify_
             fuel_price=input.fuel_price,
             cargo_type=input.cargo_type,
         )
+        if result is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Price model unavailable: no model trained on real historical data. "
+                       "Train via POST /train/price once completed trips exist.",
+            )
         return PricePredictOutput(**result)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Price prediction failed: %s", e)
         raise HTTPException(status_code=500, detail="Price prediction failed")
-
-
-# ---------------------------------------------------------------------------
-# 🆕 Real-Time Traffic ETA Prediction
-# ---------------------------------------------------------------------------
-
-@app.post("/eta/predict", response_model=TrafficETAResponse)
-async def predict_traffic_eta(request: TrafficETARequest, _auth=Depends(verify_api_key)):
-    """Predict ETA with real-time traffic data"""
-    try:
-        # Ingest traffic data
-        traffic_data = await traffic_pipeline.ingest_traffic_data(
-            f"order_{request.order_id}",
-            {'lat': request.source_lat, 'lng': request.source_lng},
-            {'lat': request.dest_lat, 'lng': request.dest_lng}
-        )
-        
-        if traffic_data:
-            # Get prediction
-            features = np.array([[
-                traffic_data.traffic_speed,
-                traffic_data.free_flow_speed,
-                traffic_data.congestion_level,
-                datetime.now().hour,
-                datetime.now().weekday()
-            ]])
-            
-            eta_seconds = traffic_pipeline.predict_eta(features)
-            
-            if eta_seconds:
-                return TrafficETAResponse(
-                    order_id=request.order_id,
-                    eta_seconds=eta_seconds,
-                    eta_minutes=eta_seconds / 60,
-                    eta_string=str(timedelta(seconds=int(eta_seconds))),
-                    traffic_speed=traffic_data.traffic_speed,
-                    congestion_level=traffic_data.congestion_level,
-                    timestamp=datetime.now().isoformat()
-                )
-        
-        raise HTTPException(status_code=500, detail="ETA prediction failed")
-        
-    except Exception as e:
-        logger.error("ETA prediction failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/eta/update/{order_id}")
-async def update_eta_realtime(order_id: str, _auth=Depends(verify_api_key)):
-    """Update ETA in real-time during trip"""
-    try:
-        # Get current location from tracking (simulated)
-        current_location = {'lat': 28.6139, 'lng': 77.2090}
-        destination = {'lat': 28.7041, 'lng': 77.1025}
-        
-        result = await traffic_pipeline.update_eta_realtime(
-            order_id,
-            current_location,
-            destination
-        )
-        
-        if result:
-            return {
-                'order_id': order_id,
-                'data': result,
-                'timestamp': datetime.now().isoformat()
-            }
-        
-        raise HTTPException(status_code=404, detail="Order not found")
-        
-    except Exception as e:
-        logger.error("ETA update failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/eta/traffic/{route_id}")
-async def get_traffic_data(route_id: str, _auth=Depends(verify_api_key)):
-    """Get real-time traffic data for a route"""
-    try:
-        traffic = await traffic_pipeline.get_real_time_traffic(route_id)
-        if traffic:
-            return {
-                'route_id': route_id,
-                'data': traffic,
-                'timestamp': datetime.now().isoformat()
-            }
-        return {
-            'route_id': route_id,
-            'data': None,
-            'message': 'No traffic data available'
-        }
-    except Exception as e:
-        logger.error("Traffic data fetch failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/eta/forecast/{route_id}")
-async def get_traffic_forecast(route_id: str, hours: int = Query(default=1, ge=1, le=24), _auth=Depends(verify_api_key)):
-    """Get traffic forecast for next N hours"""
-    try:
-        forecast = await traffic_pipeline.get_traffic_forecast(route_id, hours)
-        return {
-            'route_id': route_id,
-            'data': forecast,
-            'timestamp': datetime.now().isoformat()
-        }
-    except Exception as e:
-        logger.error("Traffic forecast failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/eta/train")
-async def train_traffic_model(_auth=Depends(verify_api_key)):
-    """Trigger model retraining"""
-    try:
-        traffic_pipeline.train_model(epochs=50)
-        return {
-            'status': 'success',
-            'message': 'Model trained successfully',
-            'timestamp': datetime.now().isoformat()
-        }
-    except Exception as e:
-        logger.error("Model training failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------------------------
-# ETA Prediction (Legacy - Keep for backward compatibility)
-# ---------------------------------------------------------------------------
-
-@app.post("/predict/eta", response_model=ETAPredictOutput)
-async def predict_eta_endpoint(input: ETAPredictInput, _auth=Depends(verify_api_key)):
-    try:
-        result = eta_predictor.predict(
-            distance=input.route_distance,
-            time_of_day=input.time_of_day,
-            day_of_week=input.day_of_week,
-            route_type=input.route_type,
-            historical_speed=input.historical_speed,
-        )
-        return ETAPredictOutput(**result)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        logger.error("ETA prediction failed: %s", e)
-        raise HTTPException(status_code=500, detail="ETA prediction failed")
 
 
 # ---------------------------------------------------------------------------
@@ -641,6 +446,11 @@ async def predict_eta_endpoint(input: ETAPredictInput, _auth=Depends(verify_api_
 
 @app.post("/match/bilateral", response_model=BilateralMatchOutput)
 async def bilateral_match_endpoint(input: BilateralMatchInput, _auth=Depends(verify_api_key)):
+    """
+    Two-Sided Bilateral Matcher endpoint.
+    Accepts a list of AvailableLoads and Drivers to find the most optimal matches.
+    Related Issue: #5552
+    """
     try:
         loads = [load.model_dump() for load in input.loads]
         drivers = [driver.model_dump() for driver in input.drivers]
@@ -824,6 +634,9 @@ async def train_price_endpoint(_auth=Depends(verify_api_key)):
             timeout=timeout,
         )
         return TrainResponse(status="success", metrics=metrics)
+    except PriceModelDataUnavailableError as e:
+        logger.warning("Price model training skipped: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
     except asyncio.TimeoutError:
         logger.error("Price model training timed out after %d seconds", timeout)
         raise HTTPException(status_code=504, detail="Training timed out")
@@ -847,3 +660,38 @@ async def list_models(_auth=Depends(verify_api_key)):
                 with open(os.path.join(MODEL_STORAGE_DIR, f)) as fh:
                     models.append(json.load(fh))
     return {"models": models}
+
+# ---------------------------------------------------------------------------
+# Predictive Fleet Maintenance
+# ---------------------------------------------------------------------------
+from app.models.predictive_maintenance import predictive_maintenance
+
+class PredictiveMaintenanceInput(BaseModel):
+    engine_temperature: float = Field(..., description="Engine temperature in Celsius")
+    tire_pressure: float = Field(..., description="Tire pressure in PSI")
+    oil_level: float = Field(..., description="Oil level percentage")
+    coolant_level: float = Field(..., description="Coolant level percentage")
+    mileage: float = Field(..., description="Total vehicle mileage")
+
+class PredictiveMaintenanceOutput(BaseModel):
+    failure_probability: float
+    is_at_risk: bool
+    anomalies_detected: List[str]
+    recommendation: str
+
+@app.post("/predict/maintenance", response_model=PredictiveMaintenanceOutput)
+async def predict_maintenance_endpoint(input: PredictiveMaintenanceInput, _auth=Depends(verify_api_key)):
+    try:
+        result = predictive_maintenance.predict(
+            engine_temperature=input.engine_temperature,
+            tire_pressure=input.tire_pressure,
+            oil_level=input.oil_level,
+            coolant_level=input.coolant_level,
+            mileage=input.mileage
+        )
+        return PredictiveMaintenanceOutput(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error("Predictive maintenance prediction failed: %s", e)
+        raise HTTPException(status_code=500, detail="Predictive maintenance prediction failed")

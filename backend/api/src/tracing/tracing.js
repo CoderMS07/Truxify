@@ -10,6 +10,7 @@ import { PinoInstrumentation } from '@opentelemetry/instrumentation-pino';
 import { MongoDBInstrumentation } from '@opentelemetry/instrumentation-mongodb';
 import { RedisInstrumentation } from '@opentelemetry/instrumentation-redis';
 import { WinstonInstrumentation } from '@opentelemetry/instrumentation-winston';
+import { trace, context } from '@opentelemetry/api';
 import logger from '../middleware/logger.js';
 
 class Tracing {
@@ -124,7 +125,7 @@ class Tracing {
     }
 
     getActiveSpan() {
-        return this.provider?.getActiveSpan();
+        return trace.getSpan(context.active());
     }
 
     shutdown() {

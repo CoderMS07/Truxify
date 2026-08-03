@@ -253,6 +253,36 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
       }
     }
 
+    // 2b. Ownership check: events may only be attached to trips (orders) the
+    // caller owns or is assigned to. Never trust a client-supplied trip_id.
+    if (req.user.role !== 'admin') {
+      const tripIds = [...new Set(events.map(event => event.trip_id).filter(Boolean))];
+
+      if (tripIds.length > 0) {
+        const { data: ownedOrders, error: ownershipError } = await supabase
+          .from('orders')
+          .select('id, driver_id, customer_id')
+          .in('id', tripIds);
+
+        if (ownershipError) {
+          logger.error('[SyncEngine] Failed to verify trip ownership:', ownershipError.message);
+          return res.status(500).json({ error: 'Internal Server Error' });
+        }
+
+        const orderById = new Map((ownedOrders || []).map(order => [order.id, order]));
+
+        for (const tripId of tripIds) {
+          const order = orderById.get(tripId);
+          const isDriver = order?.driver_id === userId;
+          const isCustomer = order?.customer_id === userId;
+          if (!order || (!isDriver && !isCustomer)) {
+            logger.warn('[SyncEngine] Rejected batch: user', userId, 'not authorised for trip', tripId);
+            return res.status(403).json({ error: 'Access Denied: You are not authorised to add events to this trip.' });
+          }
+        }
+      }
+    }
+
     const recordsToInsert = events.map(event => {
       const lat = event.payload?.lat !== undefined ? Number(event.payload.lat) : null;
       const lng = event.payload?.lng !== undefined ? Number(event.payload.lng) : null;
@@ -416,28 +446,12 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
       return res.status(500).json({ error: 'Internal Server Error' });
     }
 
-    let existingEvent = null;
-    if (!order || req.user.role !== 'admin') {
-      const { data, error: existingEventErr } = await supabase
-        .from('trip_events')
-        .select('trip_id, user_id')
-        .eq('trip_id', tripId)
-        .limit(1)
-        .maybeSingle();
-
-      if (existingEventErr) {
-        logger.error('[TripRoutes] Failed to check existing trip events:', existingEventErr.message);
-        return res.status(500).json({ error: 'Internal Server Error' });
-      }
-      existingEvent = data;
-    }
-
-    if (!order && !existingEvent) {
+    if (!order) {
       return res.status(404).json({ error: 'Trip not found.' });
     }
 
     if (req.user.role !== 'admin') {
-      const isDriver = order?.driver_id === req.user.id || existingEvent?.user_id === req.user.id;
+      const isDriver = order?.driver_id === req.user.id;
       const isCustomer = order?.customer_id === req.user.id;
       if (!isDriver && !isCustomer) {
         return res.status(403).json({ error: 'Access Denied: You are not authorised to view events for this trip.' });
@@ -453,6 +467,11 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
       eventsQuery = eventsQuery.eq('event_type', type);
     }
 
+    if (min_lat !== undefined) eventsQuery = eventsQuery.gte('latitude', Number(min_lat));
+    if (max_lat !== undefined) eventsQuery = eventsQuery.lte('latitude', Number(max_lat));
+    if (min_lng !== undefined) eventsQuery = eventsQuery.gte('longitude', Number(min_lng));
+    if (max_lng !== undefined) eventsQuery = eventsQuery.lte('longitude', Number(max_lng));
+
     const { data: events, error: eventsErr, count } = await eventsQuery
       .order('event_timestamp', { ascending: isAscending })
       .range(offset, offset + limit - 1);
@@ -466,24 +485,9 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
       });
     }
 
-    let filteredEvents = events || [];
-
-    if (min_lat !== undefined || max_lat !== undefined || min_lng !== undefined || max_lng !== undefined) {
-      filteredEvents = filteredEvents.filter(e => {
-        if (e.latitude === null || e.longitude === null || e.latitude === undefined || e.longitude === undefined) return false;
-        const lat = Number(e.latitude);
-        const lng = Number(e.longitude);
-        if (min_lat !== undefined && lat < Number(min_lat)) return false;
-        if (max_lat !== undefined && lat > Number(max_lat)) return false;
-        if (min_lng !== undefined && lng < Number(min_lng)) return false;
-        if (max_lng !== undefined && lng > Number(max_lng)) return false;
-        return true;
-      });
-    }
-
     return res.json({
       trip_id: tripId,
-      events: filteredEvents,
+      events: events || [],
       pagination: {
         page,
         limit,

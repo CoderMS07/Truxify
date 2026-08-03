@@ -395,7 +395,7 @@ describe('POST /api/orders/:id/cancel — cancel order contract', () => {
       id: 'order-cancel-4',
       customer_id: CUSTOMER['x-user-id'],
       order_display_id: 'OD-REFUND-FAIL',
-      status: 'in_transit',
+      status: 'assigned',
       escrow_status: 'funded',
       cancellation_fee: 500,
     });

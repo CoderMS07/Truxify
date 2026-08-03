@@ -1,5 +1,4 @@
-import crypto from 'crypto';
-import { supabase } from '../../config/db.js';
+import { supabase, supabaseAdmin } from '../../config/db.js';
 import { getRouteEstimate } from '../osrm.js';
 import { computeOrderPricing } from '../../lib/pricing.js';
 import { predictPrice } from '../ml.js';
@@ -7,14 +6,7 @@ import { getLiveTrafficMultiplier } from '../trafficService.js';
 import { DomainError } from './bidAcceptanceService.js';
 import logger from '../../middleware/logger.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
-
-function generateOrderDisplayId() {
-  const prefix = '#FF';
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
-  const random = crypto.randomInt(100000, 999999).toString();
-  return `${prefix}${dateStr}${random}`;
-}
+import { generateOrderDisplayId, ORDER_DISPLAY_ID_MAX_RETRIES } from '../../lib/orderDisplayId.js';
 
 export async function createOrder({ orderData, userId, user }) {
   return measureExecution('OrderCreationService.createOrder', async () => {
@@ -73,14 +65,14 @@ export async function createOrder({ orderData, userId, user }) {
     logger.warn({ err: mlErr.message }, 'Price prediction unavailable, falling back to base pricing');
   }
 
-  const MAX_ID_RETRIES = 3;
+  const MAX_ID_RETRIES = ORDER_DISPLAY_ID_MAX_RETRIES;
   let order = null;
   let orderErr = null;
   let orderDisplayId = null;
 
   for (let attempt = 0; attempt < MAX_ID_RETRIES; attempt++) {
     orderDisplayId = generateOrderDisplayId();
-    const { data: rpcData, error: rpcErr } = await supabase.rpc('create_order_tx', {
+    const { data: rpcData, error: rpcErr } = await (supabaseAdmin ?? supabase).rpc('create_order_tx', {
       p_order_display_id: orderDisplayId,
       p_customer_id: userId,
       p_customer_name: user?.fullName || 'Customer',
