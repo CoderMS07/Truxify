@@ -40,20 +40,29 @@
  *   connection never blocks the logout response.
  */
 
-import express from 'express';
-import rateLimit from 'express-rate-limit';
-import { authenticate } from '../middleware/auth.js';
-import { userLimiter, otpVerificationLimiter } from '../middleware/rateLimiter.js';
-import { invalidateCachedProfile, invalidateCachedSupabaseProfile } from '../lib/profileCache.js';
-import { firebaseAdmin } from '../config/db.js';
-import logger from '../middleware/logger.js';
+import express from "express";
+import rateLimit from "express-rate-limit";
+import { authenticate } from "../middleware/auth.js";
+import {
+  userLimiter,
+  otpVerificationLimiter,
+} from "../middleware/rateLimiter.js";
+import {
+  invalidateCachedProfile,
+  invalidateCachedSupabaseProfile,
+} from "../lib/profileCache.js";
+import { firebaseAdmin } from "../config/db.js";
+import logger from "../middleware/logger.js";
 
 const router = express.Router();
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
-  message: { success: false, message: 'Too many requests from this IP, please try again later.' },
+  message: {
+    success: false,
+    message: "Too many requests from this IP, please try again later.",
+  },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -88,7 +97,7 @@ export function withTimeout(operation, timeoutMs, message) {
  *             schema:
  *               $ref: '#/components/schemas/LogoutResponse'
  */
-router.post('/logout', authenticate, async (req, res) => {
+router.post("/logout", authenticate, async (req, res) => {
   const { uid } = req.user;
 
   // ── 1. Invalidate Redis profile cache ──────────────────────────────
@@ -97,13 +106,17 @@ router.post('/logout', authenticate, async (req, res) => {
     await withTimeout(
       Promise.all([
         uid ? invalidateCachedProfile(uid) : Promise.resolve(),
-        req.user && req.user.id ? invalidateCachedSupabaseProfile(req.user.id) : Promise.resolve(),
+        req.user && req.user.id
+          ? invalidateCachedSupabaseProfile(req.user.id)
+          : Promise.resolve(),
       ]),
       2000,
-      'Redis invalidation timeout'
+      "Redis invalidation timeout",
     );
   } catch (err) {
-    logger.warn(`[auth/logout] Cache invalidation skipped for uid=${uid}: ${err?.message}`);
+    logger.warn(
+      `[auth/logout] Cache invalidation skipped for uid=${uid}: ${err?.message}`,
+    );
   }
 
   // ── 2. Firebase refresh token revocation (optional) ────────────────
@@ -113,16 +126,18 @@ router.post('/logout', authenticate, async (req, res) => {
       await withTimeout(
         firebaseAdmin.auth().revokeRefreshTokens(uid),
         3000,
-        'Firebase revocation timeout'
+        "Firebase revocation timeout",
       );
     } catch (err) {
-      logger.error(`[auth/logout] Firebase token revocation failed for uid=${uid}: ${err?.message}`);
+      logger.error(
+        `[auth/logout] Firebase token revocation failed for uid=${uid}: ${err?.message}`,
+      );
     }
   }
 
   return res.status(200).json({
     success: true,
-    message: 'Logged out successfully',
+    message: "Logged out successfully",
   });
 });
 
@@ -144,9 +159,9 @@ router.post('/logout', authenticate, async (req, res) => {
  *               $ref: '#/components/schemas/SessionResponse'
  */
 // GET /api/auth/session
-router.get('/session', authenticate, userLimiter, (req, res) => {
+router.get("/session", authenticate, userLimiter, (req, res) => {
   return res.json({
-    user: req.user
+    user: req.user,
   });
 });
 
@@ -161,14 +176,14 @@ router.get('/session', authenticate, userLimiter, (req, res) => {
  *       501:
  *         description: Not Implemented
  */
-router.post('/verify-otp', otpVerificationLimiter, async (req, res) => {
+router.post("/verify-otp", otpVerificationLimiter, async (req, res) => {
   // To be implemented: backend OTP verification logic.
   // This endpoint serves as a rate-limited proxy/placeholder to satisfy
   // security requirements preventing OTP brute forcing.
   return res.status(501).json({
     success: false,
-    error: 'Not Implemented',
-    message: 'OTP verification logic should be executed here.'
+    error: "Not Implemented",
+    message: "OTP verification logic should be executed here.",
   });
 });
 
