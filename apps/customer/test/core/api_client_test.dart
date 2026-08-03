@@ -239,6 +239,23 @@ void main() {
         ),
       );
     });
+
+    test('throws ApiException when a successful response is not valid JSON', () async {
+      when(() => httpClient.get(any(), headers: any(named: 'headers')))
+          .thenAnswer((_) async => http.Response('not-json', 200));
+
+      final client = buildClient(
+          httpClient: httpClient, supabaseClient: supabaseClient);
+
+      await expectLater(
+        () => client.get('/api/orders'),
+        throwsA(
+          isA<ApiException>()
+              .having((e) => e.statusCode, 'statusCode', 200)
+              .having((e) => e.message, 'message', 'Invalid JSON response'),
+        ),
+      );
+    });
   });
 
   // ── Core enhancements ──────────────────────────────────────────────
@@ -258,6 +275,25 @@ void main() {
       // Path with leading slash
       await client.get('/api/orders');
       verify(() => httpClient.get(Uri.parse('http://localhost:5000/api/orders'), headers: any(named: 'headers'))).called(1);
+    });
+
+    test('encodes raw path segments while preserving query strings', () async {
+      when(() => httpClient.get(any(), headers: any(named: 'headers')))
+          .thenAnswer((_) async => jsonResponse({'ok': true}));
+
+      final client = buildClient(
+          httpClient: httpClient, supabaseClient: supabaseClient);
+
+      await client.get('/api/orders/ORD 123/timeline?include=driver notes');
+
+      final captured = verify(
+        () => httpClient.get(captureAny(), headers: any(named: 'headers')),
+      ).captured;
+      final uri = captured.single as Uri;
+      expect(
+        uri.toString(),
+        equals('http://localhost:5000/api/orders/ORD%20123/timeline?include=driver%20notes'),
+      );
     });
 
     test('accepts custom headers and merges them', () async {

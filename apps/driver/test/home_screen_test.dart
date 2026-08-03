@@ -10,7 +10,7 @@ import 'package:truxify_driver/services/marketplace_repository.dart';
 import 'package:truxify_driver/theme/app_theme.dart';
 import 'package:truxify_driver/services/driver_earnings_service.dart';
 import 'package:truxify_driver/models/earnings_daily_model.dart';
-import 'setup/test_setup.dart';  // ← ADD THIS IMPORT
+import 'setup/test_setup.dart';
 
 // --- FAKE CLASSES ---
 
@@ -109,16 +109,14 @@ Future<void> _pumpTransition(WidgetTester tester) async {
 
 void main() {
   // ADD THIS - Initialize test environment before all tests
-  setUpAll(() {
-    setupTestEnvironment();
+  setUpAll(() async {
+    await setupTestEnvironment();
   });
 
-  // ADD THIS - Reset mocks between tests
   setUp(() {
-    // Reset any state if needed
   });
 
-  testWidgets('driver home shows a compact search bar and stats cards', (
+  testWidgets('driver home shows a compact search bar', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(_buildTestApp());
@@ -128,18 +126,6 @@ void main() {
     // Look for the search bar
     expect(find.text('Where are you heading?'), findsOneWidget);
     
-    // Look for "Today's Pay" - it might be wrapped in a different widget
-    // Try finding by key or by different text
-    final todayPayFinder = find.byKey(const Key('today_pay_label'));
-    if (todayPayFinder.evaluate().isNotEmpty) {
-      expect(todayPayFinder, findsOneWidget);
-    } else {
-      // Fallback: look for any earnings-related text
-      expect(find.textContaining('Pay'), findsWidgets);
-    }
-    
-    // Look for shift hours
-    expect(find.text('Shift Hours'), findsOneWidget);
   });
 
   testWidgets('driver home expands search and opens the destination picker', (

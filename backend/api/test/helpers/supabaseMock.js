@@ -61,6 +61,10 @@ class SupabaseQueryBuilder {
     this._options = options;
     return this;
   }
+  delete() {
+    this._mode = 'delete';
+    return this;
+  }
   select(columns = '*') {
     this._mode = this._mode ?? 'select';
     this._select = columns;
@@ -104,49 +108,50 @@ class SupabaseQueryBuilder {
       negate = true;
       op = op.substring(4);
     }
-    let res = true;
+    let isMatched;
+    let res;
     switch (op) {
       case 'eq':
       case 'is':
-        res = v === f.val;
+        isMatched = v === f.val;
         break;
       case 'neq':
-        res = v !== f.val;
+        isMatched = v !== f.val;
         break;
       case 'gt':
-        res = v > f.val;
+        isMatched = v > f.val;
         break;
       case 'gte':
-        res = v >= f.val;
+        isMatched = v >= f.val;
         break;
       case 'lt':
-        res = v < f.val;
+        isMatched = v < f.val;
         break;
       case 'lte':
-        res = v <= f.val;
+        isMatched = v <= f.val;
         break;
       case 'ilike': {
         const valRegex = new RegExp(f.val.replace(/%/g, '.*'), 'i');
-        res = valRegex.test(v);
+        isMatched = valRegex.test(v);
         break;
       }
       case 'in': {
         if (typeof f.val === 'string') {
           const clean = f.val.replace(/^\s*\(\s*|\s*\)\s*$/g, '');
           const items = clean.split(',').map(s => s.trim().replace(/^["']|["']$/g, ''));
-          res = items.includes(v);
+          isMatched = items.includes(v);
         } else if (Array.isArray(f.val)) {
-          res = f.val.includes(v);
+          isMatched = f.val.includes(v);
         } else {
-          res = false;
+          isMatched = false;
         }
         break;
       }
       default:
-        res = true;
+        isMatched = true;
         break;
     }
-    return negate ? !res : res;
+    return negate ? !isMatched : isMatched;
   }
 
   async _exec() {
@@ -162,6 +167,14 @@ class SupabaseQueryBuilder {
       maybeSingle: this._maybeSingle,
     };
     this._calls.push(callRecord);
+
+    const matchingErrorIndex = this._programmed?.matchingErrors?.findIndex(item =>
+      item.table === this._table && item.mode === this._mode
+    ) ?? -1;
+    if (matchingErrorIndex !== -1) {
+      const [match] = this._programmed.matchingErrors.splice(matchingErrorIndex, 1);
+      return { data: null, error: match.error };
+    }
 
     // Programmed error path (e.g. simulate a supabase-side failure)
     if (this._programmed?.nextError) {
@@ -237,6 +250,22 @@ class SupabaseQueryBuilder {
       return { data: updatedRows, error: null };
     }
 
+    if (this._mode === 'delete') {
+      const rows = this._store[this._table] ?? [];
+      const remaining = [];
+      const deleted = [];
+      for (const row of rows) {
+        const matches = this._filters.every(f => this._matches(row, f));
+        if (matches) {
+          deleted.push(row);
+        } else {
+          remaining.push(row);
+        }
+      }
+      this._store[this._table] = remaining;
+      return { data: deleted, error: null };
+    }
+
     if (this._mode === 'select' || this._mode === null) {
       let rows = (this._store[this._table] ?? []).slice();
       for (const f of this._filters) {
@@ -295,7 +324,55 @@ export function createSupabaseMock(initialStore = {}) {
         const data = programmed.nextData; programmed.nextData = null;
         return Promise.resolve({ data, error: null });
       }
+      // Simulate PL/pgSQL RPC side-effects that bump row versions
+      if (fnName === 'accept_bid_tx' && args?.p_order_id) {
+        const idx = store.orders?.findIndex(o => o.id === args.p_order_id);
+        if (idx !== -1 && typeof store.orders[idx].version === 'number') {
+          // Replace with a new object so the caller's reference retains the old version
+          store.orders[idx] = { ...store.orders[idx], version: store.orders[idx].version + 1 };
+        }
+        if (args.p_load_id) {
+          const offerIdx = store.load_offers?.findIndex(o => o.id === args.p_load_id);
+          if (offerIdx !== -1) {
+            store.load_offers[offerIdx] = { ...store.load_offers[offerIdx], status: 'claimed' };
+          }
+        }
+        if (idx !== -1) {
+          store.orders[idx] = { ...store.orders[idx], driver_id: args.p_driver_id, status: 'active' };
+        }
+      }
       return Promise.resolve({ data: null, error: null });
+    },
+    storage: {
+      from(bucket) {
+        return {
+          async upload(path, buffer, options) {
+            calls.push({ storageUpload: { bucket, path, options } });
+            if (programmed.nextStorageError) {
+              const err = programmed.nextStorageError;
+              programmed.nextStorageError = null;
+              return { data: null, error: err };
+            }
+            if (!store.__storageObjects) store.__storageObjects = [];
+            store.__storageObjects.push({ bucket, path, buffer, options });
+            return { data: { path }, error: null };
+          },
+          async createSignedUrl(path, expiresIn) {
+            calls.push({ storageSignedUrl: { bucket, path, expiresIn } });
+            const signedUrl = `https://mock-storage.supabase.co/storage/v1/object/sign/${bucket}/${path}?token=mock-token`;
+            return { data: { signedUrl }, error: null };
+          },
+          async remove(paths) {
+            calls.push({ storageRemove: { bucket, paths } });
+            if (!store.__storageObjects) store.__storageObjects = [];
+            const pathList = Array.isArray(paths) ? paths : [paths];
+            store.__storageObjects = store.__storageObjects.filter(
+              (o) => !(o.bucket === bucket && pathList.includes(o.path))
+            );
+            return { data: null, error: null };
+          },
+        };
+      },
     },
   };
   return {
@@ -303,7 +380,12 @@ export function createSupabaseMock(initialStore = {}) {
     store,
     calls,
     programError(msg = 'mock error')    { programmed.nextError    = { message: msg }; },
+    programErrorFor(table, mode, msg = 'mock error') {
+      programmed.matchingErrors ??= [];
+      programmed.matchingErrors.push({ table, mode, error: { message: msg } });
+    },
     programRpcError(msg = 'mock error') { programmed.nextRpcError = { message: msg }; },
+    programStorageError(msg = 'mock error') { programmed.nextStorageError = { message: msg }; },
     programData(data)                   { programmed.nextData = data; },
   };
 }

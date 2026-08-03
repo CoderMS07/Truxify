@@ -37,6 +37,10 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 _MAX_DISTANCE_KM = 3_000.0  # normalisation ceiling
 _PENALTY_INFEASIBLE = 1e6   # effectively forbids the pairing
+# Cost above this is treated as infeasible. Must sit well below the 1e6 penalty
+# so that a negative `_rating_bonus` (−10 for a 5-star driver) cannot pull an
+# infeasible pairing's cost back under the threshold and get it accepted.
+_INFEASIBLE_THRESHOLD = 1e5
 
 
 def _distance_cost(driver: dict, load: dict) -> float:
@@ -83,8 +87,8 @@ def _deadline_urgency(load: dict, distance_km: float) -> float:
     return ratio * 100.0  # scale for cost matrix
 
 
-def _destination_affinity(driver: dict, load: dict) -> float:
-    """Reward drivers whose preferred destination is close to load dest."""
+def _destination_penalty(driver: dict, load: dict) -> float:
+    """Penalize drivers whose preferred destination is far from load dest."""
     pref_lat = driver.get("preferred_dest_lat")
     pref_lng = driver.get("preferred_dest_lng")
     if pref_lat is None or pref_lng is None:
@@ -159,7 +163,7 @@ def match_bilateral(
                 + _weight_penalty(driver, load)
                 + _dimension_penalty(driver, load)
                 + _deadline_urgency(load, dist_km)
-                + _destination_affinity(driver, load)
+                + _destination_penalty(driver, load)
                 + _rating_bonus(driver)
             )
             cost[i, j] = c
@@ -172,9 +176,9 @@ def match_bilateral(
     matched_drivers = set()
 
     for r, c in zip(row_idx, col_idx):
-        if cost[r, c] >= _PENALTY_INFEASIBLE:
+        if cost[r, c] >= _INFEASIBLE_THRESHOLD:
             continue  # infeasible pairing – skip
-        score = round(max(0.0, 1.0 - cost[r, c] / 200.0), 4)  # 0‥1
+        score = round(min(1.0, max(0.0, 1.0 - cost[r, c] / 200.0)), 4)  # 0‥1
         assignments.append(
             {"load_index": int(r), "driver_index": int(c), "match_score": float(score)}
         )

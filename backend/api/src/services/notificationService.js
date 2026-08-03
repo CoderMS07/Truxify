@@ -1,6 +1,7 @@
 import { supabase, firebaseAdmin } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import crypto from 'crypto';
+import { measureExecution } from '../core/performanceMetrics.js';
 
 const TRANSIENT_ERROR_CODES = new Set([
   'messaging/too-many-topics',
@@ -17,6 +18,13 @@ const INVALID_TOKEN_CODES = new Set([
 
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [1000, 2000, 4000];
+const RETRY_BASE_DELAY = 500;
+const RETRY_MAX_DELAY = 5000;
+
+function calculateRetryBackoff(attempt) {
+  const delay = Math.min(RETRY_BASE_DELAY * Math.pow(2, attempt), RETRY_MAX_DELAY);
+  return delay + Math.floor(Math.random() * 200);
+}
 
 async function getUserFcmToken(userId) {
   if (!supabase) return null;
@@ -67,7 +75,7 @@ export async function sendFcmNotification(userId, notification, data = {}) {
   }
 
   const stringData = Object.fromEntries(
-    Object.entries(data).map(([k, v]) => [k, String(v)])
+    Object.entries(data).map(([k, v]) => [k, typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)])
   );
 
   let lastError = null;
@@ -95,8 +103,12 @@ export async function sendFcmNotification(userId, notification, data = {}) {
       }
 
       if (isTransientError(err.code) && attempt < MAX_RETRIES - 1) {
-        logger.info(`[FCM] Retrying after ${RETRY_DELAYS[attempt]}ms for user ${userId}`);
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt]));
+        const delay = calculateRetryBackoff(attempt);
+        logger.info(`[FCM] Retrying after ${delay}ms for user ${userId}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else if (!isTransientError(err.code)) {
+        logger.warn(`[FCM] Non-retryable error for user ${userId}: ${err.code}`);
+        return { success: false, error: err.message, errorCode: err.code };
       }
     }
   }
@@ -105,6 +117,7 @@ export async function sendFcmNotification(userId, notification, data = {}) {
 }
 
 export async function storeDeliveryOtp(orderId, otp, ttlMinutes = 15) {
+  return measureExecution('NotificationService.storeDeliveryOtp', async () => {
   const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
   const otpHash = crypto.createHash('sha256').update(String(otp)).digest('hex');
 
@@ -126,9 +139,11 @@ export async function storeDeliveryOtp(orderId, otp, ttlMinutes = 15) {
 
   logger.info(`[NotificationService] OTP stored for order ${orderId}, expires at ${expiresAt}`);
   return data;
+  });
 }
 
 export async function getActiveDeliveryOtp(orderId) {
+  return measureExecution('NotificationService.getActiveDeliveryOtp', async () => {
   const { data, error } = await supabase
     .from('delivery_otps')
     .select('id, otp_hash, expires_at')
@@ -145,27 +160,42 @@ export async function getActiveDeliveryOtp(orderId) {
   }
 
   return data;
+  });
 }
 
-export async function verifyDeliveryOtp(orderId) {
-  const { error } = await supabase
+export async function verifyDeliveryOtp(otpId) {
+  return measureExecution('NotificationService.verifyDeliveryOtp', async () => {
+  // Target a specific OTP record by ID instead of bulk-updating all
+  // unverified OTPs for an order. This ensures only the matched OTP
+  // (which was validated by the caller via timing-safe hash comparison)
+  // is consumed, preventing any future caller from bypassing verification.
+  const { data, error } = await supabase
     .from('delivery_otps')
     .update({
       verified: true,
       verified_at: new Date().toISOString(),
     })
-    .eq('order_id', orderId)
-    .eq('verified', false);
+    .eq('id', otpId)
+    .eq('verified', false)
+    .select('id')
+    .maybeSingle();
 
   if (error) {
     logger.error('[NotificationService] Failed to verify OTP:', error.message);
     return false;
   }
 
+  if (!data) {
+    logger.warn('[NotificationService] OTP not found or already verified:', otpId);
+    return false;
+  }
+
   return true;
+  });
 }
 
 export async function expireDeliveryOtps(orderId) {
+  return measureExecution('NotificationService.expireDeliveryOtps', async () => {
   const { error } = await supabase
     .from('delivery_otps')
     .update({ expires_at: new Date().toISOString() })
@@ -175,6 +205,7 @@ export async function expireDeliveryOtps(orderId) {
   if (error) {
     logger.error('[NotificationService] Failed to expire OTPs:', error.message);
   }
+  });
 }
 
 export async function sendDeliveryOtpNotification(customerId, orderDisplayId, otp) {
@@ -197,21 +228,21 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
       });
 
     if (error) {
-      logger.error('[NotificationService] Database insert failed:', error);
+      logger.error({ err: error }, '[NotificationService] Database insert failed');
     } else {
       logger.info('[NotificationService] Notification inserted successfully');
       dbSuccess = true;
     }
   } catch (dbErr) {
-    logger.error('[NotificationService] Database connection error during notification insert:', dbErr.message);
+    logger.error({ err: dbErr }, '[NotificationService] Database connection error during notification insert');
   }
 
   let fcmResult;
   try { fcmResult = await sendFcmNotification(
-    customerId,
-    { title: 'Delivery Verification OTP', body: `A delivery OTP has been generated for order ${orderDisplayId}. Open the app to view the code.` },
-    { orderDisplayId, notifType: 'delivery_otp' }
-  ); } catch (_) { /* logged internally by sendFcmNotification */ }
+      customerId,
+    { title, body },
+    { orderDisplayId, notifType: 'delivery_otp', deliveryOtp: String(otp) }
+  ); } catch (err) { logger.error({ err: err?.message ?? String(err) }, 'Unexpected sendFcmNotification error'); }
 
   if (process.env.TWILIO_AUTH_TOKEN) {
     logger.info(`[NotificationService] [SMS] SMS stub: Sending OTP for order ${orderDisplayId} (masked)`);
@@ -223,6 +254,7 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
 }
 
 export async function sendPushNotification(userId, title, body, notifType, metadata = {}) {
+  return measureExecution('NotificationService.sendPushNotification', async () => {
   if (supabase) {
     try {
       const { error } = await supabase
@@ -238,6 +270,7 @@ export async function sendPushNotification(userId, title, body, notifType, metad
   }
 
   let fcmResult;
-  try { fcmResult = await sendFcmNotification(userId, { title, body }, { notifType, ...metadata }); } catch (_) { /* logged internally */ }
+  try { fcmResult = await sendFcmNotification(userId, { title, body }, { notifType, ...metadata }); } catch (err) { logger.error({ err: err?.message ?? String(err) }, 'Unexpected sendFcmNotification error'); }
   return { success: fcmResult?.success, fcm: fcmResult };
+  });
 }

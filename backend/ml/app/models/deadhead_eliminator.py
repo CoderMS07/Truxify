@@ -1,6 +1,6 @@
 import logging
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,23 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * c
 
 
+def _to_naive(dt: datetime) -> datetime:
+    """Strip tzinfo so all datetimes in this module compare consistently.
+
+    ``pickup_deadline`` / ``arrival_time`` strings may or may not carry a
+    UTC offset depending on the caller. Mixing an aware and a naive
+    datetime in a comparison raises TypeError, so we normalise everything
+    to naive (local-time) datetimes right after parsing.
+    """
+    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
+# Maximum detour threshold as a fraction of the total trip distance.
+# Loads whose detour exceeds this fraction of (distance_to_pickup + load_distance)
+# are filtered out to prevent profit-negative recommendations.
+MAX_DETOUR_FRACTION = 0.5
+
+
 def find_return_loads(
     driver_destination: Dict,
     truck_specs: Dict,
@@ -50,6 +67,7 @@ def find_return_loads(
       - Truck capacity and dimension compatibility
       - Time feasibility against the load's pickup deadline
       - Earnings per kilometre of detour
+      - Detour threshold (MAX_DETOUR_FRACTION of total trip km)
 
     Args:
         driver_destination: Dict with 'lat' and 'lng' of the driver's drop-off point.
@@ -77,7 +95,7 @@ def find_return_loads(
     max_height = truck_specs.get("max_height_m", 0.0)
 
     try:
-        arrival_dt = datetime.fromisoformat(arrival_time)
+        arrival_dt = _to_naive(datetime.fromisoformat(arrival_time))
     except (ValueError, TypeError):
         logger.warning("Invalid arrival_time '%s'; using current time", arrival_time)
         arrival_dt = datetime.now()
@@ -111,16 +129,20 @@ def find_return_loads(
 
             # --- Time feasibility ---
             try:
-                deadline_dt = datetime.fromisoformat(load.get("pickup_deadline", ""))
+                deadline_dt = _to_naive(datetime.fromisoformat(load.get("pickup_deadline", "")))
             except (ValueError, TypeError):
                 # Skip loads with unparseable deadlines
                 continue
 
             travel_hours = distance_to_pickup / avg_speed_kmh if avg_speed_kmh > 0 else float("inf")
-            from datetime import timedelta
             estimated_arrival = arrival_dt + timedelta(hours=travel_hours)
             if estimated_arrival > deadline_dt:
                 continue  # Cannot reach in time
+
+            # --- Detour threshold ---
+            total_trip_km = distance_to_pickup + load_distance
+            if total_trip_km > 0 and detour_km / total_trip_km > MAX_DETOUR_FRACTION:
+                continue
 
             # --- Scoring ---
             payment = load.get("payment_inr", 0.0)
@@ -130,7 +152,6 @@ def find_return_loads(
             proximity_score = max(0.0, 1.0 - distance_to_pickup / max_proximity_km) * 40.0
 
             # Earnings per km (max 35 pts)
-            total_trip_km = distance_to_pickup + load_distance
             earnings_per_km = payment / total_trip_km if total_trip_km > 0 else 0.0
             earnings_score = min(earnings_per_km / 30.0, 1.0) * 35.0  # 30 INR/km = full score
 

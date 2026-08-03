@@ -1,6 +1,8 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import '../core/config.dart';
 import 'package:latlong2/latlong.dart';
 
 class RouteService {
@@ -11,7 +13,7 @@ class RouteService {
     final coords = points.map((p) => '${p.longitude},${p.latitude}').join(';');
     final url = Uri.parse('https://router.project-osrm.org/route/v1/driving/$coords?overview=full&geometries=geojson');
     try {
-      final resp = await http.get(url).timeout(const Duration(seconds: 8));
+      final resp = await http.get(url).timeout(AppConfig.routeTimeout);
       if (resp.statusCode != 200) return [];
 
       final decoded = json.decode(resp.body);
@@ -32,13 +34,14 @@ class RouteService {
       final out = <LatLng>[];
       for (final e in coordsList) {
         if (e is List && e.length >= 2) {
-          final lon = (e[0] as num).toDouble();
-          final lat = (e[1] as num).toDouble();
+          final lon = double.tryParse(e[0].toString()) ?? 0.0;
+          final lat = double.tryParse(e[1].toString()) ?? 0.0;
           out.add(LatLng(lat, lon));
         }
       }
       return out;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('RouteService error: $e');
       return [];
     }
   }

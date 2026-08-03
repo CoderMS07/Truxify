@@ -62,6 +62,14 @@ class _Shelf:
         return None
 
     def _fit(self, l: float, w: float, h: float, rotated: bool) -> dict | None:
+        # An item taller than the shelf's remaining vertical clearance can
+        # never be placed here, regardless of how it fits in x/y — checking
+        # this first prevents placements that would overflow the truck's
+        # ceiling (or the shelf above) once shelf_height grows past
+        # max_height.
+        if h > self.max_height:
+            return None
+
         # Does it fit in the remaining row?
         if self.cursor_x + l <= self.max_length and self.cursor_y + w <= self.max_width:
             pos = {"x": self.cursor_x, "y": self.cursor_y, "z": self.z_bottom}
@@ -118,11 +126,11 @@ def _pack_packages(
     packed_volume = 0.0
 
     for idx, pkg in indexed:
-        pl, pw, ph = pkg["length"], pkg["width"], pkg["height"]
-        pw_ = pkg["weight"]
+        pkg_length, pkg_width, pkg_height = pkg["length"], pkg["width"], pkg["height"]
+        pkg_weight = pkg["weight"]
 
         # Weight check
-        if packed_weight + pw_ > max_weight:
+        if packed_weight + pkg_weight > max_weight:
             arrangements[idx] = {
                 "package_index": idx,
                 "position": {"x": 0.0, "y": 0.0, "z": 0.0},
@@ -134,7 +142,7 @@ def _pack_packages(
 
         placed = False
         for shelf in shelves:
-            pos = shelf.try_place(pl, pw, ph)
+            pos = shelf.try_place(pkg_length, pkg_width, pkg_height)
             if pos is not None:
                 arrangements[idx] = {
                     "package_index": idx,
@@ -142,15 +150,15 @@ def _pack_packages(
                     "rotated": pos["rotated"],
                     "fits": True,
                 }
-                packed_weight += pw_
-                packed_volume += pl * pw * ph
+                packed_weight += pkg_weight
+                packed_volume += pkg_length * pkg_width * pkg_height
                 placed = True
                 break
 
         if not placed:
             # Open a new shelf
             z_offset = sum(s.shelf_height for s in shelves)
-            if z_offset + ph > truck_h:
+            if z_offset + pkg_height > truck_h:
                 arrangements[idx] = {
                     "package_index": idx,
                     "position": {"x": 0.0, "y": 0.0, "z": 0.0},
@@ -161,7 +169,7 @@ def _pack_packages(
                 continue
 
             new_shelf = _Shelf(z_offset, truck_l, truck_w, truck_h - z_offset)
-            pos = new_shelf.try_place(pl, pw, ph)
+            pos = new_shelf.try_place(pkg_length, pkg_width, pkg_height)
             if pos is not None:
                 arrangements[idx] = {
                     "package_index": idx,
@@ -169,8 +177,8 @@ def _pack_packages(
                     "rotated": pos["rotated"],
                     "fits": True,
                 }
-                packed_weight += pw_
-                packed_volume += pl * pw * ph
+                packed_weight += pkg_weight
+                packed_volume += pkg_length * pkg_width * pkg_height
                 shelves.append(new_shelf)
             else:
                 arrangements[idx] = {
@@ -267,6 +275,10 @@ def optimise_packing(
             "utilization_pct": 0.0,
         }
 
+    if not delivery_addresses and packages:
+        raise ValueError(
+            "delivery_addresses must contain at least one address when packages are provided"
+        )
     if len(delivery_addresses) < len(packages):
         logger.warning(
             "Fewer delivery addresses (%d) than packages (%d); "

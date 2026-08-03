@@ -7,10 +7,11 @@ from fastapi.testclient import TestClient
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.main import app
+from main import app
 from app.models.base import MODEL_STORAGE_DIR
+from app.models import price_prediction as pp
 
-client = TestClient(app)
+client = TestClient(app, headers={'X-API-Key': 'test_key'})
 
 
 def test_root():
@@ -22,7 +23,18 @@ def test_root():
 def test_health():
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "healthy"}
+    data = response.json()
+    assert data["status"] in {"healthy", "degraded"}
+    assert data["service"] == "ml-engine"
+    assert set(data["models"]) == {
+        "demand_forecast",
+        "price_forecast",
+        "driver_profit",
+        "trust_scorer",
+        "collaborative_filter",
+        "eta_predictor",
+        "traffic_eta",
+    }
 
 
 def _auth_payload():
@@ -59,14 +71,14 @@ def test_auth_valid_key(monkeypatch):
 def test_auth_dev_mode_bypass(monkeypatch):
     monkeypatch.delenv("ML_API_KEY", raising=False)
     response = client.post("/predict/demand", json=_auth_payload())
-    assert response.status_code == 200
+    assert response.status_code == 503
 
 
 def test_health_no_auth_required(monkeypatch):
     monkeypatch.setenv("ML_API_KEY", "test-secret-key")
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "healthy"}
+    assert response.json()["service"] == "ml-engine"
 
 
 def test_train_demand():
@@ -109,7 +121,9 @@ def test_predict_demand_valid():
     assert data["model_version"] == "1.0.0"
 
 
-def test_predict_price_valid():
+def test_predict_price_valid(monkeypatch):
+    """Price model is gated: without a real-data model the endpoint is 503."""
+    monkeypatch.setattr(pp, "get_model_meta", lambda name: None)
     payload = {
         "distance_km": 500.0,
         "cargo_weight_kg": 10000.0,
@@ -117,24 +131,19 @@ def test_predict_price_valid():
         "route_origin": "Mumbai",
         "route_destination": "Delhi",
     }
-    response = client.post("/predict", json=payload)
-    assert response.status_code == 200
-    data = response.json()
-    assert "estimated_price" in data
-    assert isinstance(data["estimated_price"], float)
-    assert data["estimated_price"] > 0
-    assert data["currency"] == "INR"
+    response = client.post("/predict/price", json=payload)
+    assert response.status_code == 503
 
 
-def test_predict_price_minimal():
+def test_predict_price_minimal(monkeypatch):
+    """Backward-compat payload still gated at 503 without a real model."""
+    monkeypatch.setattr(pp, "get_model_meta", lambda name: None)
     payload = {
         "distance_km": 100.0,
         "cargo_weight_kg": 1000.0,
     }
-    response = client.post("/predict", json=payload)
-    assert response.status_code == 200
-    data = response.json()
-    assert data["estimated_price"] > 0
+    response = client.post("/predict/price", json=payload)
+    assert response.status_code == 503
 
 
 def test_predict_price_invalid_distance():
@@ -142,7 +151,7 @@ def test_predict_price_invalid_distance():
         "distance_km": 0,
         "cargo_weight_kg": 1000.0,
     }
-    response = client.post("/predict", json=payload)
+    response = client.post("/predict/price", json=payload)
     assert response.status_code == 422
 
 

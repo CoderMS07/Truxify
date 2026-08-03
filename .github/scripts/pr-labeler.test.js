@@ -5,15 +5,18 @@ const assert = require('node:assert/strict');
 const {
   findLinkedIssueNumbers,
   hasProgramSignal,
-  selectLabels
+  selectLabels,
+  run
 } = require('./pr-labeler');
 
 const availableLabels = [
   'gssoc:approved',
+  'ECSoC26',
   'level:beginner',
   'level:intermediate',
   'type:bug',
   'type:feature',
+  'type:refactor',
   'type:security',
   'type:testing',
   'customer-app',
@@ -74,7 +77,47 @@ test('selectLabels adds program label when PR declares GSSoC work', () => {
     availableLabels
   });
 
-  assert.deepEqual(labels, ['backend', 'gssoc:approved', 'type:api', 'type:bug', 'type:security']);
+  assert.deepEqual(labels, ['backend', 'gssoc:approved', 'type:api', 'type:security']);
+});
+
+test('selectLabels adds program label when PR declares ECSoC work', () => {
+  const labels = selectLabels({
+    prTitle: 'fix: guard auth token parsing',
+    prBody: 'Submitted under ECSoC 2026.',
+    changedFiles: ['backend/api/src/middleware/auth.js'],
+    linkedIssueLabels: [],
+    currentLabels: [],
+    availableLabels
+  });
+
+  assert.deepEqual(labels, ['backend', 'ECSoC26', 'type:api', 'type:security']);
+});
+
+test('selectLabels does not add program label by default when neither GSSoC nor ECSoC is mentioned', () => {
+  const labels = selectLabels({
+    prTitle: 'fix: guard auth token parsing',
+    prBody: 'Just fixing a regular bug.',
+    changedFiles: ['backend/api/src/middleware/auth.js'],
+    linkedIssueLabels: [],
+    currentLabels: [],
+    availableLabels
+  });
+
+  assert.deepEqual(labels, ['backend', 'type:api', 'type:security']);
+});
+
+test('selectLabels handles case-insensitivity for GSSoC and ECSoC', () => {
+  const labelsGssoc = selectLabels({
+    prTitle: 'feat: new feature [GsSoC]',
+    availableLabels
+  });
+  assert.equal(labelsGssoc.includes('gssoc:approved'), true);
+
+  const labelsEcsoc = selectLabels({
+    prTitle: 'feat: new feature [ecSoC]',
+    availableLabels
+  });
+  assert.equal(labelsEcsoc.includes('ECSoC26'), true);
 });
 
 test('selectLabels does not duplicate labels already present on the PR', () => {
@@ -97,7 +140,8 @@ test('selectLabels ignores labels that do not exist in the repository', () => {
     changedFiles: ['README.md'],
     linkedIssueLabels: ['level:critical'],
     currentLabels: [],
-    availableLabels
+    availableLabels,
+    detectedPrograms: ['gssoc']
   });
 
   assert.deepEqual(labels, ['gssoc:approved', 'type:docs']);
@@ -106,25 +150,381 @@ test('selectLabels ignores labels that do not exist in the repository', () => {
 test('selectLabels matches new performance, design, devops, and accessibility prefixes', () => {
   const labelsPerf = selectLabels({
     prTitle: 'perf: optimize load time',
-    availableLabels
+    availableLabels,
+    detectedPrograms: ['gssoc']
   });
   assert.deepEqual(labelsPerf, ['gssoc:approved', 'type:performance']);
 
   const labelsDesign = selectLabels({
     prTitle: 'ui: update dashboard layout',
-    availableLabels
+    availableLabels,
+    detectedPrograms: ['gssoc']
   });
   assert.deepEqual(labelsDesign, ['gssoc:approved', 'type:design']);
 
   const labelsDevOps = selectLabels({
     prTitle: 'ci: add test action',
-    availableLabels
+    availableLabels,
+    detectedPrograms: ['gssoc']
   });
   assert.deepEqual(labelsDevOps, ['gssoc:approved', 'type:devops']);
 
   const labelsA11y = selectLabels({
     prTitle: 'a11y: add screen reader labels',
-    availableLabels
+    availableLabels,
+    detectedPrograms: ['gssoc']
   });
   assert.deepEqual(labelsA11y, ['gssoc:approved', 'type:accessibility']);
+});
+
+test('run function adds merge conflicts label, removes merge ready label, and comments if PR is not mergeable', async () => {
+  let commentCreated = false;
+  let removeLabelCalled = false;
+  let addLabelsCalled = false;
+
+  const mockGithub = {
+    paginate: async (fn, params) => {
+      if (fn === mockGithub.rest.issues.listLabelsForRepo) return [{ name: 'merge conflicts' }, { name: 'merge ready' }];
+      if (fn === mockGithub.rest.pulls.listFiles) return [];
+      if (fn === mockGithub.rest.issues.listComments) return [];
+      return [];
+    },
+    rest: {
+      pulls: {
+        get: async () => ({
+          data: {
+            number: 123,
+            title: 'feat: new feature',
+            body: 'GSSoC',
+            user: { login: 'testuser' },
+            labels: [{ name: 'merge ready' }],
+            mergeable: false,
+            mergeable_state: 'dirty'
+          }
+        }),
+        listFiles: () => {}
+      },
+      issues: {
+        get: async () => ({ data: { labels: [] } }),
+        listLabelsForRepo: () => {},
+        listComments: () => {},
+        createLabel: async () => {},
+        createComment: async ({ body }) => {
+          assert.equal(body, '@testuser, please resolve the commit so that it will be merged soon ......');
+          commentCreated = true;
+        },
+        addLabels: async ({ labels }) => {
+          assert.equal(labels.includes('merge conflicts'), true);
+          addLabelsCalled = true;
+        },
+        removeLabel: async ({ name }) => {
+          assert.equal(name, 'merge ready');
+          removeLabelCalled = true;
+        }
+      }
+    }
+  };
+
+  const mockContext = {
+    payload: {
+      pull_request: {
+        number: 123,
+        user: { login: 'testuser' },
+        labels: [{ name: 'merge ready' }]
+      }
+    },
+    repo: { owner: 'owner', repo: 'repo' }
+  };
+
+  const mockCore = {
+    info: () => {},
+    warning: () => {}
+  };
+
+  await run({
+    github: mockGithub,
+    context: mockContext,
+    core: mockCore,
+    rulesPath: undefined,
+    dryRun: false
+  });
+
+  assert.equal(commentCreated, true);
+  assert.equal(removeLabelCalled, true);
+  assert.equal(addLabelsCalled, true);
+});
+
+test('run function removes merge conflicts label and adds merge ready label if PR is mergeable', async () => {
+  let removeLabelCalled = false;
+  let addLabelsCalled = false;
+
+  const mockGithub = {
+    paginate: async (fn, params) => {
+      if (fn === mockGithub.rest.issues.listLabelsForRepo) return [{ name: 'merge conflicts' }, { name: 'merge ready' }];
+      if (fn === mockGithub.rest.pulls.listFiles) return [];
+      if (fn === mockGithub.rest.issues.listComments) return [];
+      return [];
+    },
+    rest: {
+      pulls: {
+        get: async () => ({
+          data: {
+            number: 123,
+            title: 'feat: new feature',
+            body: 'GSSoC',
+            user: { login: 'testuser' },
+            labels: [{ name: 'merge conflicts' }],
+            mergeable: true,
+            mergeable_state: 'clean'
+          }
+        }),
+        listFiles: () => {}
+      },
+      issues: {
+        get: async () => ({ data: { labels: [] } }),
+        listLabelsForRepo: () => {},
+        listComments: () => {},
+        createLabel: async () => {},
+        createComment: async () => {},
+        addLabels: async ({ labels }) => {
+          assert.equal(labels.includes('merge ready'), true);
+          addLabelsCalled = true;
+        },
+        removeLabel: async ({ name }) => {
+          assert.equal(name, 'merge conflicts');
+          removeLabelCalled = true;
+        }
+      }
+    }
+  };
+
+  const mockContext = {
+    payload: {
+      pull_request: {
+        number: 123,
+        user: { login: 'testuser' },
+        labels: [{ name: 'merge conflicts' }]
+      }
+    },
+    repo: { owner: 'owner', repo: 'repo' }
+  };
+
+  const mockCore = {
+    info: () => {},
+    warning: () => {}
+  };
+
+  await run({
+    github: mockGithub,
+    context: mockContext,
+    core: mockCore,
+    rulesPath: undefined,
+    dryRun: false
+  });
+
+  assert.equal(removeLabelCalled, true);
+  assert.equal(addLabelsCalled, true);
+});
+
+test('run function detects GSSoC program signal from linked issue title/body', async () => {
+  let addedLabels = [];
+  const mockGithub = {
+    paginate: async (fn, params) => {
+      if (fn === mockGithub.rest.issues.listLabelsForRepo) return [{ name: 'gssoc:approved' }];
+      if (fn === mockGithub.rest.pulls.listFiles) return [];
+      if (fn === mockGithub.rest.issues.listComments) return [];
+      return [];
+    },
+    rest: {
+      pulls: {
+        get: async () => ({
+          data: {
+            number: 320,
+            title: 'fix: resolve auth issue',
+            body: 'Fixes #105',
+            labels: [],
+            mergeable: true
+          }
+        }),
+        listFiles: () => {}
+      },
+      issues: {
+        get: async ({ issue_number }) => {
+          if (issue_number === 105) {
+            return {
+              data: {
+                number: 105,
+                title: '[GSSOC 2026] Fix auth token error',
+                body: 'This issue is for GSSoC contributors.',
+                labels: [{ name: 'type:bug' }]
+              }
+            };
+          }
+          return { data: { labels: [] } };
+        },
+        listLabelsForRepo: () => {},
+        listComments: () => {},
+        createLabel: async () => {},
+        createComment: async () => {},
+        addLabels: async ({ labels }) => {
+          addedLabels = labels;
+        }
+      }
+    }
+  };
+
+  const mockContext = {
+    payload: {
+      pull_request: {
+        number: 320,
+        labels: []
+      }
+    },
+    repo: { owner: 'owner', repo: 'repo' }
+  };
+
+  const mockCore = {
+    info: () => {},
+    warning: () => {}
+  };
+
+  await run({
+    github: mockGithub,
+    context: mockContext,
+    core: mockCore,
+    rulesPath: undefined,
+    dryRun: false
+  });
+
+  assert.equal(addedLabels.includes('gssoc:approved'), true);
+});
+
+test('run function detects ECSoC program signal from linked issue title/body', async () => {
+  let addedLabels = [];
+  const mockGithub = {
+    paginate: async (fn, params) => {
+      if (fn === mockGithub.rest.issues.listLabelsForRepo) return [{ name: 'ECSoC26' }];
+      if (fn === mockGithub.rest.pulls.listFiles) return [];
+      if (fn === mockGithub.rest.issues.listComments) return [];
+      return [];
+    },
+    rest: {
+      pulls: {
+        get: async () => ({
+          data: {
+            number: 400,
+            title: 'feat: add customer screen',
+            body: 'Closes #200',
+            labels: [],
+            mergeable: true
+          }
+        }),
+        listFiles: () => {}
+      },
+      issues: {
+        get: async ({ issue_number }) => {
+          if (issue_number === 200) {
+            return {
+              data: {
+                number: 200,
+                title: 'feat: customer dashboard',
+                body: 'Task under ECSoC 2026 program.',
+                labels: []
+              }
+            };
+          }
+          return { data: { labels: [] } };
+        },
+        listLabelsForRepo: () => {},
+        listComments: () => {},
+        createLabel: async () => {},
+        createComment: async () => {},
+        addLabels: async ({ labels }) => {
+          addedLabels = labels;
+        }
+      }
+    }
+  };
+
+  const mockContext = {
+    payload: {
+      pull_request: {
+        number: 400,
+        labels: []
+      }
+    },
+    repo: { owner: 'owner', repo: 'repo' }
+  };
+
+  const mockCore = {
+    info: () => {},
+    warning: () => {}
+  };
+
+  await run({
+    github: mockGithub,
+    context: mockContext,
+    core: mockCore,
+    rulesPath: undefined,
+    dryRun: false
+  });
+
+  assert.equal(addedLabels.includes('ECSoC26'), true);
+});
+
+test('pickDominantTypeLabel picks label with highest file-change score', () => {
+  const { pickDominantTypeLabel, loadRules } = require('./pr-labeler');
+  const rules = loadRules();
+  const result = pickDominantTypeLabel({
+    candidateLabels: ['backend', 'type:bug', 'type:testing', 'type:docs'],
+    changedFiles: [
+      'backend/api/test/unit/a.test.js',
+      'backend/api/test/unit/b.test.js',
+      'backend/api/test/unit/c.test.js',
+      'docs/README.md'
+    ],
+    prTitle: 'test: add unit tests',
+    rules
+  });
+  // type:testing gets 3 files (path) + 3 (title) = 6
+  // type:docs gets 1 file (path) = 1
+  // type:bug gets 0 = 0
+  assert.deepEqual(result, ['backend', 'type:testing']);
+});
+
+test('pickDominantTypeLabel uses priority tiebreaker when scores are equal', () => {
+  const { pickDominantTypeLabel, loadRules } = require('./pr-labeler');
+  const rules = loadRules();
+  const result = pickDominantTypeLabel({
+    candidateLabels: ['type:bug', 'type:security'],
+    changedFiles: [],
+    prTitle: 'misc change',
+    rules
+  });
+  // Both score 0, security has higher priority
+  assert.deepEqual(result, ['type:security']);
+});
+
+test('pickDominantTypeLabel returns candidateLabels unchanged when 0 or 1 type labels', () => {
+  const { pickDominantTypeLabel, loadRules } = require('./pr-labeler');
+  const rules = loadRules();
+  const result = pickDominantTypeLabel({
+    candidateLabels: ['backend', 'type:bug'],
+    changedFiles: [],
+    prTitle: 'fix: something',
+    rules
+  });
+  assert.deepEqual(result, ['backend', 'type:bug']);
+});
+
+test('selectLabels skips new type labels when PR already has one', () => {
+  const labels = selectLabels({
+    prTitle: 'fix: security issue in docs',
+    changedFiles: ['docs/SECURITY.md'],
+    linkedIssueLabels: [],
+    currentLabels: ['type:bug'],
+    availableLabels
+  });
+  // type:docs and type:security would normally be added, but PR already has type:bug
+  assert.equal(labels.filter(l => l.startsWith('type:')).every(l => l === 'type:api' || !['type:bug','type:feature','type:docs','type:testing','type:security','type:performance','type:design','type:refactor','type:devops','type:accessibility'].includes(l)), true);
 });

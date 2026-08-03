@@ -40,6 +40,13 @@ class _HelpCenterScreenState extends State<HelpCenterScreen> {
     _loadFaqs();
   }
 
+  @override
+  void dispose() {
+    _subjectController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadFaqs() async {
     try {
       final faqs = await widget.faqRepository.fetchFaqs(widget.appType);
@@ -97,13 +104,13 @@ class _HelpCenterScreenState extends State<HelpCenterScreen> {
           TextField(controller: _subjectController, decoration: const InputDecoration(labelText: 'Subject')),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
-            initialValue: _category,
+            value: _category,
             items: const ['General', 'Booking', 'Billing', 'Technical'].map((value) => DropdownMenuItem(value: value, child: Text(value))).toList(),
             onChanged: (value) => setState(() => _category = value ?? 'General'),
             decoration: const InputDecoration(labelText: 'Category'),
           ),
           const SizedBox(height: 12),
-          TextField(controller: _descriptionController, minLines: 4, maxLines: 6, decoration: const InputDecoration(labelText: 'Description')),
+          TextField(controller: _descriptionController, minLines: 4, maxLines: 6, maxLength: 500, decoration: const InputDecoration(labelText: 'Description')),
           const SizedBox(height: 16),
           ElevatedButton(onPressed: _submitting ? null : _submit, child: _submitting ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Submit')),
         ],

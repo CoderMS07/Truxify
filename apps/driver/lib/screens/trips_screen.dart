@@ -1,18 +1,27 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:truxify_shared/truxify_shared.dart';
+import 'package:truxify_shared/shimmer_widget.dart';
 import '../core/app_routes.dart';
 import '../core/driver_session.dart';
 import '../core/supabase_config.dart';
+import '../l10n/app_localizations.dart';
 import '../models/app_models.dart';
+import '../models/deadhead_recommendation.dart';
 import '../models/marketplace_models.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
+import '../widgets/marketplace/deadhead_recommendation_card.dart';
+import '../services/bid_submission_guard.dart';
 import '../services/marketplace_repository.dart';
+import '../services/trip_cache.dart';
 import '../services/trip_service.dart';
-import 'package:truxify_shared/shimmer_widget.dart';
+import '../services/sync_service.dart';
+import 'pod_screen.dart';
 
 class TripsScreen extends StatefulWidget {
   const TripsScreen({super.key});
@@ -29,24 +38,36 @@ class _TripsScreenState extends State<TripsScreen> {
 
   RealtimeChannel? _bidChannel;
   final MarketplaceRepository _marketplaceRepository = MarketplaceRepository();
+  final BidSubmissionGuard _bidSubmissionGuard = BidSubmissionGuard();
   late final TripService _tripService;
 
   List<Map<String, dynamic>> _trips = [];
   Map<String, List<Map<String, dynamic>>> _tripStopsByTripId = {};
   Map<String, List<Map<String, dynamic>>> _routePointsByTripId = {};
+  Map<String, List<Map<String, dynamic>>> _itemsByTripId = {};
 
   bool _isLoadingTrips = true;
+  bool _isLoadingMoreTrips = false;
+  final ScrollController _scrollController = ScrollController();
 
   String? _tripsError;
   String? _nextTripsCursor;
   bool _hasMoreTrips = true;
+  bool _isOfflineTripsData = false;
+  DateTime? _offlineTripsSavedAt;
 
   bool _marketplaceLoading = false;
   String? _marketplaceError;
   List<LoadOffer> _marketplaceLoads = const [];
   List<LoadOffer> _enRouteLoads = const [];
   Map<String, DriverBid> _bidsByLoadId = const {};
+  Set<String> _submittingLoadIds = const <String>{};
 
+  bool _deadheadLoading = false;
+  String? _deadheadError;
+  List<DeadheadRecommendation> _deadheadRecommendations = const [];
+  Map<String, DriverBid> _deadheadBidsByLoadId = const {};
+  Set<String> _submittingDeadheadLoadIds = const <String>{};
 
   final List<String> _statusFilters = [
     'All',
@@ -58,11 +79,14 @@ class _TripsScreenState extends State<TripsScreen> {
   @override
   void initState() {
     super.initState();
+    SyncService.instance.startListening();
     _tripService = TripService();
+    _scrollController.addListener(_onScroll);
     _loadTrips();
     if (SupabaseConfig.isConfigured) {
       _refreshMarketplace();
       _subscribeToRealtime();
+      _fetchDeadheadRecommendations();
     } else {
       _marketplaceError =
           'Supabase is not configured. Pass --dart-define=SUPABASE_URL=... and --dart-define=SUPABASE_ANON_KEY=...';
@@ -81,19 +105,22 @@ class _TripsScreenState extends State<TripsScreen> {
       final result = await _tripService.fetchTripHistory(limit: 20);
       final trips = result['trips'] as List<Map<String, dynamic>>;
 
-      final stopsByTrip = <String, List<Map<String, dynamic>>>{};
-      final routePointsByTrip = <String, List<Map<String, dynamic>>>{};
+    final stopsByTrip = <String, List<Map<String, dynamic>>>{};
+    final routePointsByTrip = <String, List<Map<String, dynamic>>>{};
+    final itemsByTrip = <String, List<Map<String, dynamic>>>{};   // ← add this
 
-      await Future.wait(trips.map((trip) async {
-        final tripId = trip['trip_display_id']?.toString();
-        if (tripId == null || tripId.isEmpty) return;
+    await Future.wait(trips.map((trip) async {
+      final tripId = trip['trip_display_id']?.toString();
+      if (tripId == null || tripId.isEmpty) return;
 
-        final results = await Future.wait([
-          _tripService.fetchTripStops(tripId),
-          _tripService.fetchRouteMapPoints(tripId),
-        ]);
-        stopsByTrip[tripId] = results[0];
-        routePointsByTrip[tripId] = results[1];
+      final results = await Future.wait([
+        _tripService.fetchTripStops(tripId),
+        _tripService.fetchRouteMapPoints(tripId),
+        _tripService.fetchTripItems(tripId),   
+      ]);
+      stopsByTrip[tripId] = results[0];
+      routePointsByTrip[tripId]= results[1];
+      itemsByTrip[tripId] = results[2];   
       }));
 
       if (!mounted) return;
@@ -102,20 +129,108 @@ class _TripsScreenState extends State<TripsScreen> {
         _trips = trips;
         _tripStopsByTripId = stopsByTrip;
         _routePointsByTripId = routePointsByTrip;
+        _itemsByTripId = itemsByTrip;
         _nextTripsCursor = result['nextCursor'] as String?;
         _hasMoreTrips = result['hasMore'] as bool? ?? false;
         _isLoadingTrips = false;
+        _isOfflineTripsData = false;
+        _offlineTripsSavedAt = null;
       });
+
+      // Cache the freshly loaded trips so they remain available if a later
+      // load fails because the network is unavailable mid-trip.
+      unawaited(TripCache.save(
+        trips: trips,
+        stopsByTripId: stopsByTrip,
+        routePointsByTripId: routePointsByTrip,
+        itemsByTripId: itemsByTrip,
+      ));
     } catch (e) {
       debugPrint('Failed to load trips: $e');
       if (!mounted) return;
+
+      final cached = await TripCache.load();
+      if (cached != null && cached.trips.isNotEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _trips = cached.trips;
+          _tripStopsByTripId = cached.stopsByTripId;
+          _routePointsByTripId = cached.routePointsByTripId;
+          _itemsByTripId = cached.itemsByTripId;
+          _hasMoreTrips = false;
+          _isLoadingTrips = false;
+          _tripsError = null;
+          _isOfflineTripsData = true;
+          _offlineTripsSavedAt = cached.savedAt;
+        });
+        return;
+      }
+
       setState(() {
         _isLoadingTrips = false;
         _tripsError = e.toString();
+        _isOfflineTripsData = false;
       });
     }
   }
 
+  void _onScroll() {
+    if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 200) {
+      _loadMoreTrips();
+    }
+  }
+
+  Future<void> _loadMoreTrips() async {
+    if (_isLoadingMoreTrips || !_hasMoreTrips || _isLoadingTrips) return;
+    
+    setState(() {
+      _isLoadingMoreTrips = true;
+    });
+
+    try {
+      final result = await _tripService.fetchTripHistory(
+        cursor: _nextTripsCursor,
+        limit: 20,
+      );
+      final newTrips = result['trips'] as List<Map<String, dynamic>>;
+
+      final stopsByTrip = <String, List<Map<String, dynamic>>>{};
+      final routePointsByTrip = <String, List<Map<String, dynamic>>>{};
+      final itemsByTrip = <String, List<Map<String, dynamic>>>{};
+
+      await Future.wait(newTrips.map((trip) async {
+        final tripId = trip['trip_display_id']?.toString();
+        if (tripId == null || tripId.isEmpty) return;
+
+        final results = await Future.wait([
+          _tripService.fetchTripStops(tripId),
+          _tripService.fetchRouteMapPoints(tripId),
+          _tripService.fetchTripItems(tripId),
+        ]);
+        stopsByTrip[tripId] = results[0];
+        routePointsByTrip[tripId] = results[1];
+        itemsByTrip[tripId] = results[2];
+      }));
+
+      if (!mounted) return;
+
+      setState(() {
+        _trips.addAll(newTrips);
+        _tripStopsByTripId.addAll(stopsByTrip);
+        _routePointsByTripId.addAll(routePointsByTrip);
+        _itemsByTripId.addAll(itemsByTrip);
+        _nextTripsCursor = result['nextCursor'] as String?;
+        _hasMoreTrips = result['hasMore'] as bool? ?? false;
+        _isLoadingMoreTrips = false;
+      });
+    } catch (e) {
+      debugPrint('Failed to load more trips: $e');
+      if (!mounted) return;
+      setState(() {
+        _isLoadingMoreTrips = false;
+      });
+    }
+  }
 
   Future<void> _completeCurrentStop(String tripId) async {
     final stops = _tripStopsByTripId[tripId] ?? [];
@@ -126,10 +241,23 @@ class _TripsScreenState extends State<TripsScreen> {
 
     if (currentStop.isEmpty) return;
 
-    await _tripService.markStopCompleted(
-      currentStop['id'].toString(),
-      currentStop['trip_display_id'].toString(),
-    );
+    if (!mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (context) => ProofOfDeliveryScreen(
+        tripDisplayId: currentStop['trip_display_id'].toString(),
+        stopId: currentStop['id'].toString(),
+        onComplete: (photoPath, signPath) async {
+          await SyncService.instance.queueOrSyncPoD(
+            tripDisplayId: currentStop['trip_display_id'].toString(),
+            stopId: currentStop['id'].toString(),
+            photoPath: photoPath,
+            signaturePath: signPath,
+          );
+        },
+      ),
+    ));
+
+    if (!mounted) return;
     await _loadTrips();
   }
 
@@ -144,34 +272,49 @@ class _TripsScreenState extends State<TripsScreen> {
         return TripStatusType.active;
     }
   }
-
   List<Trip> _mapSupabaseTripsToUiTrips() {
-    return _trips.map((row) {
-      return Trip(
-        route: row['route_label']?.toString() ?? 'Unknown route',
-        date: row['trip_date']?.toString() ?? '',
-        items: const [],
-        itemCount: row['distance']?.toString() ?? '',
-        distance: row['distance']?.toString() ?? '',
-        earnings: '₹${((row['net_earnings'] ?? 0) / 100).toStringAsFixed(0)}',
-        status: _mapStatus(row['status']?.toString()),
-        tripId: row['trip_display_id']?.toString() ?? '',
-        hash: '',
-        duration: row['duration']?.toString() ?? '',
-        endTime: '',
-        paymentBreakdown: PaymentBreakdown(
-          baseFreight:
-              '₹${((row['total_earnings'] ?? 0) / 100).toStringAsFixed(0)}',
-          fuelDeducted: '₹0',
-          tollDeducted: '₹0',
-          platformFee: '₹0',
-          netEarnings:
-              '₹${((row['net_earnings'] ?? 0) / 100).toStringAsFixed(0)}',
-        ),
-        tripItems: const [],
+  return _trips.map((row) {
+    final tripId = row['trip_display_id']?.toString() ?? '';
+    final rawItems = _itemsByTripId[tripId] ?? [];
+
+    final tripItems = rawItems.map((item) {
+      return TripItem(
+        customerName: item['customer_name']?.toString() ?? 'Unknown',
+        goods: item['goods']?.toString() ?? '',
+        destination: item['destination']?.toString() ?? '',
+        earnings: '₹${((item['earnings'] as num? ?? 0) / 100).toStringAsFixed(0)}',
+        delivered: item['is_delivered'] as bool? ?? false,
+        isFragile: item['is_fragile'] as bool? ?? false,
+        isStackable: item['is_stackable'] as bool? ?? true,
+        specialRequirements:
+          item['special_requirements']?.toString(),
       );
+      debugPrint(item.toString());
     }).toList();
-  }
+
+    return Trip(
+      route: row['route_label']?.toString() ?? 'Unknown route',
+      date: row['trip_date']?.toString() ?? '',
+      items: tripItems.map((i) => i.goods).toList(),
+      itemCount: '${tripItems.length} item${tripItems.length == 1 ? '' : 's'} · ${row['distance']?.toString() ?? ''}',
+      distance: row['distance']?.toString() ?? '',
+      earnings: '₹${((row['net_earnings'] as num? ?? 0) / 100).toStringAsFixed(0)}',
+      status: _mapStatus(row['status']?.toString()),
+      tripId: tripId,
+      hash: '',
+      duration: row['duration']?.toString() ?? '',
+      endTime: '',
+      paymentBreakdown: PaymentBreakdown(
+        baseFreight: '₹${((row['total_earnings'] as num? ?? 0) / 100).toStringAsFixed(0)}',
+        fuelDeducted: '₹0',
+        tollDeducted: '₹0',
+        platformFee: '₹0',
+        netEarnings: '₹${((row['net_earnings'] ?? 0) / 100).toStringAsFixed(0)}',
+      ),
+      tripItems: tripItems,
+    );
+  }).toList();
+}
 
   List<Trip> _getFilteredAndSortedTrips() {
     List<Trip> trips = _mapSupabaseTripsToUiTrips();
@@ -236,6 +379,22 @@ class _TripsScreenState extends State<TripsScreen> {
     return (_completedCount() / total) * 100;
   }
 
+  String _localizedFilterLabel(BuildContext context, int index) {
+    final l10n = AppLocalizations.of(context)!;
+    switch (index) {
+      case 0:
+        return l10n.all;
+      case 1:
+        return l10n.active2;
+      case 2:
+        return l10n.completed2;
+      case 3:
+        return l10n.cancelled2;
+      default:
+        return _statusFilters[index];
+    }
+  }
+
   String _formatEarnings(int paise) {
     final rupees = paise / 100;
     if (rupees >= 100000) {
@@ -265,11 +424,31 @@ class _TripsScreenState extends State<TripsScreen> {
     }
 
     try {
+      // Resolve driver's current GPS from the active trip's last known route
+      // point so the ML engine can compute detour distances accurately.
+      double? currentLat;
+      double? currentLng;
+      final activeTrip = _trips.cast<Map<String, dynamic>?>().firstWhere(
+        (t) => t?['status'] == 'active',
+        orElse: () => null,
+      );
+      if (activeTrip != null) {
+        final tripId = activeTrip['trip_display_id']?.toString();
+        final routePoints = tripId != null ? (_routePointsByTripId[tripId] ?? []) : [];
+        if (routePoints.isNotEmpty) {
+          final lastPoint = routePoints.last;
+          currentLat = (lastPoint['latitude'] as num?)?.toDouble();
+          currentLng = (lastPoint['longitude'] as num?)?.toDouble();
+        }
+      }
+
       final results = await Future.wait([
         _marketplaceRepository.fetchLoadOffers(),
-        _marketplaceRepository.fetchEnRouteLoads(),
-        _marketplaceRepository.fetchDriverBids(
-            driverId: DriverSession.driverId),
+        _marketplaceRepository.fetchEnRouteLoads(
+          currentLat: currentLat,
+          currentLng: currentLng,
+        ),
+        _marketplaceRepository.fetchDriverBids(),
       ]);
 
       final standardLoads = results[0] as List<LoadOffer>;
@@ -307,8 +486,133 @@ class _TripsScreenState extends State<TripsScreen> {
         .subscribe();
   }
 
+  Future<void> _fetchDeadheadRecommendations() async {
+    final activeTrip = _trips.cast<Map<String, dynamic>?>().firstWhere(
+      (t) => t?['status'] == 'active',
+      orElse: () => null,
+    );
+    if (activeTrip == null) return;
+
+    final tripId = activeTrip['trip_display_id']?.toString();
+    if (tripId == null) return;
+
+    final routePoints = _routePointsByTripId[tripId];
+    if (routePoints == null || routePoints.isEmpty) return;
+
+    final destination = routePoints.last;
+    final destLat = (destination['latitude'] as num?)?.toDouble();
+    final destLng = (destination['longitude'] as num?)?.toDouble();
+    if (destLat == null || destLng == null) return;
+
+    setState(() {
+      _deadheadLoading = true;
+      _deadheadError = null;
+    });
+
+    try {
+      final loads = await _marketplaceRepository.fetchLoadOffers();
+      if (!mounted) return;
+      if (loads.isEmpty) {
+        setState(() {
+          _deadheadRecommendations = const [];
+          _deadheadLoading = false;
+        });
+        return;
+      }
+
+      final now = DateTime.now();
+      final payload = _marketplaceRepository.buildDeadheadPayload(
+        loads: loads,
+        driverLat: destLat,
+        driverLng: destLng,
+        truckMaxWeightKg: 25000,
+        truckMaxLengthM: 12,
+        truckMaxWidthM: 2.5,
+        truckMaxHeightM: 4,
+        arrivalTime: now.add(const Duration(hours: 6)).toIso8601String(),
+      );
+      final availableLoadMaps = payload['available_loads'] as List<Map<String, dynamic>>;
+
+      final recommendations = await _marketplaceRepository
+          .fetchDeadheadRecommendations(
+        destLat: destLat,
+        destLng: destLng,
+        maxWeightKg: 25000,
+        maxLengthM: 12,
+        maxWidthM: 2.5,
+        maxHeightM: 4,
+        arrivalTime: now.add(const Duration(hours: 6)).toIso8601String(),
+        availableLoads: availableLoadMaps,
+      );
+
+      if (!mounted) return;
+
+      final enrichedRecs = recommendations.map((rec) {
+        final matchingLoad = loads.firstWhere(
+          (l) => l.id == rec.loadId,
+          orElse: () => const LoadOffer(
+            id: '',
+            route: '',
+            customer: '',
+            company: '',
+            goods: '',
+            pickup: '',
+            distanceFromDriver: '',
+            estimatedProfit: '',
+            fuelCost: '',
+            tollCost: '',
+            capacityUsed: 0,
+            truckFillLabel: '',
+            sharingTruckWith: '',
+            badgeLabel: '',
+            badgeEmoji: '',
+            routeDistance: '',
+            routeDuration: '',
+            weight: '',
+            dimensions: '',
+            stackable: '',
+            fragile: '',
+            specialHandling: '',
+            freightValue: '',
+            netProfit: '',
+            routeNote: '',
+            extraDistance: 0,
+            extraEarnings: '',
+            spaceAvailable: '',
+            updatedTotalEarnings: '',
+          ),
+        );
+        return DeadheadRecommendation(
+          loadId: rec.loadId,
+          distanceToPickupKm: rec.distanceToPickupKm,
+          matchScore: rec.matchScore,
+          detourKm: rec.detourKm,
+          estimatedEarnings: rec.estimatedEarnings,
+          route: matchingLoad.route.isNotEmpty ? matchingLoad.route : rec.loadId,
+          goodsType: matchingLoad.goods,
+          pickup: matchingLoad.pickup,
+          drop: matchingLoad.route,
+          weight: matchingLoad.weight,
+        );
+      }).toList();
+
+      setState(() {
+        _deadheadRecommendations = enrichedRecs;
+        _deadheadLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _deadheadError = e.toString();
+        _deadheadLoading = false;
+      });
+    }
+  }
+
   @override
   void dispose() {
+    SyncService.instance.stopListening();
+    _scrollController.dispose();
     if (SupabaseConfig.isConfigured && _bidChannel != null) {
       Supabase.instance.client.removeChannel(_bidChannel!);
     }
@@ -340,7 +644,7 @@ class _TripsScreenState extends State<TripsScreen> {
                   const BottomSheetHandle(),
                   const SizedBox(height: 16),
                   Text(
-                    'Sort Trips',
+                    AppLocalizations.of(context)!.sortTrips,
                     style: GoogleFonts.dmSans(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
@@ -348,23 +652,23 @@ class _TripsScreenState extends State<TripsScreen> {
                     ),
                   ),
                   const SizedBox(height: 20),
-                  _buildSortOption(context, 'Newest first', 0, tempSortIndex,
+                  _buildSortOption(context, AppLocalizations.of(context)!.newestFirst, 0, tempSortIndex,
                       (idx) {
                     setBottomSheetState(() => tempSortIndex = idx);
                   }),
-                  _buildSortOption(context, 'Oldest first', 1, tempSortIndex,
+                  _buildSortOption(context, AppLocalizations.of(context)!.oldestFirst, 1, tempSortIndex,
                       (idx) {
                     setBottomSheetState(() => tempSortIndex = idx);
                   }),
                   _buildSortOption(
-                      context, 'Highest earnings', 2, tempSortIndex, (idx) {
+                      context, AppLocalizations.of(context)!.highestEarnings, 2, tempSortIndex, (idx) {
                     setBottomSheetState(() => tempSortIndex = idx);
                   }),
-                  _buildSortOption(context, 'Lowest earnings', 3, tempSortIndex,
+                  _buildSortOption(context, AppLocalizations.of(context)!.lowestEarnings, 3, tempSortIndex,
                       (idx) {
                     setBottomSheetState(() => tempSortIndex = idx);
                   }),
-                  _buildSortOption(context, 'By status', 4, tempSortIndex,
+                  _buildSortOption(context, AppLocalizations.of(context)!.byStatus, 4, tempSortIndex,
                       (idx) {
                     setBottomSheetState(() => tempSortIndex = idx);
                   }),
@@ -385,7 +689,7 @@ class _TripsScreenState extends State<TripsScreen> {
                         elevation: 0,
                       ),
                       child: Text(
-                        'Apply',
+                        AppLocalizations.of(context)!.apply,
                         style: GoogleFonts.dmSans(
                           color: Theme.of(context).colorScheme.surface,
                           fontWeight: FontWeight.w600,
@@ -487,7 +791,7 @@ class _TripsScreenState extends State<TripsScreen> {
                   Row(
                     children: [
                       Text(
-                        _topTabIndex == 0 ? 'My Trips' : 'Marketplace',
+                        _topTabIndex == 0 ? AppLocalizations.of(context)!.myTrips : AppLocalizations.of(context)!.marketplace,
                         style: GoogleFonts.dmSans(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
@@ -544,22 +848,34 @@ class _TripsScreenState extends State<TripsScreen> {
                     standardLoads: _marketplaceLoads,
                     enRouteLoads: _enRouteLoads,
                     bidsByLoadId: _bidsByLoadId,
+                    submittingLoadIds: _submittingLoadIds,
                     onOpenLoad: (load) => Navigator.of(context)
                         .pushNamed(AppRoutes.loadDetail, arguments: load),
                     onSubmitBid: (load, amount) async {
                       final loadId = load.id;
                       if (loadId.isEmpty) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                              content: Text('This load is missing an id.')),
+                          SnackBar(
+                              content: Text(AppLocalizations.of(context)!.thisLoadIsMissingId)),
                         );
                         return;
                       }
+                      if (_submittingLoadIds.contains(loadId)) {
+                        return;
+                      }
+
+                      if (!mounted) return;
+                      setState(() {
+                        _submittingLoadIds = <String>{..._submittingLoadIds, loadId};
+                      });
+
                       try {
-                        final bid = await _marketplaceRepository.submitBid(
+                        final bid = await _bidSubmissionGuard.run<DriverBid>(
                           loadId: loadId,
-                          driverId: DriverSession.driverId,
-                          amount: amount,
+                          action: () async => _marketplaceRepository.submitBid(
+                            loadId: loadId,
+                            amount: amount,
+                          ),
                         );
                         if (!context.mounted) return;
                         setState(() {
@@ -569,14 +885,21 @@ class _TripsScreenState extends State<TripsScreen> {
                           };
                         });
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                              content: Text('Bid submitted (Pending).')),
+                          SnackBar(
+                              content: Text(AppLocalizations.of(context)!.bidSubmitted)),
                         );
                       } catch (e) {
                         if (!context.mounted) return;
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Failed to submit bid: $e')),
+                          SnackBar(content: Text(AppLocalizations.of(context)!.failedToSubmitBid)),
                         );
+                      } finally {
+                        if (!mounted) return;
+                        setState(() {
+                          _submittingLoadIds = <String>{
+                            ..._submittingLoadIds.where((id) => id != loadId),
+                          };
+                        });
                       }
                     },
                   ),
@@ -602,7 +925,7 @@ class _TripsScreenState extends State<TripsScreen> {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            'Total trips',
+                            AppLocalizations.of(context)!.totalTrips,
                             style: GoogleFonts.dmSans(
                               fontSize: 10,
                               color:
@@ -627,7 +950,7 @@ class _TripsScreenState extends State<TripsScreen> {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            'Total earned',
+                            AppLocalizations.of(context)!.totalEarned,
                             style: GoogleFonts.dmSans(
                               fontSize: 10,
                               color:
@@ -652,7 +975,7 @@ class _TripsScreenState extends State<TripsScreen> {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            'Completion',
+                            AppLocalizations.of(context)!.completion,
                             style: GoogleFonts.dmSans(
                               fontSize: 10,
                               color:
@@ -701,7 +1024,7 @@ class _TripsScreenState extends State<TripsScreen> {
                         ),
                         child: Center(
                           child: Text(
-                            _statusFilters[index],
+                            _localizedFilterLabel(context, index),
                             style: GoogleFonts.dmSans(
                               fontSize: 12,
                               fontWeight: isSelected
@@ -720,11 +1043,17 @@ class _TripsScreenState extends State<TripsScreen> {
                 ),
               ),
 
+              if (_isOfflineTripsData)
+                _OfflineTripsBanner(savedAt: _offlineTripsSavedAt),
+
               // Trips List
               Expanded(
                 child: RefreshIndicator(
                   color: TruxifyColors.accent,
-                  onRefresh: _loadTrips,
+                  onRefresh: () async {
+                    await _loadTrips();
+                    await _fetchDeadheadRecommendations();
+                  },
                   child: _isLoadingTrips
                       ? ListView.builder(
                           physics: const AlwaysScrollableScrollPhysics(),
@@ -741,7 +1070,7 @@ class _TripsScreenState extends State<TripsScreen> {
                                 const SizedBox(height: 40),
                                 Center(
                                   child: Text(
-                                    'Failed to load trips.\nPull down to retry.',
+                                    AppLocalizations.of(context)!.failedToLoadTrips,
                                     textAlign: TextAlign.center,
                                     style: GoogleFonts.dmSans(
                                       color:
@@ -753,7 +1082,10 @@ class _TripsScreenState extends State<TripsScreen> {
                                 ),
                               ],
                             )
-                          : trips.isEmpty
+                          : trips.isEmpty &&
+                                  _deadheadRecommendations.isEmpty &&
+                                  !_deadheadLoading &&
+                                  _deadheadError == null
                               ? ListView(
                                   physics:
                                       const AlwaysScrollableScrollPhysics(),
@@ -761,7 +1093,7 @@ class _TripsScreenState extends State<TripsScreen> {
                                     const SizedBox(height: 80),
                                     Center(
                                       child: Text(
-                                        'No trips found',
+                                        AppLocalizations.of(context)!.noTripsFound,
                                         style: GoogleFonts.dmSans(
                                           color: TruxifyColors
                                               .adaptiveSecondaryText(context),
@@ -772,12 +1104,190 @@ class _TripsScreenState extends State<TripsScreen> {
                                   ],
                                 )
                               : ListView.builder(
+                                  controller: _scrollController,
                                   physics:
                                       const AlwaysScrollableScrollPhysics(),
                                   padding: const EdgeInsets.all(12),
-                                  itemCount: trips.length,
-                                  itemBuilder: (context, index) =>
-                                      _buildTripCard(context, trips[index]),
+                                  itemCount:
+                                      (_deadheadRecommendations.isNotEmpty ||
+                                              _deadheadLoading ||
+                                              _deadheadError != null
+                                          ? 1
+                                          : 0) +
+                                          _deadheadRecommendations.length +
+                                          1 +
+                                          trips.length +
+                                          (_hasMoreTrips && trips.isNotEmpty
+                                              ? 1
+                                              : 0),
+                                  itemBuilder: (context, index) {
+                                    final hasRecs =
+                                        _deadheadRecommendations.isNotEmpty;
+                                    final showDeadheadHeader = hasRecs ||
+                                        _deadheadLoading ||
+                                        _deadheadError != null;
+                                    if (showDeadheadHeader && index == 0) {
+                                      return Padding(
+                                        padding: const EdgeInsets.only(
+                                            bottom: 4),
+                                        child: Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                AppLocalizations.of(context)!
+                                                    .recommendedReturnLoads,
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .titleMedium
+                                                    ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w800,
+                                                    ),
+                                              ),
+                                            ),
+                                            if (_deadheadLoading)
+                                              const SizedBox(
+                                                width: 16,
+                                                height: 16,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                        strokeWidth: 2),
+                                              )
+                                            else if (_deadheadError != null)
+                                              GestureDetector(
+                                                onTap:
+                                                    _fetchDeadheadRecommendations,
+                                                child: Text(
+                                                  AppLocalizations.of(context)!
+                                                      .retry,
+                                                  style: GoogleFonts.dmSans(
+                                                    fontSize: 12,
+                                                    color:
+                                                        TruxifyColors.accent,
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                      );
+                                    }
+
+                                    final recStart =
+                                        showDeadheadHeader ? 1 : 0;
+                                    if (index >= recStart &&
+                                        index <
+                                            recStart +
+                                                _deadheadRecommendations
+                                                    .length) {
+                                      final recIndex = index - recStart;
+                                      final rec = _deadheadRecommendations[recIndex];
+                                      final bid =
+                                          _deadheadBidsByLoadId[rec.loadId];
+                                      final isSubmitting =
+                                          _submittingDeadheadLoadIds
+                                              .contains(rec.loadId);
+                                      return DeadheadRecommendationCard(
+                                        recommendation: rec,
+                                        bid: bid,
+                                        isSubmitting: isSubmitting,
+                                        onOpenLoad: () => Navigator.of(context)
+                                            .pushNamed(AppRoutes.loadDetail),
+                                        onBid: (amount) async {
+                                          final loadId = rec.loadId;
+                                          if (loadId.isEmpty) return;
+                                          if (_submittingDeadheadLoadIds
+                                              .contains(loadId)) return;
+                                          if (!mounted) return;
+                                          setState(() {
+                                            _submittingDeadheadLoadIds = {
+                                              ..._submittingDeadheadLoadIds,
+                                              loadId,
+                                            };
+                                          });
+                                          try {
+                                            final newBid =
+                                                await _bidSubmissionGuard
+                                                    .run<DriverBid>(
+                                              loadId: loadId,
+                                              action: () async =>
+                                                  _marketplaceRepository
+                                                      .submitBid(
+                                                loadId: loadId,
+                                                amount: amount,
+                                              ),
+                                            );
+                                            if (!mounted) return;
+                                            setState(() {
+                                              _deadheadBidsByLoadId = {
+                                                ..._deadheadBidsByLoadId,
+                                                newBid.loadId: newBid,
+                                              };
+                                              _bidsByLoadId = {
+                                                ..._bidsByLoadId,
+                                                newBid.loadId: newBid,
+                                              };
+                                            });
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(SnackBar(
+                                                content: Text(
+                                                    AppLocalizations.of(
+                                                            context)!
+                                                        .bidSubmitted),
+                                              ));
+                                            }
+                                          } catch (e) {
+                                            if (!mounted) return;
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(SnackBar(
+                                                content: Text(
+                                                    AppLocalizations.of(
+                                                            context)!
+                                                        .failedToSubmitBid),
+                                              ));
+                                            }
+                                          } finally {
+                                            if (!mounted) return;
+                                            setState(() {
+                                              _submittingDeadheadLoadIds = {
+                                                ..._submittingDeadheadLoadIds
+                                                    .where(
+                                                        (id) => id != loadId),
+                                              };
+                                            });
+                                          }
+                                        },
+                                      );
+                                    }
+                                    final recCount =
+                                        hasRecs
+                                            ? _deadheadRecommendations.length
+                                            : 0;
+                                    final tripStart = recStart + recCount + 1;
+                                    if (index == tripStart - 1) {
+                                      return const SizedBox.shrink();
+                                    }
+                                    final tripIndex = index - tripStart;
+                                    if (tripIndex >= 0 &&
+                                        tripIndex == trips.length) {
+                                      return const Padding(
+                                        padding:
+                                            EdgeInsets.symmetric(vertical: 16.0),
+                                        child: Center(
+                                            child:
+                                                CircularProgressIndicator()),
+                                      );
+                                    }
+                                    if (tripIndex >= 0 &&
+                                        tripIndex < trips.length) {
+                                      return _buildTripCard(
+                                          context, trips[tripIndex]);
+                                    }
+                                    return const SizedBox.shrink();
+                                  },
                                 ),
                 ),
               ),
@@ -804,12 +1314,12 @@ class _TripsScreenState extends State<TripsScreen> {
               style: ElevatedButton.styleFrom(
                 backgroundColor: TruxifyColors.accent,
               ),
-              child: const Text('Mark Current Stop Completed'),
+              child: Text(AppLocalizations.of(context)!.markCurrentStopCompleted),
             ),
           ),
         const SizedBox(height: 10),
-        Text(
-          'Delivery Stops',
+          Text(
+          AppLocalizations.of(context)!.deliveryStops,
           style: GoogleFonts.dmSans(
             fontSize: 12,
             fontWeight: FontWeight.bold,
@@ -847,17 +1357,17 @@ class _TripsScreenState extends State<TripsScreen> {
       case TripStatusType.active:
         statusColor = TruxifyColors.accent;
         statusBgColor = TruxifyColors.accentLight;
-        statusLabel = 'Active';
+        statusLabel = AppLocalizations.of(context)!.activeStatus;
         break;
       case TripStatusType.completed:
         statusColor = TruxifyColors.success;
-        statusBgColor = const Color(0xFFE8F5E9);
-        statusLabel = 'Completed';
+        statusBgColor = TruxifyColors.successLight;
+        statusLabel = AppLocalizations.of(context)!.completedStatus;
         break;
       case TripStatusType.cancelled:
         statusColor = TruxifyColors.errorRed;
         statusBgColor = TruxifyColors.errorLight;
-        statusLabel = 'Cancelled';
+        statusLabel = AppLocalizations.of(context)!.cancelledStatus;
         break;
     }
 
@@ -876,7 +1386,7 @@ class _TripsScreenState extends State<TripsScreen> {
           ),
           boxShadow: [
             BoxShadow(
-              color: TruxifyColors.accent.withOpacity(0.06),
+              color: TruxifyColors.accent.withValues(alpha: 0.06),
               blurRadius: 8,
               offset: const Offset(0, 2),
             ),
@@ -968,7 +1478,7 @@ class _TripsScreenState extends State<TripsScreen> {
                                       color: Theme.of(context).brightness ==
                                               Brightness.dark
                                           ? TruxifyColors.darkAccentLight
-                                          : const Color(0xFFFDEAEA),
+                                          : TruxifyColors.accentLight,
                                       border: Border.all(
                                           color: TruxifyColors.border),
                                       borderRadius: BorderRadius.circular(20),
@@ -1026,7 +1536,7 @@ class _TripsScreenState extends State<TripsScreen> {
     if (routePoints.isEmpty) {
       return Container(
         decoration: BoxDecoration(
-          color: const Color(0xFFF0E8E8),
+          color: TruxifyColors.subtleBorder,
           borderRadius: BorderRadius.circular(8),
         ),
         child: const Center(
@@ -1042,10 +1552,11 @@ class _TripsScreenState extends State<TripsScreen> {
       );
     }).toList();
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: FlutterMap(
-        options: MapOptions(
+    return RepaintBoundary(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: FlutterMap(
+          options: MapOptions(
           initialCenter: points.first,
           initialZoom: 6.0,
           interactionOptions: const InteractionOptions(
@@ -1067,7 +1578,11 @@ class _TripsScreenState extends State<TripsScreen> {
             ],
           ),
           MarkerLayer(
-            markers: routePoints.map((point) {
+            markers: routePoints.where((p) =>
+              p == routePoints.first ||
+              p == routePoints.last ||
+              p['is_claimed'] == true
+            ).map<Marker>((point) {
               return Marker(
                 point: ll.LatLng(
                   (point['latitude'] as num).toDouble(),
@@ -1075,12 +1590,32 @@ class _TripsScreenState extends State<TripsScreen> {
                 ),
                 width: 12,
                 height: 12,
-                child: Container(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: point['is_claimed'] == true
-                        ? TruxifyColors.success
-                        : TruxifyColors.accent,
+                child: GestureDetector(
+                  onTap: () {
+                    final mapPoint = RouteMapPoint(
+                      id: point['id']?.toString() ?? '',
+                      title: (point['label'] ?? point['title'] ?? 'Stop').toString(),
+                      subtitle: (point['address'] ?? point['subtitle'] ?? '').toString(),
+                      details: (point['details'] ?? '').toString(),
+                      progress: (point['progress'] as num?)?.toDouble() ?? 0.0,
+                      claimed: point['is_claimed'] == true,
+                      icon: Icons.place,
+                      latitude: (point['latitude'] as num).toDouble(),
+                      longitude: (point['longitude'] as num).toDouble(),
+                      loadOfferId: point['load_offer_id']?.toString(),
+                    );
+                    Navigator.of(context).pushNamed(
+                      AppRoutes.loadPointDetail,
+                      arguments: mapPoint,
+                    );
+                  },
+                  child: Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: point['is_claimed'] == true
+                          ? TruxifyColors.success
+                          : TruxifyColors.accent,
+                    ),
                   ),
                 ),
               );
@@ -1088,7 +1623,7 @@ class _TripsScreenState extends State<TripsScreen> {
           ),
         ],
       ),
-    );
+    ));
   }
 }
 
@@ -1128,9 +1663,9 @@ class _TopTabToggle extends StatelessWidget {
 
     return Row(
       children: [
-        chip('Trips', 0),
+        chip(AppLocalizations.of(context)!.trips, 0),
         const SizedBox(width: 8),
-        chip('Loads', 1),
+        chip(AppLocalizations.of(context)!.marketplace, 1),
       ],
     );
   }
@@ -1143,6 +1678,7 @@ class _MarketplaceBody extends StatelessWidget {
     required this.standardLoads,
     required this.enRouteLoads,
     required this.bidsByLoadId,
+    required this.submittingLoadIds,
     required this.onOpenLoad,
     required this.onSubmitBid,
   });
@@ -1152,6 +1688,7 @@ class _MarketplaceBody extends StatelessWidget {
   final List<LoadOffer> standardLoads;
   final List<LoadOffer> enRouteLoads;
   final Map<String, DriverBid> bidsByLoadId;
+  final Set<String> submittingLoadIds;
   final ValueChanged<LoadOffer> onOpenLoad;
   final Future<void> Function(LoadOffer load, num amount) onSubmitBid;
 
@@ -1175,15 +1712,15 @@ class _MarketplaceBody extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Could not load marketplace',
+                Text(AppLocalizations.of(context)!.couldNotLoadMarketplace,
                     style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
                 Text(error!, style: Theme.of(context).textTheme.bodyMedium),
                 const SizedBox(height: 14),
-                const OutlinedAccentButton(
-                  label: 'Pull to refresh',
-                  onPressed: null,
-                ),
+                Text(AppLocalizations.of(context)!.couldNotLoadMarketplace,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                    )),
               ],
             ),
           ),
@@ -1195,9 +1732,9 @@ class _MarketplaceBody extends StatelessWidget {
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(16),
-        children: const [
+        children: [
           SizedBox(height: 80),
-          Center(child: Text('No loads available right now. Pull to refresh.')),
+          Center(child: Text(AppLocalizations.of(context)!.noLoadsAvailable)),
         ],
       );
     }
@@ -1207,15 +1744,16 @@ class _MarketplaceBody extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
       children: [
         if (enRouteLoads.isNotEmpty) ...[
-          const SectionHeader(
-            title: 'En-route opportunities',
-            subtitle: 'Pick up nearby loads with minimal detours',
+          SectionHeader(
+            title: AppLocalizations.of(context)!.enRouteOpportunities,
+            subtitle: AppLocalizations.of(context)!.pickupNearbyLoads,
           ),
           const SizedBox(height: 10),
           ...enRouteLoads.map(
             (load) => _LoadOfferCard(
               load: load,
               bid: bidsByLoadId[load.id],
+              isSubmitting: submittingLoadIds.contains(load.id),
               onOpen: () => onOpenLoad(load),
               onBid: (amount) => onSubmitBid(load, amount),
             ),
@@ -1223,15 +1761,16 @@ class _MarketplaceBody extends StatelessWidget {
           const SizedBox(height: 16),
         ],
         if (standardLoads.isNotEmpty) ...[
-          const SectionHeader(
-            title: 'Marketplace loads',
-            subtitle: 'Available loads you can bid for',
+          SectionHeader(
+            title: AppLocalizations.of(context)!.marketplaceLoads,
+            subtitle: AppLocalizations.of(context)!.availableLoadsYouCanBidFor,
           ),
           const SizedBox(height: 10),
           ...standardLoads.map(
             (load) => _LoadOfferCard(
               load: load,
               bid: bidsByLoadId[load.id],
+              isSubmitting: submittingLoadIds.contains(load.id),
               onOpen: () => onOpenLoad(load),
               onBid: (amount) => onSubmitBid(load, amount),
             ),
@@ -1256,12 +1795,14 @@ class _LoadOfferCard extends StatelessWidget {
   const _LoadOfferCard({
     required this.load,
     required this.bid,
+    required this.isSubmitting,
     required this.onOpen,
     required this.onBid,
   });
 
   final LoadOffer load;
   final DriverBid? bid;
+  final bool isSubmitting;
   final VoidCallback onOpen;
   final Future<void> Function(num amount) onBid;
 
@@ -1346,23 +1887,27 @@ class _LoadOfferCard extends StatelessWidget {
                 ),
               ),
               TextButton(
-                onPressed: () async {
-                  final result = await showModalBottomSheet<num>(
-                    context: context,
-                    isScrollControlled: true,
-                    backgroundColor: TruxifyColors.cardBackground,
-                    shape: const RoundedRectangleBorder(
-                      borderRadius:
-                          BorderRadius.vertical(top: Radius.circular(24)),
-                    ),
-                    builder: (_) =>
-                        _BidBottomSheet(load: load, existingBid: bid),
-                  );
-                  if (result != null) await onBid(result);
-                },
+                onPressed: isSubmitting
+                    ? null
+                    : () async {
+                        final result = await showModalBottomSheet<num>(
+                          context: context,
+                          isScrollControlled: true,
+                          backgroundColor: TruxifyColors.cardBackground,
+                          shape: const RoundedRectangleBorder(
+                            borderRadius:
+                                BorderRadius.vertical(top: Radius.circular(24)),
+                          ),
+                          builder: (_) =>
+                              _BidBottomSheet(load: load, existingBid: bid),
+                        );
+                        if (result != null) await onBid(result);
+                      },
                 style:
                     TextButton.styleFrom(foregroundColor: TruxifyColors.accent),
-                child: Text(bid == null ? 'Bid' : 'Update bid'),
+                child: Text(isSubmitting
+                    ? 'Submitting...'
+                    : (bid == null ? 'Bid' : 'Update bid')),
               ),
             ],
           ),
@@ -1488,6 +2033,60 @@ class _BidBottomSheetState extends State<_BidBottomSheet> {
             label: 'Cancel',
             onPressed: _submitting ? null : () => Navigator.of(context).pop(),
             color: TruxifyColors.secondaryText,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OfflineTripsBanner extends StatelessWidget {
+  const _OfflineTripsBanner({required this.savedAt});
+
+  final DateTime? savedAt;
+
+  String _formatSavedAt(DateTime time) {
+    final now = DateTime.now();
+    final diff = now.difference(time);
+    if (diff.inMinutes < 1) return 'just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${diff.inDays}d ago';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final label = savedAt != null
+        ? 'Offline mode — showing trips saved ${_formatSavedAt(savedAt!)}'
+        : 'Offline mode — showing your last saved trips';
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: isDark
+            ? TruxifyColors.darkSecondaryBackground
+            : TruxifyColors.errorLight,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isDark ? TruxifyColors.darkBorder : TruxifyColors.border,
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.cloud_off_rounded,
+              size: 18, color: TruxifyColors.adaptiveSecondaryText(context)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              style: GoogleFonts.dmSans(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: TruxifyColors.adaptiveSecondaryText(context),
+              ),
+            ),
           ),
         ],
       ),

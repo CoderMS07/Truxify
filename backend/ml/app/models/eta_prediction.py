@@ -1,10 +1,16 @@
+import hashlib
+import logging
 import os
 import pickle
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 
-MODEL_PATH = "app/models/artifacts/eta_predictor.pkl"
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "models_storage")
+MODEL_PATH = os.path.join(MODEL_DIR, "eta_predictor.pkl")
+MODEL_HASH_PATH = os.path.join(MODEL_DIR, "eta_predictor.sha256")
+
+logger = logging.getLogger(__name__)
 
 
 class ETAPredictor:
@@ -65,10 +71,34 @@ class ETAPredictor:
 
         with open(MODEL_PATH, "wb") as f:
             pickle.dump(self.model, f)
+        self._save_hash()
+
+    def _save_hash(self):
+        with open(MODEL_PATH, "rb") as f:
+            data = f.read()
+        h = hashlib.sha256(data).hexdigest()
+        with open(MODEL_HASH_PATH, "w") as f:
+            f.write(h)
+
+    def _verify_hash(self):
+        if not os.path.exists(MODEL_HASH_PATH):
+            return False
+        with open(MODEL_PATH, "rb") as f:
+            data = f.read()
+        actual = hashlib.sha256(data).hexdigest()
+        with open(MODEL_HASH_PATH, "r") as f:
+            expected = f.read().strip()
+        return actual == expected
 
     def load(self):
         if not os.path.exists(MODEL_PATH):
             self.train()
+
+        if not self._verify_hash():
+            logger.warning("[eta] Model integrity check failed — retraining.")
+            os.remove(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
+            self.train()
+            return
 
         with open(MODEL_PATH, "rb") as f:
             self.model = pickle.load(f)
@@ -77,7 +107,12 @@ class ETAPredictor:
         if self.model is None:
             self.load()
 
-        route_type_value = 1 if route_type.lower() == "highway" else 0
+        if isinstance(route_type, int):
+            route_type_value = route_type
+        elif isinstance(route_type, str):
+            route_type_value = 1 if route_type.strip().lower() == "highway" else 0
+        else:
+            route_type_value = 0
 
         features = np.array([[
             distance,

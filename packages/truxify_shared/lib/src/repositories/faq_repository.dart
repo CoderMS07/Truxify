@@ -13,7 +13,15 @@ class FaqRepository {
         .select()
         .eq('is_active', true)
         .order('sort_order');
-    final rows = (response as List<dynamic>).cast<Map<String, dynamic>>();
+    if (response is! List) {
+      throw StateError('Unexpected FAQ response type');
+    }
+
+    final rows = response.map((item) {
+      if (item is Map<String, dynamic>) return item;
+      if (item is Map) return Map<String, dynamic>.from(item);
+      throw StateError('Unexpected FAQ item type');
+    }).toList(growable: false);
     return rows
         .map(Faq.fromMap)
         .where((faq) => faq.appType == 'both' || faq.appType == appType)

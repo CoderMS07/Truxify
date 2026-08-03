@@ -1,10 +1,15 @@
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
+import logger from "../middleware/logger.js";
 import { GpsLog } from "../models/GpsLog.js";
+import { supabase } from "../config/db.js";
+
+let io = null;
 
 /**
- * Attaches the Truxify Live Location WebSocket server to an existing
- * Node.js HTTP server.
+ * Initializes the Truxify Live Location WebSocket server on top of an existing
+ * Node.js HTTP server. Should be called once during startup after MongoDB
+ * is available.
  *
  * Architecture:
  *  /driver namespace — Driver app sends GPS updates here
@@ -19,15 +24,22 @@ import { GpsLog } from "../models/GpsLog.js";
  *  Server broadcasts "driver_location" to booking:{id} room →
  *  Customer receives update → Leaflet marker moves
  *
+ * Related Issue: #5553 - feat(backend): set up WebSocket server for real-time live tracking updates
+ *
  * @param {import("http").Server} httpServer - Existing HTTP server instance
  */
-export function attachLocationServer(httpServer) {
-  const io = new Server(httpServer, {
+export function initLocationServer(httpServer) {
+  if (io) {
+    logger.warn('[initLocationServer] Already initialized — skipping duplicate call.');
+    return;
+  }
+  io = new Server(httpServer, {
     cors: {
-      origin: process.env.ALLOWED_ORIGINS?.split(",") || [
-        "http://localhost:3000",
-        "http://localhost:5000",
-      ],
+      origin: process.env.ALLOWED_ORIGINS?.split(",") || (
+        process.env.NODE_ENV === 'production'
+          ? []
+          : ["http://localhost:3000", "http://localhost:5000"]
+      ),
       methods: ["GET", "POST"],
       credentials: true,
     },
@@ -44,7 +56,7 @@ export function attachLocationServer(httpServer) {
   driverNs.on("connection", (socket) => {
     const { driverId, bookingId } = socket.data;
 
-    console.log(`[WS] Driver ${driverId} connected for booking ${bookingId}`);
+    logger.info(`[WS] Driver ${driverId} connected for booking ${bookingId}`);
 
     // Join their booking room (for server-side routing)
     socket.join(`driver:${driverId}`);
@@ -103,17 +115,17 @@ export function attachLocationServer(httpServer) {
           });
 
       } catch (error) {
-        console.error(`[WS] GPS persist error for driver ${driverId}:`, error);
+        logger.error({ driverId, error: error.message }, '[WS] GPS persist error for driver');
         socket.emit("error", { message: "Failed to process location update" });
       }
     });
 
     socket.on("disconnect", (reason) => {
-      console.log(`[WS] Driver ${driverId} disconnected: ${reason}`);
+      logger.info(`[WS] Driver ${driverId} disconnected: ${reason}`);
     });
 
     socket.on("error", (error) => {
-      console.error(`[WS] Driver socket error (${driverId}):`, error);
+      logger.error({ driverId, error: error.message }, `[WS] Driver socket error`);
     });
   });
 
@@ -125,7 +137,7 @@ export function attachLocationServer(httpServer) {
   customerNs.on("connection", (socket) => {
     const { customerId } = socket.data;
 
-    console.log(`[WS] Customer ${customerId} connected`);
+    logger.info(`[WS] Customer ${customerId} connected`);
 
     /**
      * Customer subscribes to a specific booking's live location.
@@ -175,7 +187,7 @@ export function attachLocationServer(httpServer) {
         socket.emit("subscribed", { bookingId });
 
       } catch (error) {
-        console.error(`[WS] Subscribe error for customer ${customerId}:`, error);
+        logger.error({ customerId, error: error.message }, '[WS] Subscribe error for customer');
         socket.emit("error", { message: "Failed to subscribe to booking" });
       }
     });
@@ -185,11 +197,11 @@ export function attachLocationServer(httpServer) {
     });
 
     socket.on("disconnect", (reason) => {
-      console.log(`[WS] Customer ${customerId} disconnected: ${reason}`);
+      logger.info(`[WS] Customer ${customerId} disconnected: ${reason}`);
     });
   });
 
-  console.log("[WS] Truxify Location Server attached (/driver + /customer)");
+  logger.info("[WS] Truxify Location Server attached (/driver + /customer)");
 
   return io;
 }
@@ -221,12 +233,21 @@ async function verifyDriverToken(socket, next) {
       return next(new Error("Forbidden: driver role required"));
     }
 
-    socket.data.driverId = decoded.sub;
-    socket.data.bookingId = socket.handshake.auth.bookingId;
-
-    if (!socket.data.bookingId) {
+    const bookingId = socket.handshake.auth.bookingId;
+    if (!bookingId) {
       return next(new Error("bookingId required in handshake auth"));
     }
+
+    // Verify this driver is actually assigned to the booking before trusting
+    // any GPS data submitted under it — mirrors the ownership check already
+    // performed on the customer namespace (see verifyBookingOwnership below).
+    const isAssignedDriver = await verifyDriverAssignment(decoded.sub, bookingId);
+    if (!isAssignedDriver) {
+      return next(new Error("Forbidden: driver is not assigned to this booking"));
+    }
+
+    socket.data.driverId = decoded.sub;
+    socket.data.bookingId = bookingId;
 
     next();
   } catch (error) {
@@ -264,24 +285,58 @@ async function verifyCustomerToken(socket, next) {
 }
 
 /**
+ * Verifies that a driver is assigned to a specific booking.
+ * Queries Supabase PostgreSQL via the existing database client.
+ */
+async function verifyDriverAssignment(driverId, bookingId) {
+  try {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUuid = uuidRegex.test(bookingId);
+
+    let query = supabase
+      .from("orders")
+      .select("id")
+      .eq("driver_id", driverId);
+    query = isUuid ? query.eq("id", bookingId) : query.eq("order_display_id", bookingId);
+
+    const { data, error } = await query.maybeSingle();
+
+    if (error || !data) return false;
+    return true;
+  } catch (err) {
+    logger.error({ err }, '[WS] verifyDriverAssignment error');
+    return false;
+  }
+}
+
+/**
  * Verifies that a customer owns a specific booking.
  * Queries Supabase PostgreSQL via the existing database client.
  */
 async function verifyBookingOwnership(customerId, bookingId) {
   try {
-    // Import Supabase client from existing db module
-    const { supabase } = await import("../config/supabase.js");
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUuid = uuidRegex.test(bookingId);
 
-    const { data, error } = await supabase
-      .from("bookings")
+    let query = supabase
+      .from("orders")
       .select("id")
-      .eq("id", bookingId)
-      .eq("customer_id", customerId)
-      .single();
+      .eq("customer_id", customerId);
+    query = isUuid ? query.eq("id", bookingId) : query.eq("order_display_id", bookingId);
+
+    const { data, error } = await query.maybeSingle();
 
     if (error || !data) return false;
     return true;
-  } catch {
+  } catch (err) {
+    logger.error({ err }, '[WS] isCustomerAuthorized error');
     return false;
+  }
+}
+
+export async function closeLocationServer() {
+  if (io) {
+    io.close();
+    io = null;
   }
 }
