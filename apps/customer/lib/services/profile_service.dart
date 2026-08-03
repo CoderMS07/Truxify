@@ -113,8 +113,25 @@ class ProfileService {
     }
 
     await Future.wait([
-      FirebaseAuth.instance.signOut(),
-      SupabaseService.client.auth.signOut(),
+      _safeSignOut(
+        () => FirebaseAuth.instance.signOut(),
+        'Firebase',
+      ),
+      _safeSignOut(
+        () => SupabaseService.client.auth.signOut(),
+        'Supabase',
+      ),
     ]);
+  }
+
+  Future<void> _safeSignOut(
+    Future<void> Function() signOut,
+    String provider,
+  ) async {
+    try {
+      await signOut();
+    } catch (e) {
+      developer.log('$provider sign-out failed during logout: $e');
+    }
   }
 }
