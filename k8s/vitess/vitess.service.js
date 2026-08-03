@@ -20,11 +20,14 @@ class VitessService {
     }
 
     async initializePools() {
+        if (!process.env.VITESS_PASSWORD) {
+            throw new Error('VITESS_PASSWORD must be set — no default fallback is permitted');
+        }
         const config = {
             host: this.vtgateHost,
             port: this.vtgatePort,
             user: process.env.VITESS_USER || 'vitess',
-            password: process.env.VITESS_PASSWORD || 'vitess',
+            password: process.env.VITESS_PASSWORD,
             database: this.keyspace,
             connectionLimit: 20,
             queueLimit: 0
