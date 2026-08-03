@@ -120,6 +120,7 @@ class TruckResultData {
     this.platformFee,
     this.truckNumber,
     this.isAiEstimate = false,
+    this.isDigilockerVerified = false,
   });
 
   factory TruckResultData.fromJson(Map<String, dynamic> json) {
@@ -163,6 +164,7 @@ class TruckResultData {
       platformFee: platformFeeStr,
       truckNumber: json['truckNumber'] as String? ?? json['number_plate'] as String?,
       isAiEstimate: json['isAiEstimate'] as bool? ?? false,
+      isDigilockerVerified: json['isDigilockerVerified'] as bool? ?? false,
     );
   }
 
@@ -180,6 +182,7 @@ class TruckResultData {
   final String? platformFee;
   final String? truckNumber;
   final bool isAiEstimate;
+  final bool isDigilockerVerified;
 }
 
 class ActiveOrderData {
@@ -225,6 +228,7 @@ class HistoryOrderData {
     this.requiresRefrigeration,
     this.targetTemperatureMin,
     this.targetTemperatureMax,
+    this.escrowStatus,
   });
 
   final String orderId;
@@ -247,9 +251,7 @@ class HistoryOrderData {
   final bool? isStackable;
   final bool? isFragile;
   final String? specialRequirements;
-  final bool? requiresRefrigeration;
-  final double? targetTemperatureMin;
-  final double? targetTemperatureMax;
+  final String? escrowStatus;
 }
 
 class TimelineStepData {

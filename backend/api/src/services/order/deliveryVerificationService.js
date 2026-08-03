@@ -8,6 +8,7 @@ import {
   storeDeliveryOtp,
   getActiveDeliveryOtp,
   verifyDeliveryOtp,
+  sendPushNotification,
 } from '../notificationService.js';
 import {
   OTP_TTL_MINUTES,
@@ -20,6 +21,35 @@ import {
 import { escrowRelease as defaultEscrowRelease } from '../escrow.js';
 import logger from '../../middleware/logger.js';
 import { OrderTimelineService } from './orderTimelineService.js';
+import upiPaymentService from '../payment/UpiPaymentService.js';
+
+/** Haversine great-circle distance in metres between two lat/lng points. */
+function _haversineM(lat1, lng1, lat2, lng2) {
+  const R = 6_371_000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/** Haversine great-circle distance in metres between two lat/lng points. */
+function _haversineM(lat1, lng1, lat2, lng2) {
+  const R = 6_371_000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+const orderTimelineService = new OrderTimelineService({ supabase, logger });
 
 const DELIVERY_OTP_READY_STATUSES = new Set(['arriving']);
 
@@ -198,67 +228,93 @@ export class DeliveryVerificationService {
     });
   }
 
-  async assertDriverAtDropoff(order) {
-    const rawDropLat = order.drop_lat;
-    const rawDropLng = order.drop_lng;
-    if (rawDropLat === null || rawDropLat === undefined || rawDropLat === '' ||
-        rawDropLng === null || rawDropLng === undefined || rawDropLng === '') {
-      throw new DomainError(400, {
-        error: 'Order is missing drop-off coordinates. Delivery cannot be confirmed.',
-      });
-    }
-    const dropLat = Number(rawDropLat);
-    const dropLng = Number(rawDropLng);
-    if (!Number.isFinite(dropLat) || !Number.isFinite(dropLng)) {
-      throw new DomainError(400, {
-        error: 'Order has invalid drop-off coordinates. Delivery cannot be confirmed.',
-      });
+  /**
+   * GPS Geofence Auto-Confirm
+   *
+   * If the driver is within geofenceRadiusM (default 500 m) of the drop
+   * location, this method auto-confirms delivery without requiring the
+   * customer to share their OTP. A synthetic bypass OTP is generated
+   * internally, stored, and immediately consumed by verifyDelivery().
+   *
+   * @param {object} params
+   * @param {string} params.orderId    - Order UUID
+   * @param {string} params.driverId   - Driver's Supabase user ID
+   * @param {number} params.driverLat  - Driver's current latitude
+   * @param {number} params.driverLng  - Driver's current longitude
+   * @param {number} [params.geofenceRadiusM=500] - Geofence radius in metres
+   * @returns {Promise<{autoConfirmed: boolean, distanceM: number, message: string}>}
+   */
+  async geofenceAutoConfirm({ orderId, driverId, driverLat, driverLng, geofenceRadiusM = 500 }) {
+    return measureExecution('DeliveryVerificationService.geofenceAutoConfirm', async () => {
+
+    // Fetch order including drop coords and current status
+    const { data: order, error: orderErr } = await this.orderRepository.findOrderById(
+      orderId,
+      'id, order_display_id, driver_id, customer_id, drop_lat, drop_lng, status, escrow_status, total_amount'
+    );
+
+    if (orderErr || !order) {
+      throw new DomainError(404, { error: 'Order not found.' });
     }
 
-    if (!mongoDb) {
-      throw new DomainError(503, {
-        error: 'Driver location service is unavailable. Please retry shortly.',
-        retryable: true,
-      });
+    if (order.driver_id !== driverId) {
+      throw new DomainError(403, { error: 'Access Denied: You are not assigned to this order.' });
     }
 
-    const latestTelemetry = await mongoDb
-      .collection('telemetry')
-      .find({ driver_id: order.driver_id, order_id: order.id })
-      .sort({ timestamp: -1 })
-      .limit(1)
-      .toArray();
-
-    const telemetry = latestTelemetry && latestTelemetry[0];
-    if (!telemetry) {
+    if (!DELIVERY_OTP_READY_STATUSES.has(order.status)) {
       throw new DomainError(409, {
-        error: 'Driver location is not available. Delivery can only be confirmed when the driver is at the drop-off location.',
+        error: 'Geofence auto-confirm is only available when the order status is "arriving".',
       });
     }
 
-    const lat = Number(telemetry.lat);
-    const lng = Number(telemetry.lng);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      throw new DomainError(409, { error: 'Driver location is invalid. Delivery cannot be confirmed.' });
+    if (!order.drop_lat || !order.drop_lng) {
+      throw new DomainError(422, { error: 'Drop location coordinates are not available for this order.' });
     }
 
-    const telemetryTime = telemetry.server_received_at || telemetry.buffered_at || telemetry.timestamp;
-    const timestampMs = toEpochMs(telemetryTime);
-    if (timestampMs === null || Date.now() - timestampMs > DELIVERY_GEOFENCE_MAX_AGE_MS) {
-      throw new DomainError(409, {
-        error: 'Driver location is stale. Delivery can only be confirmed when the driver is at the drop-off location.',
-      });
+    const distanceM = _haversineM(
+      Number(driverLat), Number(driverLng),
+      Number(order.drop_lat), Number(order.drop_lng)
+    );
+
+    logger.info(
+      `[geofence] Order ${orderId}: driver is ${Math.round(distanceM)}m from drop ` +
+      `(threshold: ${geofenceRadiusM}m)`
+    );
+
+    if (distanceM > geofenceRadiusM) {
+      return {
+        autoConfirmed: false,
+        distanceM: Math.round(distanceM),
+        message: `Driver is ${Math.round(distanceM)}m from drop point. Must be within ${geofenceRadiusM}m for auto-confirm.`,
+      };
     }
 
-    const distanceKm = haversineKm(lat, lng, dropLat, dropLng);
-    if (distanceKm > DELIVERY_GEOFENCE_RADIUS_KM) {
-      throw new DomainError(409, {
-        error: `Driver is ${distanceKm.toFixed(2)} km from the drop-off location. Delivery can only be confirmed within ${DELIVERY_GEOFENCE_RADIUS_KM} km of the drop-off.`,
-      });
-    }
+    // --- Driver is within geofence ---
+
+    // Record geofence confirmation in DB
+    await this.orderRepository.updateOrder(orderId, {
+      geofence_confirmed: true,
+      geofence_confirmed_at: new Date().toISOString(),
+      geofence_driver_lat: driverLat,
+      geofence_driver_lng: driverLng,
+      updated_at: new Date().toISOString(),
+    }).catch(err => logger.warn('[geofence] Failed to persist geofence flag:', err.message));
+
+    // Generate a one-time bypass OTP and immediately verify delivery
+    const bypassOtp = crypto.randomInt(100000, 1000000).toString();
+    await this.notificationService.storeDeliveryOtp(orderId, bypassOtp, 5); // 5-minute TTL
+
+    await this.verifyDelivery({ orderId, driverId, otp: bypassOtp });
+
+    return {
+      autoConfirmed: true,
+      distanceM: Math.round(distanceM),
+      message: 'Delivery auto-confirmed via GPS geofence. Payment released to driver.',
+    };
+    });
   }
 
-  async verifyDelivery({ orderId, driverId, otp }, userClient) {
+  async verifyDelivery({ orderId, driverId, otp }) {
     return measureExecution('DeliveryVerificationService.verifyDelivery', async () => {
     const { order, otpRecord } = await this.validateDeliveryOtp({ orderId, driverId, otp });
 
@@ -281,6 +337,31 @@ export class DeliveryVerificationService {
           escrowAlreadyReleased = true;
         } else {
           throw new Error('Escrow release returned no transaction hash');
+        }
+
+        // Trigger UPI Payout to the Driver
+        try {
+          const driverId = order.driver_id;
+          const { data: driverProfile } = await supabase
+            .from('profiles')
+            .select('full_name')
+            .eq('id', driverId)
+            .maybeSingle();
+
+          const { data: driverPaymentMethod } = await supabase
+            .from('payment_methods')
+            .select('display_label')
+            .eq('user_id', driverId)
+            .eq('method_type', 'upi')
+            .maybeSingle();
+
+          const driverUpiId = driverPaymentMethod?.display_label || 
+            `${(driverProfile?.full_name || 'driver').toLowerCase().replace(/[^a-z0-9]/g, '')}@okaxis`;
+
+          const payoutResult = await upiPaymentService.processDriverPayout(driverUpiId, order.total_amount);
+          logger.info(`[payments] UPI Payout processed successfully for driver: ${driverUpiId}, payoutId: ${payoutResult.payout_id}`);
+        } catch (payoutErr) {
+          logger.error(`[payments] UPI payout to driver failed: ${payoutErr.message}`);
         }
       } catch (releaseErr) {
         logger.error('[escrow] Blockchain release failed for order', orderId, ':', releaseErr.message);
@@ -368,6 +449,25 @@ export class DeliveryVerificationService {
     // tracking tokens so a shared link can no longer broadcast the driver's
     // live location. Best-effort: revokeAllForOrder never throws.
     await this.trackingTokenService?.revokeAllForOrder(order.order_display_id);
+
+    // --- Fire FCM push to driver: "Payment Released ✓" ---
+    const resolvedDriverIdForPush = tripData?.driver_id || order.driver_id;
+    if (resolvedDriverIdForPush) {
+      const amountInr = order.total_amount
+        ? `₹${(order.total_amount / 100).toFixed(0)}`
+        : 'your amount';
+      sendPushNotification(
+        resolvedDriverIdForPush,
+        '✅ Payment Released',
+        `Payment Released ✓ ${amountInr} credited for order ${order.order_display_id}`,
+        'payment_released',
+        {
+          order_display_id: order.order_display_id,
+          release_tx_hash: releaseTxHash || '',
+          amount_paisa: String(order.total_amount || 0),
+        }
+      ).catch(err => logger.warn('[FCM] Payment release push failed:', err.message));
+    }
 
     let escrowUpdateFailed = false;
     if (releaseTxHash || escrowAlreadyReleased) {

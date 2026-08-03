@@ -143,6 +143,32 @@ describe('Individual migration files with RLS policies', () => {
   });
 });
 
+describe('RLS ownership policies compare profile ids, not auth.uid() (issue #5852)', () => {
+  const readMigration = (name) =>
+    readFileSync(path.resolve(__dirname, `../../../../supabase/migrations/${name}`), 'utf8');
+
+  it('bids migration uses get_profile_id() for driver and customer ownership policies', () => {
+    const content = readMigration('20260730120000_create_bids_table.sql');
+    expect(content).toMatch(/USING \(get_profile_id\(\) = driver_id\)/);
+    expect(content).toMatch(/WITH CHECK \(get_profile_id\(\) = driver_id\)/);
+    expect(content).toMatch(/USING \(get_profile_id\(\) = driver_id AND status = 'pending'\)/);
+    expect(content).toMatch(/lo\.customer_id = get_profile_id\(\)/);
+    expect(content).not.toMatch(/auth\.uid\(\)/);
+  });
+
+  it('application_audit_logs admin-read policy resolves the profile via get_profile_id()', () => {
+    const content = readMigration('20260723000010_create_application_audit_logs.sql');
+    expect(content).toMatch(/profiles\.id = get_profile_id\(\)/);
+    expect(content).not.toMatch(/auth\.uid\(\)/);
+  });
+
+  it('cold chain telemetry policy uses get_profile_id() for load ownership checks', () => {
+    const content = readMigration('20260721000000_add_cold_chain_telemetry.sql');
+    expect(content).toMatch(/load_offers\.customer_id = get_profile_id\(\) OR load_offers\.driver_id = get_profile_id\(\)/);
+    expect(content).not.toMatch(/auth\.uid\(\) = [a-z_]+_id/);
+  });
+});
+
 describe('Revoke anon privileges (revoke_anon_privileges.sql)', () => {
   let revokeContent;
 
@@ -153,6 +179,35 @@ describe('Revoke anon privileges (revoke_anon_privileges.sql)', () => {
 
   it.each(ALL_TABLES)('revokes anon privileges on table: %s', (table) => {
     expect(revokeContent).toContain(`REVOKE ALL ON TABLE public.${table} FROM anon`);
+  });
+});
+
+describe('Admin role on profiles (issue #5848)', () => {
+  let migrationContent;
+  let setupContent;
+  let auditLogContent;
+
+  beforeAll(async () => {
+    const migrationPath = path.resolve(__dirname, '../../../../supabase/migrations/20260802160000_add_admin_role_to_profiles.sql');
+    migrationContent = await fs.readFile(migrationPath, 'utf8');
+    const setupPath = path.resolve(__dirname, '../../../../docs/supabase_setup.sql');
+    setupContent = await fs.readFile(setupPath, 'utf8');
+    const auditPath = path.resolve(__dirname, '../../../../supabase/migrations/20260723000010_create_application_audit_logs.sql');
+    auditLogContent = await fs.readFile(auditPath, 'utf8');
+  });
+
+  it('adds admin to the profiles.role CHECK constraint in a migration', () => {
+    expect(migrationContent).toMatch(/ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_role_check/i);
+    expect(migrationContent).toMatch(/CHECK \(role IN \('customer', 'driver', 'admin'\)\)/i);
+  });
+
+  it('updates the canonical profiles.role constraint in docs/supabase_setup.sql', () => {
+    expect(setupContent).toMatch(/role\s+text\s+not\s+null\s+check\s*\(\s*role\s+in\s*\(\s*'customer'\s*,\s*'driver'\s*,\s*'admin'\s*\)\s*\)/i);
+  });
+
+  it('keeps the audit-logs admin-read policy on role = \'admin\', which is now satisfiable', () => {
+    expect(auditLogContent).toMatch(/CREATE POLICY "Admins can read audit logs"/i);
+    expect(auditLogContent).toMatch(/profiles\.role = 'admin'/i);
   });
 });
 
@@ -265,7 +320,7 @@ describe('Service-level RPC calls carry an authenticated client (issue #5737)', 
 
   it('executeRpc requires an explicit client instead of falling back to the shared anon-key client', () => {
     const orderRepositoryContent = readSource('repositories/orderRepository.js');
-    const executeRpcMethod = orderRepositoryContent.match(/async executeRpc\(name, params, client\)[\s\S]*?\n  \}/)[0];
+    const executeRpcMethod = orderRepositoryContent.match(/async executeRpc\(name, params, client\)[\s\S]*?\n\s{2}\}/)[0];
     expect(executeRpcMethod).toMatch(/if \(!client\)\s*\{\s*throw new Error/);
     expect(executeRpcMethod).not.toMatch(/client \|\| this\.supabase/);
   });

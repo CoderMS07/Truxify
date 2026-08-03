@@ -7,6 +7,7 @@ import { safeIpKeyGenerator, createStore } from '../middleware/rateLimiter.js';
 import { validateParams, validateBody } from '../middleware/validate.js';
 import { verifyOrderParamsSchema, documentCheckSchema } from '../validation/requestSchemas.js';
 import { PolicyError, policy } from '../security/policyEngine.js';
+import digilockerService from '../services/verification/DigilockerService.js';
 
 const router = express.Router();
 const orderVerificationLimiter = rateLimit({
@@ -80,6 +81,48 @@ router.post('/documents/check', authenticate, validateBody(documentCheckSchema),
     res.status(200).json({
       success: true,
       data: result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+router.post('/digilocker/token', authenticate, async (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code) {
+      return res.status(400).json({ success: false, error: 'Code is required' });
+    }
+    const tokenResult = await digilockerService.exchangeCode(code);
+    res.status(200).json({
+      success: true,
+      data: tokenResult
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+router.post('/digilocker/verify', authenticate, async (req, res) => {
+  try {
+    const { accessToken, userId: bodyUserId } = req.body;
+    const userId = req.user?.id || bodyUserId;
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'User ID is required' });
+    }
+    if (!accessToken) {
+      return res.status(400).json({ success: false, error: 'Access token is required' });
+    }
+    const verificationResult = await digilockerService.verifyDocuments(userId, accessToken);
+    res.status(200).json({
+      success: true,
+      data: verificationResult
     });
   } catch (error) {
     res.status(500).json({
