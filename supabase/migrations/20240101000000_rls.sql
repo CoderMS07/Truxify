@@ -30,16 +30,24 @@ CREATE POLICY "Users select own profile"
   ON profiles FOR SELECT TO authenticated
   USING (firebase_uid = (auth.jwt() ->> 'sub'));
 
+-- Users may only ever create their own profile AS a customer. Self-claiming
+-- the driver (or admin) role on signup is not permitted; role upgrades must be
+-- assigned server-side (service_role / SECURITY DEFINER RPCs) after verification.
 DROP POLICY IF EXISTS "Users insert own profile" ON profiles;
 CREATE POLICY "Users insert own profile"
   ON profiles FOR INSERT TO authenticated
-  WITH CHECK (firebase_uid = (auth.jwt() ->> 'sub'));
+  WITH CHECK (firebase_uid = (auth.jwt() ->> 'sub') AND role = 'customer');
 
 DROP POLICY IF EXISTS "Users update own profile" ON profiles;
 CREATE POLICY "Users update own profile"
   ON profiles FOR UPDATE TO authenticated
   USING (firebase_uid = (auth.jwt() ->> 'sub'))
   WITH CHECK (firebase_uid = (auth.jwt() ->> 'sub'));
+
+-- Clients may never rewrite the role column (blocks flipping customer -> driver
+-- at will, matching the #5726 column-privilege hardening for orders/driver_details).
+-- service_role and SECURITY DEFINER RPCs are unaffected by this REVOKE.
+REVOKE UPDATE (role) ON profiles FROM anon, authenticated;
 
 
 -- ─── DRIVER DETAILS ───
