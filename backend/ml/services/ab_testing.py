@@ -152,20 +152,29 @@ class ABTestModel:
         return better_count > (total_metrics / 2) if total_metrics > 0 else False
     
     def get_active_test(self) -> Optional[Dict]:
-        """Get currently active A/B test"""
-        # In production, this would query the database
-        # For demo, return sample config
-        return {
-            'test_id': 'test_001',
-            'production_version': '1.2.0',
-            'shadow_version': '2.0.0',
-            'started_at': datetime.utcnow().isoformat(),
-            'status': 'active'
-        }
-    
+        """Get currently active A/B test from database"""
+        session = self.Session()
+        try:
+            recent = session.query(ABTestMetrics).filter(
+                ABTestMetrics.timestamp >= datetime.utcnow()
+            ).order_by(ABTestMetrics.timestamp.desc()).first()
+
+            if recent:
+                return {
+                    'test_id': recent.test_id,
+                    'production_version': 'production',
+                    'shadow_version': recent.model_version,
+                    'started_at': recent.timestamp.isoformat(),
+                    'status': 'active'
+                }
+            return None
+        except Exception:
+            return None
+        finally:
+            session.close()
+
     def get_production_version(self) -> str:
-        """Get current production model version"""
-        return '1.2.0'
+        return 'production'
     
     def trigger_rollback(self, test_id: str) -> Dict[str, Any]:
         """Auto-rollback to previous version if shadow model underperforms"""
@@ -180,8 +189,8 @@ class ABTestModel:
                 'action': 'rollback',
                 'test_id': test_id,
                 'reason': 'Shadow model underperformed',
-                'production_version': '1.2.0',
-                'previous_version': '1.1.0',
+                'production_version': 'production',
+                'previous_version': 'production',
                 'timestamp': datetime.utcnow().isoformat()
             }
         

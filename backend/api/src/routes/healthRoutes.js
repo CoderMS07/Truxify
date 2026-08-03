@@ -62,6 +62,7 @@ import { supabase, mongoDb, redisClient, firebaseAdmin } from '../config/db.js';
 import { healthLimiter } from '../middleware/rateLimiter.js';
 import { checkEscrowHealth } from '../services/escrow.js';
 import logger from '../middleware/logger.js';
+import { createDefaultAggregator } from '../core/health/index.js';
 
 const router = express.Router();
 
@@ -256,6 +257,47 @@ router.get('/ready', healthLimiter, async (req, res) => {
   }
 
   return res.status(200).json({ status: 'ready', services });
+});
+
+// ============================================================================
+// Centralized Health Aggregation Endpoint
+// ============================================================================
+
+const aggregator = createDefaultAggregator();
+
+/**
+ * @openapi
+ * /api/health/full:
+ *   get:
+ *     tags: [Health]
+ *     summary: Centralized health aggregation for all distributed components
+ *     description: >
+ *       Returns a unified health response covering all major backend services
+ *       including databases, message queues, ML engine, GraphQL gateway,
+ *       WebSocket server, blockchain, and background workers.
+ *     security:
+ *       - {}
+ *     responses:
+ *       200:
+ *         description: All critical services healthy
+ *       503:
+ *         description: One or more critical services degraded
+ */
+router.get('/full', healthLimiter, async (_req, res) => {
+  try {
+    const result = await aggregator.aggregate();
+    // 200 = system operational (healthy or degraded with non-critical failures)
+    // 503 = system not operational (critical services down)
+    const httpStatus = result.status === 'unhealthy' ? 503 : 200;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    logger.error('[health] Aggregated health check failed:', err.message);
+    return res.status(500).json({
+      status: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      error: 'Health aggregation failed',
+    });
+  }
 });
 
 export default router;

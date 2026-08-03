@@ -6,13 +6,13 @@ import '../repositories/notification_repository.dart';
 import '../services/notification_router.dart';
 
 class NotificationsScreen extends StatefulWidget {
-  const NotificationsScreen({super.key, required this.userId, required this.repository, this.title = 'Notifications', this.onNotificationTap});
   const NotificationsScreen({
     super.key,
     required this.userId,
     required this.repository,
     this.title = 'Notifications',
     this.onItemTap,
+    this.onNotificationTap,
   });
 
   final String userId;

@@ -89,9 +89,10 @@ router.get('/shards/location', authenticate, userLimiter, requirePolicy('shard:v
 router.get('/shards/:shardName/orders', authenticate, userLimiter, requirePolicy('shard:query-orders'), shardMiddleware, async (req, res) => {
   try {
     const { shardName } = req.params;
-    const connection = await shardManager.getShardConnection(shardName);
-    const [rows] = await connection.execute(
-      'SELECT * FROM orders ORDER BY created_at DESC LIMIT 100'
+    const rows = await shardManager.executeQuery(
+      'SELECT * FROM orders ORDER BY created_at DESC LIMIT 100',
+      [],
+      shardName
     );
     res.json({
       success: true,

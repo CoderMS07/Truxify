@@ -66,6 +66,7 @@ export class OrderValidationService {
 
   async assertLoadOfferAvailable(loadOfferId) {
     const { data: offer, error } = await this.supabase.from('load_offers').select('id, status, customer_id').eq('id', loadOfferId).maybeSingle();
+    console.log('assertLoadOfferAvailable:', loadOfferId, 'offer:', offer, 'error:', error);
     if (error || !offer) {
       throw new DomainError(404, { error: 'Load offer not found.' });
     }
@@ -157,9 +158,10 @@ export class OrderValidationService {
   }
 
   assertChangeDropAllowed(order) {
-    if (order.escrow_status === 'funded' || order.status !== 'pending') {
-      const reason = order.escrow_status === 'funded'
-        ? 'after escrow has been funded'
+    const escrowInFlight = order.escrow_status === 'funding' || order.escrow_status === 'funded';
+    if (escrowInFlight || order.status !== 'pending') {
+      const reason = escrowInFlight
+        ? `after escrow ${order.escrow_status === 'funding' ? 'funding has been initiated' : 'has been funded'}`
         : `after order status is '${order.status}'`;
       throw new DomainError(409, {
         error: `Drop location cannot be changed ${reason}.`,

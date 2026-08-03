@@ -54,6 +54,7 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
   List<SavedAddress> _addresses = [];
   PaymentMethod? _selectedPayment;
   SavedAddress? _selectedAddress;
+  bool _isPassengerMode = false;
 
   @override
   void initState() {
@@ -141,12 +142,6 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
     setState(() => _isSubmitting = true);
 
     try {
-      final pickupDate = widget.draft.pickupDate;
-      final pickupTime = pickupDate != null
-          ? '${pickupDate.hour.toString().padLeft(2, '0')}:'
-              '${pickupDate.minute.toString().padLeft(2, '0')}'
-          : widget.draft.dateLabel;
-
       final orderId = await _orderService.createOrder(
         pickupAddress: widget.draft.pickup,
         dropAddress: _selectedAddress?.fullAddress ?? widget.draft.drop,
@@ -154,12 +149,11 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
         pickupLng: widget.draft.pickupLng!,
         dropLat: finalDropLat,
         dropLng: finalDropLng,
-        pickupTime: pickupTime,
-        pickupDate: pickupDate,
-        goodsType: widget.draft.goodsType,
-        weightTonnes: weight,
+        pickupTime: widget.draft.dateLabel,
+        goodsType: widget.draft.goodsType + (_isPassengerMode ? ' + Passenger' : ''),
+        weightTonnes: double.tryParse(widget.draft.weightTonnes) ?? 0,
         paymentMethodId: _selectedPayment?.id,
-        requiresRefrigeration: widget.draft.requiresRefrigeration,
+        requiresRefrigeration: widget.draft.requiresRefrigeration ?? false,
         targetTemperatureMin: widget.draft.targetTemperatureMin,
         targetTemperatureMax: widget.draft.targetTemperatureMax,
       );
@@ -387,6 +381,35 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color:
                             TruxifyColors.adaptiveSecondaryText(context))),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          InfoCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text('Passenger Mode 🚌',
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800)),
+                    const Spacer(),
+                    Switch(
+                      value: _isPassengerMode,
+                      onChanged: (val) => setState(() => _isPassengerMode = val),
+                      activeColor: TruxifyColors.accent,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Book a space in the back of the trailer for cheap cross-country travel. (No seatbelts provided).',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: TruxifyColors.adaptiveSecondaryText(context)),
+                ),
               ],
             ),
           ),

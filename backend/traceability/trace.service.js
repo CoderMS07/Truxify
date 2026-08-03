@@ -34,6 +34,15 @@ class TraceabilityService {
                 ethers.toUtf8Bytes(JSON.stringify(productData))
             );
 
+            const productId = uuidv4();
+
+            await this.storeProduct({
+                ...productData,
+                productId,
+                productHash,
+                txHash: ''
+            });
+
             const tx = await this.contract.createProduct(
                 productData.name,
                 productData.description || '',
@@ -44,18 +53,16 @@ class TraceabilityService {
             );
             const receipt = await tx.wait();
 
-            const productId = await this.contract.getProductCount();
-
-            await this.storeProduct({
-                ...productData,
-                productId: productId.toString(),
-                txHash: receipt.hash
-            });
+            const { error } = await supabase
+                .from('trace_products')
+                .update({ tx_hash: receipt.hash })
+                .eq('product_id', productId);
+            if (error) logger.error('Failed to update txHash:', error);
 
             logger.info(`✅ Product created: ${productId}`);
             return {
                 success: true,
-                productId: productId.toString(),
+                productId,
                 productHash,
                 txHash: receipt.hash
             };
@@ -77,7 +84,21 @@ class TraceabilityService {
             );
             const receipt = await tx.wait();
 
-            const shipmentId = await this.contract.getShipmentCount();
+            let shipmentId;
+            for (const log of receipt.logs) {
+                try {
+                    const parsed = this.contract.interface.parseLog(log);
+                    if (parsed && parsed.name === 'ShipmentCreated') {
+                        shipmentId = parsed.args.shipmentId;
+                        break;
+                    }
+                } catch (e) {
+                    // Not a matching event, continue
+                }
+            }
+            if (!shipmentId) {
+                shipmentId = await this.contract.getShipmentCount();
+            }
 
             await this.storeShipment({
                 productId,
@@ -241,6 +262,7 @@ class TraceabilityService {
                     id: trace[0][0].toString(),
                     name: trace[0][1],
                     description: trace[0][2],
+                    category: trace[0][3],
                     manufacturer: trace[0][4]
                 },
                 events: trace[1].map(e => ({
