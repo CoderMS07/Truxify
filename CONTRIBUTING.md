@@ -570,3 +570,13 @@ By participating in this project, you agree to follow our Code of Conduct.
 ---
 
 Thank you for contributing to Truxify and helping make logistics management more efficient and accessible for everyone!
+
+### Pull Request Checklist
+
+- [ ] Code builds successfully (Flutter run / Node.js starts)
+- [ ] Dart and JavaScript formatting checks pass
+- [ ] **Flutter widget tests pass: `flutter test` in apps/customer and apps/driver**   ← ADD
+- [ ] No unnecessary files included
+- [ ] Documentation updated if needed
+- [ ] Changes tested locally
+- [ ] PR linked to an active issue
