@@ -85,6 +85,7 @@ import wasiRoutes from '../../wasi/routes.js'
 import wasmRoutes from '../../wasm/routes.js'
 import snykRoutes from '../../snyk/routes.js'
 import liquibaseRoutes from '../../database/liquibase/routes.js'
+import earningsRouter from '../routes/earnings.js'
 import { initWebRTCSignaling, closeWebRTCSignaling } from './sockets/webrtc.js'
 
 // ============================================================================
@@ -100,12 +101,6 @@ import headerSizeMonitor from './middleware/headerSizeMonitor.js';
 // ============================================================================
 import zkpRoutes from './routes/zkp.routes.js'
 
-
-// ============================================================================
-// 🆕 MULTI-CLOUD DISASTER RECOVERY
-// ============================================================================
-import drRoutes from '../../dr/routes.js'
-import multiCloudService from '../../dr/multi-cloud.service.js'
 
 // ============================================================================
 // 🆕 OPENTELEMETRY DISTRIBUTED TRACING
@@ -364,7 +359,6 @@ if (process.env.NODE_ENV === 'production') {
   })
 }
 
-const earningsRouter = require('../routes/earnings');
 app.use('/api/earnings', earningsRouter);
 
 // Payload parsers
@@ -478,6 +472,7 @@ app.use('/api/webhooks', webhookRoutes)
 // ============================================================================
 app.use('/api/verify', verificationRoutes)
 app.use('/api/oracle', oracleRoutes)
+app.use('/api/webhooks', webhookRoutes)
 
 // 🆕 Oracle Health Check Endpoint
 app.get('/api/oracle/health', (req, res) => {
@@ -580,29 +575,6 @@ app.get('/api/zkp/health', (req, res) => {
 
 
 // ============================================================================
-// 🆕 MULTI-CLOUD DISASTER RECOVERY ROUTES
-// ============================================================================
-app.use('/api', drRoutes)
-
-// 🆕 DR Health Check Endpoint
-app.get('/api/dr/health', async (req, res) => {
-  try {
-    const health = await multiCloudService.checkHealth();
-    res.json({
-      status: 'healthy',
-      data: health,
-      activeCloud: multiCloudService.activeCloud,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'unhealthy',
-      error: error.message
-    });
-  }
-})
-
-// ============================================================================
 // 🆕 OPENTELEMETRY HEALTH CHECK
 // ============================================================================
 app.get('/api/tracing/health', (req, res) => {
@@ -668,6 +640,8 @@ server.listen(PORT, () => {
 
 
   startEscrowRefundReconciliation(orderRepository)
+  startEscrowReleaseReconciliation()
+  startEscrowFundingReconciliation(orderRepository)
   startReputationReconciliation(orderRepository)
   startDlqWorker()
   startStaleOrderWorker()
@@ -676,6 +650,8 @@ server.listen(PORT, () => {
   // Register worker states for health aggregation
   globalThis.__truxify_workers = {
     escrowRefundReconciliation: true,
+    escrowReleaseReconciliation: true,
+    escrowFundingReconciliation: true,
     reputationReconciliation: true,
     dlqWorker: true,
     staleOrderWorker: true,
@@ -705,6 +681,7 @@ async function shutdown (signal) {
   // Stop background workers
   stopEscrowReleaseReconciliation()
   stopEscrowRefundReconciliation()
+  stopEscrowFundingReconciliation()
   stopReputationReconciliation()
   stopDlqWorker()
   stopDocumentExpiryWorker()

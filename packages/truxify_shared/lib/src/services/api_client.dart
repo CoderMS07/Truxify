@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:uuid/uuid.dart';
 
 import '../config/app_config.dart';
 import 'http_client_factory.dart';
@@ -47,6 +48,11 @@ class MultipartFileInfo {
 ///   - Injects `Authorization: Bearer <accessToken>` into every request.
 ///   - On HTTP 401, attempts `supabase.auth.refreshSession()` once and retries.
 ///   - If the retry still returns 401, throws [ApiAuthException].
+///   - Automatically injects a stable `X-Idempotency-Key` (UUID v4) on every
+///     POST, PUT, and PATCH request so the backend `requireIdempotency`
+///     middleware never rejects customer mutations with HTTP 400.
+///   - The key is generated *before* `_execute` so the automatic 401-retry
+///     sends the exact same key, preserving at-most-once semantics.
 ///   - Logs failures in debug mode via `dart:developer`.
 ///
 /// Usage:
@@ -72,6 +78,9 @@ class ApiClient {
   final bool _isClientOwned;
   final String _baseUrl;
   final Duration _timeout;
+
+  /// Shared UUID generator — const so it is instantiated once per isolate.
+  static const _uuid = Uuid();
 
   void close() {
     if (_isClientOwned) {
@@ -265,32 +274,74 @@ class ApiClient {
     );
   }
 
-  Future<dynamic> post(String path, {Object? body, Map<String, String>? headers}) async {
+  /// Performs a POST request.
+  ///
+  /// Automatically injects a stable `X-Idempotency-Key` so the backend
+  /// `requireIdempotency` middleware never rejects the call with HTTP 400.
+  /// The key is generated once *before* [_execute], so the 401-retry path
+  /// sends the exact same key, preserving at-most-once semantics.
+  ///
+  /// Pass [idempotencyKey] explicitly when you need a caller-supplied key
+  /// (e.g. the user taps "retry" and you want to reuse the original key).
+  Future<dynamic> post(
+    String path, {
+    Object? body,
+    Map<String, String>? headers,
+    String? idempotencyKey,
+  }) async {
     final uri = _buildUri(path);
     final encoded = body != null ? jsonEncode(body) : null;
+    final key = idempotencyKey ?? _uuid.v4();
     final response = await _execute(
       (h) => _http.post(uri, headers: h, body: encoded),
-      additionalHeaders: headers,
+      additionalHeaders: {
+        'X-Idempotency-Key': key,
+        ...?headers,
+      },
     );
     return _decode(response);
   }
 
-  Future<dynamic> put(String path, {Object? body, Map<String, String>? headers}) async {
+  /// Performs a PUT request.
+  ///
+  /// Injects `X-Idempotency-Key` — see [post] for full semantics.
+  Future<dynamic> put(
+    String path, {
+    Object? body,
+    Map<String, String>? headers,
+    String? idempotencyKey,
+  }) async {
     final uri = _buildUri(path);
     final encoded = body != null ? jsonEncode(body) : null;
+    final key = idempotencyKey ?? _uuid.v4();
     final response = await _execute(
       (h) => _http.put(uri, headers: h, body: encoded),
-      additionalHeaders: headers,
+      additionalHeaders: {
+        'X-Idempotency-Key': key,
+        ...?headers,
+      },
     );
     return _decode(response);
   }
 
-  Future<dynamic> patch(String path, {Object? body, Map<String, String>? headers}) async {
+  /// Performs a PATCH request.
+  ///
+  /// Injects `X-Idempotency-Key` — see [post] for full semantics.
+  Future<dynamic> patch(
+    String path, {
+    Object? body,
+    Map<String, String>? headers,
+    String? idempotencyKey,
+  }) async {
     final uri = _buildUri(path);
     final encoded = body != null ? jsonEncode(body) : null;
+    final key = idempotencyKey ?? _uuid.v4();
     final response = await _execute(
       (h) => _http.patch(uri, headers: h, body: encoded),
-      additionalHeaders: headers,
+      additionalHeaders: {
+        'X-Idempotency-Key': key,
+        ...?headers,
+      },
     );
     return _decode(response);
   }
@@ -313,14 +364,17 @@ class ApiClient {
     required Map<String, String> fields,
     required List<MultipartFileInfo> files,
     Map<String, String>? headers,
+    String? idempotencyKey,
   }) async {
     final uri = _buildUri(path);
+    final key = idempotencyKey ?? _uuid.v4();
 
     Future<http.Response> doSend(String? token) async {
       final request = http.MultipartRequest('POST', uri);
       final authHeaders = <String, String>{
         'Accept-Language': ui.PlatformDispatcher.instance.locale.languageCode,
         if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+        'X-Idempotency-Key': key,
         ...?headers,
       };
       request.headers.addAll(authHeaders);

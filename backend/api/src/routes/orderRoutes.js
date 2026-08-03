@@ -195,15 +195,34 @@ async function readLoadOfferCache(cacheKey) {
     const parsed = JSON.parse(cached);
     return Array.isArray(parsed) ? parsed : null;
   } catch (err) {
-    logger.warn(`[orderRoutes] Ignoring malformed load-offer cache entry for ${cacheKey}: ${err.message}`);
-    await redisClient.del(cacheKey).catch(() => {});
+    logger.warn(
+      `[orderRoutes] Ignoring malformed load-offer cache entry for ${cacheKey}: ${err.message}`
+    );
+
+    try {
+      await redisClient.del(cacheKey);
+    } catch (delErr) {
+      logger.error(
+        { err: delErr, cacheKey },
+        'Failed to delete malformed load-offer cache entry'
+      );
+    }
     return null;
   }
 }
 
 async function writeLoadOfferCache(cacheKey, offers) {
   if (!redisClient) return;
-  await redisClient.set(cacheKey, JSON.stringify(offers), 'EX', LOAD_OFFER_CACHE_TTL_SECONDS).catch(() => {});
+  try {
+    await redisClient.set(
+      cacheKey,
+      JSON.stringify(offers),
+      'EX',
+      LOAD_OFFER_CACHE_TTL_SECONDS
+    );
+  } catch (err) {
+    logger.error({ err, cacheKey }, 'Failed to write load offer cache');
+  }
 }
 
 const verifyDeliveryLimiter = rateLimit({
@@ -1099,7 +1118,8 @@ router.post(
       const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(
         req.params.id,
         req.user.id,
-        req.body.otp
+        req.body.otp,
+        req.token ? createUserClient(req.token) : undefined
       );
 
       // Fetch the released amount to include in the response
