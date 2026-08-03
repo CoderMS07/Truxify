@@ -4,6 +4,8 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
 import 'package:url_launcher/url_launcher.dart';
 import '../services/geocode_service.dart';
+import '../services/gps_tracking_service.dart';
+import '../services/location_service.dart';
 import '../services/route_service.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../theme/app_theme.dart';
@@ -30,37 +32,51 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
   bool _isOffline = false;
 
+  // ── GPS tracking for active trips ──────────────────────────────────
+  final GpsTrackingService _gpsTracking = GpsTrackingService();
+  WsConnectionStatus _wsStatus = WsConnectionStatus.disconnected;
+
+  /// Statuses that require live GPS emission (matches LocationService list).
+  static const _activeStatuses = {
+    'truck_assigned',
+    'en_route_pickup',
+    'arrived_pickup',
+    'picked_up',
+    'in_transit',
+    'arriving',
+  };
+
   @override
   void initState() {
     super.initState();
     _routeFuture = _loadRouteForTrip(widget.trip.route);
-    
-    // Check initial connectivity
-    Connectivity().checkConnectivity().then((result) {
-      if (mounted) {
-        setState(() {
-          _isOffline = result.contains(ConnectivityResult.none);
-        });
-      }
-    });
-
-    // Listen for changes
-    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((result) {
-      if (mounted) {
-        setState(() {
-          _isOffline = result.contains(ConnectivityResult.none);
-        });
-      }
-    });
+    _maybeStartGpsTracking();
   }
 
   @override
   void dispose() {
     _connectivitySubscription.cancel();
     _mapController.dispose();
+    // Disconnect WebSocket to prevent memory/battery leaks on screen exit.
+    _gpsTracking.stop();
     super.dispose();
   }
 
+  /// Start GPS emission only if this trip is in an active status.
+  void _maybeStartGpsTracking() {
+    // TripStatusType is an enum — map to its string key.
+    final statusName = widget.trip.status.name;
+    if (!_activeStatuses.contains(statusName)) return;
+
+    _gpsTracking.connectionStatus.listen((status) {
+      if (mounted) setState(() => _wsStatus = status);
+    });
+
+    // Fire-and-forget; errors surface via debugPrint inside the service.
+    _gpsTracking.startForTrip(tripDisplayId: widget.trip.tripId).catchError(
+      (e) => debugPrint('[TripDetailScreen] GPS tracking error: $e'),
+    );
+  }
   Future<void> _openGoogleMapsRoute() async {
     final routeResult = await _routeFuture;
     final start = routeResult?.start;
