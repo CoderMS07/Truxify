@@ -3,6 +3,14 @@ import { corsMiddleware } from './middleware/cors.js'
 import helmet from 'helmet' // 🔒 ADDED HELMET IMPORT FOR ISSUES #361 & #944
 import http from 'http'
 import dotenv from 'dotenv'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+
+dotenv.config({ path: path.resolve(__dirname, '../.env') })
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') })
 import hppProtection from './middleware/hppProtection.js';
 
 import { globalLimiter, authLimiter, healthLimiter } from './middleware/rateLimiter.js'
@@ -44,8 +52,8 @@ import lookupRoutes from './routes/lookupRoutes.js'
 import { getRoot, notFound } from './controllers/rootController.js'
 import webhookRoutes from './routes/webhookRoutes.js'
 import auditRoutes from './routes/auditRoutes.js'
-import voiceRoutes from './routes/voiceRoutes.js'
-import demandRoutes from './routes/demandRoutes.js'
+import paymentRoutes from './routes/paymentRoutes.js'
+import userRoutes from './routes/userRoutes.js'
 
 // ============================================================================
 // 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
@@ -159,6 +167,12 @@ CacheManager.init(redisClient)
 // ============================================================================
 if (process.env.BYPASS_AUTH === 'true' && process.env.NODE_ENV !== 'development') {
   logger.fatal('BYPASS_AUTH is enabled outside development. This is a severe security misconfiguration. Set BYPASS_AUTH=false (or unset it), and set NODE_ENV=development if you need local testing.')
+  process.exit(1)
+}
+// ENABLE_TEST_AUTH allows plaintext x-user-id/x-user-role header impersonation
+// and must never be active outside a dedicated test harness (NODE_ENV=test).
+if (process.env.ENABLE_TEST_AUTH === 'true' && process.env.NODE_ENV !== 'test') {
+  logger.fatal('ENABLE_TEST_AUTH is enabled outside a test harness. This is a severe security misconfiguration — it trusts client-supplied identity headers. Only set it in NODE_ENV=test processes.')
   process.exit(1)
 }
 if (process.env.NODE_ENV === 'production' && !process.env.ML_API_KEY) {
@@ -348,6 +362,9 @@ if (process.env.NODE_ENV === 'production') {
   })
 }
 
+const earningsRouter = require('../routes/earnings');
+app.use('/api/earnings', earningsRouter);
+
 // Payload parsers
 const jsonBodyLimit =
   process.env.JSON_BODY_LIMIT || '1mb';
@@ -429,12 +446,14 @@ app.use('/api', requestCacheMiddleware)
 // REST API ROUTING
 // ============================================================================
 app.use('/api/orders', orderRoutes)
+app.use('/api/payments', paymentRoutes)
 app.use('/api/driver', deadheadRoutes)
 app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
 app.use('/api/loads', loadRoutes)
 app.use('/api/support', supportRoutes)
 app.use('/api/profile', profileRoutes)
+app.use('/api/users', userRoutes)
 app.use('/api/devices', deviceRoutes)
 app.use('/api/driver/documents', documentRoutes)
 app.use('/api/maintenance', maintenancePhotoRoutes)

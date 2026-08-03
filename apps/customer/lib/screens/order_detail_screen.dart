@@ -14,9 +14,17 @@ import '../theme/app_theme.dart';
 import 'chat_screen.dart';
 import '../widgets/common_widgets.dart';
 import '../widgets/timeline_row.dart';
+import '../utils/driver_utils.dart';
 
 class OrderDetailScreen extends StatefulWidget {
-  const OrderDetailScreen({super.key, required this.order});
+  final OrderService? orderService;
+  final TrackingService? trackingService;
+  const OrderDetailScreen({
+    super.key,
+    required this.order,
+    this.orderService,
+    this.trackingService,
+  });
 
   final HistoryOrderData order;
 
@@ -28,8 +36,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   int _rating = 0;
   final TextEditingController _commentController = TextEditingController();
   late HistoryOrderData _currentOrder;
-  final OrderService _orderService = OrderService();
-  final TrackingService _trackingService = TrackingService();
+  late final OrderService _orderService;
+  late final TrackingService _trackingService;
   RealtimeChannel? _ordersChannel;
   bool _ratingDialogShown = false;
   bool _isGeneratingInvoice = false;
@@ -39,6 +47,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   @override
   void initState() {
     super.initState();
+    _orderService = widget.orderService ?? OrderService();
+    _trackingService = widget.trackingService ?? TrackingService();
     _currentOrder = widget.order;
     _loadOrderAndTimeline();
     _subscribeToOrderUpdates();
@@ -79,16 +89,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   }
 
   String _resolveDriverName(Map<String, dynamic> order) {
-    final profile = order['profiles'];
-    if (profile is Map<String, dynamic>) {
-      final name = profile['full_name']?.toString().trim();
-      if (name != null && name.isNotEmpty) return name;
-    }
-
-    final driverName = order['driver_name']?.toString().trim();
-    if (driverName != null && driverName.isNotEmpty) return driverName;
-
-    return 'Driver Assigned';
+    return DriverUtils.resolveDriverName(order);
   }
 
   String _formatTime(DateTime dateTime) {
@@ -155,6 +156,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                 (orderMap['profiles'] is Map<String, dynamic>
                     ? orderMap['profiles']['phone']?.toString()
                     : null),
+            escrowStatus: orderMap['escrow_status']?.toString(),
           );
           // Trigger rating flow if status becomes completed and rating dialog hasn't been shown yet
           final orderStatus = orderMap['status']?.toString() ?? '';
@@ -576,6 +578,11 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                     _PriceLine(label: 'Platform Fee', amount: _currentOrder.platformFee!),
                 ],
                 _PriceLine(label: 'Total', amount: _currentOrder.amount, isTotal: true),
+                const Divider(),
+                _PriceLine(
+                  label: 'Payment Escrow',
+                  amount: (_currentOrder.escrowStatus ?? 'pending').toUpperCase(),
+                ),
               ],
             ),
           ),

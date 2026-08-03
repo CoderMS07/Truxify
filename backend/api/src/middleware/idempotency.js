@@ -8,6 +8,12 @@ const inFlightRequests = new Map(); // In-memory lock for memory-only mode
 const IN_MEMORY_TTL_MS = 86400_000;
 const CLEANUP_INTERVAL_MS = 60_000;
 
+// The Redis lock must outlive the longest guarded handler or a slow request's
+// lock can expire mid-execution and let a duplicate re-acquire it. Escrow flows
+// wait up to 60s for on-chain confirmation (see services/escrow.js), so the
+// default 120s gives a comfortable margin. Overridable per deployment.
+const LOCK_TTL_MS = Number(process.env.IDEMPOTENCY_LOCK_TTL_MS) || 120_000;
+
 const cleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of inMemoryStore) {
@@ -82,7 +88,7 @@ export function requireIdempotency(ttlSeconds = 3600) {
 
       if (redisClient) {
         const lockKey = `${key}:lock`;
-        const lockAcquired = await redisClient.set(lockKey, '1', 'NX', 'PX', 120000);
+        const lockAcquired = await redisClient.set(lockKey, '1', 'NX', 'PX', LOCK_TTL_MS);
 
         if (!lockAcquired) {
           let retries = 600; // Poll for up to 120 seconds (matches lock TTL)
@@ -111,7 +117,7 @@ export function requireIdempotency(ttlSeconds = 3600) {
           }
 
           // Re-acquire lock and process if previous request crashed
-          const newLockAcquired = await redisClient.set(lockKey, '1', 'NX', 'PX', 10000);
+          const newLockAcquired = await redisClient.set(lockKey, '1', 'NX', 'PX', LOCK_TTL_MS);
           if (!newLockAcquired) {
             return res.status(409).json({ error: 'Duplicate request being processed' });
           }
