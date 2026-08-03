@@ -1522,7 +1522,7 @@ router.get('/:id/earnings', authenticate, userLimiter, requirePolicy('driver:vie
     let totalKm = 0;
     trips.forEach(trip => {
       if (trip.distance) {
-        const distanceNum = parseInt(String(trip.distance).replace(/[^0-9]/g, '')) || 0;
+        const distanceNum = parseInt(String(trip.distance, 10).replace(/[^0-9]/g, '')) || 0;
         totalKm += distanceNum;
       }
     });
