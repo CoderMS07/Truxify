@@ -12,6 +12,9 @@ import '../widgets/common_widgets.dart';
 import 'chat_screen.dart';
 import 'delivery_otp_screen.dart';
 
+import 'dart:async';
+import 'package:connectivity_plus/connectivity_plus.dart';
+
 class TripDetailScreen extends StatefulWidget {
   final Trip trip;
 
@@ -24,18 +27,40 @@ class TripDetailScreen extends StatefulWidget {
 class _TripDetailScreenState extends State<TripDetailScreen> {
   final MapController _mapController = MapController();
   late Future<_RouteResult?> _routeFuture;
+  late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
+  bool _isOffline = false;
 
   @override
   void initState() {
     super.initState();
     _routeFuture = _loadRouteForTrip(widget.trip.route);
+    
+    // Check initial connectivity
+    Connectivity().checkConnectivity().then((result) {
+      if (mounted) {
+        setState(() {
+          _isOffline = result.contains(ConnectivityResult.none);
+        });
+      }
+    });
+
+    // Listen for changes
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((result) {
+      if (mounted) {
+        setState(() {
+          _isOffline = result.contains(ConnectivityResult.none);
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
+    _connectivitySubscription.cancel();
     _mapController.dispose();
     super.dispose();
   }
+
   Future<void> _openGoogleMapsRoute() async {
     final routeResult = await _routeFuture;
     final start = routeResult?.start;
@@ -63,7 +88,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           const SnackBar(content: Text('Unable to open Google Maps')),
         );
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[TripDetailScreen] Failed to open Google Maps: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Failed to open Google Maps')),
@@ -71,6 +97,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       }
     }
   }
+
   void _showBlockchainBottomSheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
@@ -374,6 +401,26 @@ Widget _cargoBadge({
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (_isOffline)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                color: TruxifyColors.errorRed,
+                child: Row(
+                  children: [
+                    const Icon(Icons.cloud_off, color: Colors.white, size: 16),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Offline Mode. Progress saved locally.',
+                      style: GoogleFonts.dmSans(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             // 1. Route Hero Card
             Container(
               width: double.infinity,
@@ -1041,12 +1088,12 @@ Widget _cargoBadge({
       ),
     );
   }
-
   Future<_RouteResult?> _loadRouteForTrip(String routeLabel) async {
     try {
       final normalized = routeLabel.replaceAll('->', '→').replaceAll('=>', '→');
       final parts = normalized.split('→');
       final startLabel = parts.isNotEmpty ? parts[0].trim() : '';
+
       final endLabel = parts.length > 1 ? parts[1].trim() : '';
 
       final start = startLabel.isNotEmpty
@@ -1067,7 +1114,8 @@ Widget _cargoBadge({
 
       final result = _RouteResult(start: start, end: end, routePoints: routePoints);
       return result;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[TripDetailScreen] Route resolution failed: $e');
       return null;
     }
   }

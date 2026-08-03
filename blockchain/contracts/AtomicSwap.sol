@@ -118,6 +118,7 @@ contract AtomicSwap is Ownable, ReentrancyGuard, Pausable {
     function executeSwap(uint256 swapId, bytes32 secret) external nonReentrant whenNotPaused {
         Swap storage swap = swaps[swapId];
         require(swap.initiator != address(0), "Swap not found");
+        require(msg.sender == swap.counterparty, "Only counterparty can execute");
         require(!swap.executed, "Already executed");
         require(!swap.refunded, "Already refunded");
         require(block.timestamp <= swap.timelock, "Swap expired");
@@ -200,6 +201,7 @@ contract AtomicSwap is Ownable, ReentrancyGuard, Pausable {
         });
 
         usedHashLocks[hashLock] = true;
+        userSwaps[msg.sender].push(swapId);
 
         emit CrossChainSwapCreated(swapId, block.chainid, destChainId);
         return swapId;
@@ -212,6 +214,7 @@ contract AtomicSwap is Ownable, ReentrancyGuard, Pausable {
     ) external nonReentrant whenNotPaused {
         CrossChainSwap storage swap = crossChainSwaps[swapId];
         require(swap.initiator != address(0), "Swap not found");
+        require(msg.sender == swap.counterparty, "Only counterparty can execute");
         require(!swap.executed, "Already executed");
         require(!swap.refunded, "Already refunded");
         require(block.timestamp <= swap.timelock, "Swap expired");

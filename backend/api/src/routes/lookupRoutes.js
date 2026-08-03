@@ -78,6 +78,7 @@ async function getCachedOrFetch(key, fetchFn) {
 
   // Atomic check-and-set: only first caller wins
   const actual = inflight.get(key) || inflight.set(key, fetchPromise).get(key);
+  setTimeout(() => inflight.delete(key), 30000);
   try {
     return await actual;
   } finally {

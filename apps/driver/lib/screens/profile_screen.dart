@@ -11,8 +11,9 @@ import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/fcm_service.dart';
+import '../services/secure_storage.dart';
 import '../core/supabase_config.dart';
-import 'package:truxify_shared/truxify_shared.dart' hide NotificationsScreen;
+import 'package:truxify_shared/truxify_shared.dart' hide NotificationsScreen, FcmService;
 import 'notifications_screen.dart';
 import '../utils/validators.dart';
 
@@ -109,9 +110,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
         if (data is Map<String, dynamic>) {
           setState(() {
-            _platformRating = data['supabaseRating'] != null
-                ? (data['supabaseRating'] as num).toDouble()
-                : null;
+            _platformRating = (data['supabaseRating'] as num?)?.toDouble() ?? 0.0;
             _onChainScore = data['onChainScore'] != null
                 ? (data['onChainScore'] as num).toInt()
                 : null;
@@ -1030,9 +1029,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                   subtitle: Text(
-                    _walletAddress.isNotEmpty
+                    _walletAddress.length >= 16
                         ? '${_walletAddress.substring(0, 10)}...${_walletAddress.substring(_walletAddress.length - 6)}'
-                        : AppLocalizations.of(context)!.notSet,
+                        : _walletAddress.isNotEmpty
+                            ? _walletAddress
+                            : AppLocalizations.of(context)!.notSet,
                     style: GoogleFonts.dmSans(
                       fontSize: 12,
                       color: TruxifyColors.adaptiveSecondaryText(context),
@@ -1146,6 +1147,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   await FcmService.clearToken();
 
                   await client.auth.signOut();
+
+                  // Remove the persisted auth token from OS-backed secure
+                  // storage so it cannot be reused after logout (issue #5739).
+                  await AuthTokenStore.clear();
                 }
 
                 if (!context.mounted) {
