@@ -1,146 +1,230 @@
+/**
+ * @openapi
+ * components:
+ *   schemas:
+ *     CreateOrderRequest:
+ *       type: object
+ *       properties:
+ *         pickup_address:
+ *           type: string
+ *         drop_address:
+ *           type: string
+ *         pickup_lat:
+ *           type: number
+ *         pickup_lng:
+ *           type: number
+ *         drop_lat:
+ *           type: number
+ *         drop_lng:
+ *           type: number
+ *         weight_tonnes:
+ *           type: number
+ *         goods_type:
+ *           type: string
+ *         is_fragile:
+ *           type: boolean
+ *         is_stackable:
+ *           type: boolean
+ *     OrderListResponse:
+ *       type: object
+ *       properties:
+ *         page:
+ *           type: integer
+ *         limit:
+ *           type: integer
+ *         total:
+ *           type: integer
+ *         totalPages:
+ *           type: integer
+ *         orders:
+ *           type: array
+ *           items:
+ *             type: object
+ *     SubmitBidRequest:
+ *       type: object
+ *       required:
+ *         - amount
+ *       properties:
+ *         amount:
+ *           type: number
+ *           description: Bid amount in paisa
+ *     SubmitRatingRequest:
+ *       type: object
+ *       required:
+ *         - rating
+ *       properties:
+ *         rating:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 5
+ *         review:
+ *           type: string
+ *     AcceptBidResponse:
+ *       type: object
+ *       properties:
+ *         message:
+ *           type: string
+ *         order:
+ *           type: object
+ *     UpdateMilestoneRequest:
+ *       type: object
+ *       required:
+ *         - milestone
+ *       properties:
+ *         milestone:
+ *           type: string
+ *     VerifyDeliveryResponse:
+ *       type: object
+ *       properties:
+ *         success:
+ *           type: boolean
+ *         message:
+ *           type: string
+ *     ChangeDropRequest:
+ *       type: object
+ *       required:
+ *         - drop_lat
+ *         - drop_lng
+ *       properties:
+ *         drop_lat:
+ *           type: number
+ *         drop_lng:
+ *           type: number
+ *         drop_address:
+ *           type: string
+ *     CancelOrderRequest:
+ *       type: object
+ *       required:
+ *         - reason
+ *       properties:
+ *         reason:
+ *           type: string
+ *     PredictDemandRequest:
+ *       type: object
+ *       properties:
+ *         pickup_lat:
+ *           type: number
+ *         pickup_lng:
+ *           type: number
+ *         drop_lat:
+ *           type: number
+ *         drop_lng:
+ *           type: number
+ *     DriverLocationResponse:
+ *       type: object
+ *       properties:
+ *         driver_id:
+ *           type: string
+ *         lat:
+ *           type: number
+ *         lng:
+ *           type: number
+ *         updated_at:
+ *           type: string
+ *     OrderRouteResponse:
+ *       type: object
+ *       properties:
+ *         route:
+ *           type: array
+ *           items:
+ *             type: object
+ *             properties:
+ *               lat:
+ *                 type: number
+ *               lng:
+ *                 type: number
+ *         distance_km:
+ *           type: number
+ *         duration_minutes:
+ *           type: number
+ */
+
 import express from 'express';
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import multer from 'multer';
 import crypto from 'crypto';
-import { ethers } from 'ethers';
-import { bidLimiter, userLimiter, safeIpKeyGenerator, createStore } from '../middleware/rateLimiter.js';
-import { supabase, redisClient, mongoDb } from '../config/db.js';
+import rateLimit from 'express-rate-limit';
+
+import { bidLimiter, userLimiter, userKeyGenerator, podUploadLimiter, createStore } from '../middleware/rateLimiter.js';
+import { mongoDb, supabase, redisClient, createUserClient } from '../config/db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
+import { requirePolicy } from '../middleware/requirePolicy.js';
+import { validateDocumentBuffer } from '../lib/documentValidation.js';
+import { scanDocument } from '../lib/malwareScanner.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { z } from 'zod';
-import { computeOrderPricing } from '../lib/pricing.js';
-import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
 import {
-  createOrderSchema,
-  submitBidSchema,
-  submitRatingSchema,
-  paramIdSchema,
-  acceptBidParamsSchema,
-  updateMilestoneSchema,
-  verifyDeliverySchema,
-  predictDemandSchema,
-  changeDropSchema,
-  cancelOrderSchema
+  createOrderSchema, submitBidSchema, submitRatingSchema, paramIdSchema, acceptBidParamsSchema,
+  updateMilestoneSchema, verifyDeliverySchema, predictDemandSchema, changeDropSchema, cancelOrderSchema,
 } from '../validation/requestSchemas.js';
 import { awardReputationPoints } from '../services/reputation.js';
-import {
-  escrowDeposit,
-  escrowRelease,
-  escrowRefund,
-  buildDepositTx,
-  recordDepositTx,
-  bookingIdFromUuid,
-  submitEscrowRefund,
-  confirmEscrowRefund,
-  ESCROW_MATIC_PER_PAISA,
-} from '../services/escrow.js';
-import { BidAcceptanceService, DomainError } from '../services/order/bidAcceptanceService.js';
-import {
-  sendDeliveryOtpNotification,
-  storeDeliveryOtp,
-  getActiveDeliveryOtp,
-  verifyDeliveryOtp,
-  expireDeliveryOtps
-} from '../services/notificationService.js';
-import { predictDemand, predictPrice } from '../services/ml.js';
+import { expireDeliveryOtps, sendPushNotification } from '../services/notificationService.js';
+import { DomainError } from '../services/order/domainError.js';
+import { predictDemand, predictPrice, matchEnRouteLoads } from '../services/ml.js';
 import { requireIdempotency } from '../middleware/idempotency.js';
 import { acquireLock, releaseLock } from '../lib/redisLock.js';
 import logger from '../middleware/logger.js';
+import { auditLog } from '../middleware/auditLog.js';
+import {
+  orderRepository,
+  orderValidationService,
+  orderTimelineService,
+  orderMilestoneService,
+  orderLifecycleService,
+  deliveryVerificationService,
+  buildDepositTx,
+  recordDepositTx,
+  submitEscrowRefund,
+  confirmEscrowRefund,
+  escrowRefund,
+} from '../core/container.js';
+import { getEscrowBookingId } from '../services/escrow.js';
+import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
+import { computeOrderPricing } from '../lib/pricing.js';
 
 const router = express.Router();
+router.use(userLimiter);
+const LOAD_OFFER_CACHE_TTL_SECONDS = 120;
 
-// ── OTP brute-force protection (Redis + In-Memory Fallback) ────────────────────
-const OTP_TTL_MINUTES = parseInt(process.env.OTP_TTL_MINUTES || '15', 10);
-const OTP_MAX_FAILED_ATTEMPTS = parseInt(process.env.OTP_MAX_FAILED_ATTEMPTS || '5', 10);
-const OTP_LOCKOUT_MINUTES = parseInt(process.env.OTP_LOCKOUT_MINUTES || '30', 10);
-const IN_MEMORY_OTP_MAP_MAX_SIZE = parseInt(process.env.IN_MEMORY_OTP_MAP_MAX_SIZE || '10000', 10);
-const DELIVERY_OTP_READY_STATUSES = new Set(['arriving']);
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+async function readLoadOfferCache(cacheKey) {
+  if (!redisClient) return null;
 
-const inMemoryOtpFailedAttempts = new Map();
+  try {
+    const cached = await redisClient.get(cacheKey);
+    if (!cached) return null;
 
-const bidAcceptanceService = new BidAcceptanceService({
-  supabase,
-  buildDepositTxFn: buildDepositTx,
-  recordDepositTxFn: recordDepositTx,
-  escrowRefundFn: escrowRefund,
-  logger,
-});
+    const parsed = JSON.parse(cached);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (err) {
+    logger.warn(
+      `[orderRoutes] Ignoring malformed load-offer cache entry for ${cacheKey}: ${err.message}`
+    );
 
-function isOtpExpired(otpGeneratedAt) {
-  if (!otpGeneratedAt) return true;
-  const elapsed = Date.now() - new Date(otpGeneratedAt).getTime();
-  return elapsed > OTP_TTL_MINUTES * 60 * 1000;
-}
-
-async function checkOtpLockout(orderId) {
-  if (redisClient) {
     try {
-      const lockKey = `otp_lockout:${orderId}`;
-      const isLocked = await redisClient.get(lockKey);
-      return !!isLocked;
-    } catch (err) {
-      logger.error('[OTP] Redis error in checkOtpLockout, falling back to memory:', err.message);
+      await redisClient.del(cacheKey);
+    } catch (delErr) {
+      logger.error(
+        { err: delErr, cacheKey },
+        'Failed to delete malformed load-offer cache entry'
+      );
     }
+    return null;
   }
-  const record = inMemoryOtpFailedAttempts.get(orderId);
-  if (!record || !record.lockedUntil) return false;
-  if (Date.now() >= record.lockedUntil) {
-    inMemoryOtpFailedAttempts.delete(orderId);
-    return false;
-  }
-  return true;
 }
 
-async function recordOtpFailure(orderId) {
-  if (redisClient) {
-    try {
-      const countKey = `otp_failed_count:${orderId}`;
-      const lockKey = `otp_lockout:${orderId}`;
-      
-      const count = await redisClient.incr(countKey);
-      if (count === 1) await redisClient.expire(countKey, OTP_LOCKOUT_MINUTES * 60);
-      if (count >= OTP_MAX_FAILED_ATTEMPTS) {
-        await redisClient.set(lockKey, '1', 'EX', OTP_LOCKOUT_MINUTES * 60);
-      }
-      return count;
-    } catch (err) {
-      logger.error('[OTP] Redis error in recordOtpFailure, falling back to memory:', err.message);
-    }
+async function writeLoadOfferCache(cacheKey, offers) {
+  if (!redisClient) return;
+  try {
+    await redisClient.set(
+      cacheKey,
+      JSON.stringify(offers),
+      'EX',
+      LOAD_OFFER_CACHE_TTL_SECONDS
+    );
+  } catch (err) {
+    logger.error({ err, cacheKey }, 'Failed to write load offer cache');
   }
-  
-  if (inMemoryOtpFailedAttempts.size >= IN_MEMORY_OTP_MAP_MAX_SIZE) {
-    const oldestKey = inMemoryOtpFailedAttempts.keys().next().value;
-    inMemoryOtpFailedAttempts.delete(oldestKey);
-  }
-
-  let record = inMemoryOtpFailedAttempts.get(orderId);
-  if (!record) {
-    record = { count: 0, lockedUntil: null };
-    inMemoryOtpFailedAttempts.set(orderId, record);
-  }
-  record.count += 1;
-  if (record.count >= OTP_MAX_FAILED_ATTEMPTS) {
-    record.lockedUntil = Date.now() + OTP_LOCKOUT_MINUTES * 60 * 1000;
-  }
-  return record.count;
 }
 
-async function clearOtpState(orderId) {
-  if (redisClient) {
-    try {
-      const countKey = `otp_failed_count:${orderId}`;
-      const lockKey = `otp_lockout:${orderId}`;
-      await redisClient.del(countKey, lockKey);
-      return;
-    } catch (err) {
-      logger.error('[OTP] Redis error in clearOtpState, falling back to memory:', err.message);
-    }
-  }
-  inMemoryOtpFailedAttempts.delete(orderId);
-}
-
-
-// Rate limiter for the verify-delivery endpoint
 const verifyDeliveryLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: process.env.NODE_ENV === 'test' ? 1000 : 20,
@@ -151,7 +235,6 @@ const verifyDeliveryLimiter = rateLimit({
   message: { error: 'Too many delivery verification attempts. Please try again later.' },
 });
 
-// Rate limiter for updating order milestones
 const milestoneLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: process.env.NODE_ENV === 'test' ? 1000 : 5,
@@ -162,7 +245,6 @@ const milestoneLimiter = rateLimit({
   message: { error: 'Too many milestone updates. Please slow down.' },
 });
 
-// Rate limiter for the predict-demand endpoint
 const predictDemandLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: process.env.NODE_ENV === 'test' ? 1000 : 10,
@@ -173,27 +255,19 @@ const predictDemandLimiter = rateLimit({
   message: { error: 'Too many demand prediction requests. Please try again later.' },
 });
 
-// Rate limiter for telemetry endpoints
 const telemetryLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: process.env.NODE_ENV === 'test' ? 1000 : 30, // 30 requests per minute should be enough for telemetry
-  keyGenerator: (req) => {
-    if (!req.user || !req.user.id) {
-      return req.ip ? safeIpKeyGenerator(req) : 'unknown-ip';
-    }
-    return req.user.id;
-  },
+  max: process.env.NODE_ENV === 'test' ? 1000 : 30,
+  keyGenerator: userKeyGenerator,
   store: createStore('rl:telemetry:'),
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many telemetry requests. Please try again later.' },
 });
 
-// Rate limiter for resend-otp endpoint
 const resendOtpLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: process.env.NODE_ENV === 'test' ? 1000 : 5,
-  keyGenerator: (req) => req.user?.id || 'unauthenticated',
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => req.user?.id || 'unknown',
@@ -201,11 +275,9 @@ const resendOtpLimiter = rateLimit({
   message: { error: 'Too many OTP resend requests. Please try again later.' },
 });
 
-// Rate limiter for change-drop endpoint
 const changeDropLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: process.env.NODE_ENV === 'test' ? 1000 : 5,
-  keyGenerator: (req) => req.user?.id || 'unauthenticated',
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => req.user?.id || 'unknown',
@@ -213,195 +285,67 @@ const changeDropLimiter = rateLimit({
   message: { error: 'Too many drop change requests. Please try again later.' },
 });
 
-/**
- * Helper to generate order display IDs like #FF20260521
- */
-function generateOrderDisplayId() {
-  const prefix = '#FF';
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, ''); // YYYYMMDD
-  const random = crypto.randomInt(100000, 999999).toString(); // 6 random digits using CSPRNG
-  return `${prefix}${dateStr}${random}`;
-}
-
 // ============================================================================
 // 1. CREATE AN ORDER (CUSTOMER)
 // ============================================================================
-router.post('/', authenticate, userLimiter, requireRole(['customer']), validateBody(createOrderSchema), async (req, res) => {
-  const {
-    pickup_address, pickup_lat, pickup_lng,
-    drop_address, drop_lat, drop_lng,
-    pickup_date, pickup_time,
-    goods_type, weight_tonnes, length_ft, width_ft, height_ft,
-    is_stackable, is_fragile, special_requirements,
-    payment_method_id, upi_id
-  } = req.body;
-
-  if (!pickup_address || pickup_lat == null || pickup_lng == null || !drop_address || drop_lat == null || drop_lng == null || !goods_type || weight_tonnes == null) {
-    return res.status(400).json({ error: 'Missing required routing or cargo specification fields.' });
-  }
-
-  let pricing;
+/**
+ * @openapi
+ * /api/orders:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Create a new order
+ *     description: Creates a new order with pickup/drop locations and cargo details. Customer role required.
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/CreateOrderRequest'
+ *     responses:
+ *       201:
+ *         description: Order created
+ *       400:
+ *         description: Validation error
+ */
+router.post('/', authenticate, userLimiter, requirePolicy('order:create'), requireIdempotency(86400), validateBody(createOrderSchema), async (req, res) => {
   try {
-    const routeEstimate = await getRouteEstimate({
-      pickupLat: Number(pickup_lat),
-      pickupLng: Number(pickup_lng),
-      dropLat: Number(drop_lat),
-      dropLng: Number(drop_lng),
-    });
-    pricing = computeOrderPricing({
-      pickupLat:  Number(pickup_lat),
-      pickupLng:  Number(pickup_lng),
-      dropLat:    Number(drop_lat),
-      dropLng:    Number(drop_lng),
-      weightTonnes: Number(weight_tonnes),
-      roadDistanceKm: routeEstimate?.distanceKm,
-      isFragile:   Boolean(is_fragile),
-      isStackable: Boolean(is_stackable),
-    });
-  } catch (pricingErr) {
-    logger.error('Pricing computation error:', pricingErr.message);
-    return res.status(400).json({
-      error: 'Unable to compute freight pricing for the given route/cargo.',
-      details: pricingErr.message,
-    });
-  }
-
-  let estimatedPrice = null;
-  try {
-    const mlResult = await predictPrice({
-      distanceKm: pricing.distanceKm,
-      cargoWeightKg: Number(weight_tonnes) * 1000,
-      routeOrigin: pickup_address,
-      routeDestination: drop_address,
-    });
-    if (!mlResult || typeof mlResult.estimated_price !== 'number' || mlResult.estimated_price <= 0) {
-      throw new Error(`Invalid or non-positive price prediction: ${JSON.stringify(mlResult)}`);
-    }
-    estimatedPrice = Math.round(mlResult.estimated_price * 100);
-  } catch (mlErr) {
-    logger.warn({ err: mlErr.message }, 'Price prediction unavailable, falling back to base pricing');
-  }
-
-  const MAX_ID_RETRIES = 3;
-  let order = null;
-  let orderErr = null;
-  let orderDisplayId = null;
-
-  try {
-    for (let attempt = 0; attempt < MAX_ID_RETRIES; attempt++) {
-      orderDisplayId = generateOrderDisplayId();
-      const result = await supabase
-        .from('orders')
-        .insert({
-          order_display_id: orderDisplayId,
-          customer_id: req.user.id,
-          status: 'pending',
-          pickup_address, pickup_lat, pickup_lng,
-          drop_address, drop_lat, drop_lng,
-          pickup_date, pickup_time,
-          goods_type, weight_tonnes, length_ft, width_ft, height_ft,
-          is_stackable, is_fragile, special_requirements,
-          base_freight: pricing.baseFreight,
-          toll_estimate: pricing.tollEstimate,
-          platform_fee: pricing.platformFee,
-          total_amount: pricing.totalAmount,
-          estimated_price: estimatedPrice,
-          payment_method_id, upi_id
-        })
-        .select('id, order_display_id, status, created_at')
-        .single();
-
-      order = result.data;
-      orderErr = result.error;
-
-      if (!orderErr || orderErr.code !== '23505') break;
-      logger.warn(`[Orders] display ID collision on ${orderDisplayId}, retrying (attempt ${attempt + 1}/${MAX_ID_RETRIES})`);
-    }
-
-    if (orderErr) {
-      logger.error('Order Insertion Error:', orderErr.message);
-      return res.status(500).json({ error: 'Failed to create order record.', details: orderErr.message });
-    }
-
-    const milestones = [
-      { order_display_id: orderDisplayId, milestone: 'Order Placed', milestone_time: new Date().toISOString(), completed: true, sort_order: 10 },
-      { order_display_id: orderDisplayId, milestone: 'Truck Assigned', milestone_time: null, completed: false, sort_order: 20 },
-      { order_display_id: orderDisplayId, milestone: 'En Route to Pickup', milestone_time: null, completed: false, sort_order: 30 },
-      { order_display_id: orderDisplayId, milestone: 'Arrived at Pickup', milestone_time: null, completed: false, sort_order: 35 },
-      { order_display_id: orderDisplayId, milestone: 'Goods Loaded', milestone_time: null, completed: false, sort_order: 40 },
-      { order_display_id: orderDisplayId, milestone: 'In Transit', milestone_time: null, completed: false, sort_order: 50 },
-      { order_display_id: orderDisplayId, milestone: 'Arriving', milestone_time: null, completed: false, sort_order: 55 },
-      { order_display_id: orderDisplayId, milestone: 'Delivered', milestone_time: null, completed: false, sort_order: 60 }
-    ];
-
-    const { error: timelineErr } = await supabase.from('order_timeline').insert(milestones);
-
-    if (timelineErr) {
-      logger.error('Timeline Insertion Error:', timelineErr.message);
-      await supabase.from('orders').delete().eq('id', order.id);
-      return res.status(500).json({ error: 'Failed to create order timeline.', details: timelineErr.message });
-    }
-
-    const { error: offerErr } = await supabase
-      .from('load_offers')
-      .insert({
-        order_display_id: orderDisplayId,
-        customer_id: req.user.id,
-        customer_name: req.user.fullName || 'Customer',
-        route_label: `${pickup_address.split(',')[0]} → ${drop_address.split(',')[0]}`,
-        route_subtitle: `${weight_tonnes} tonnes • ${goods_type}`,
-        pickup_address, pickup_lat, pickup_lng,
-        drop_address, drop_lat, drop_lng,
-        goods_type,
-        weight: `${weight_tonnes} tonnes`,
-        freight_value: pricing.totalAmount,
-        fuel_cost: pricing.fuelCost,
-        toll_cost: pricing.tollEstimate,
-        net_profit: pricing.netProfit,
-        extra_distance_km: pricing.distanceKm,
-        status: 'available'
-      });
-
-    if (offerErr) {
-      logger.error('Load Offer Insertion Error:', offerErr.message);
-      await supabase.from('order_timeline').delete().eq('order_display_id', orderDisplayId);
-      await supabase.from('orders').delete().eq('id', order.id);
-      return res.status(500).json({ error: 'Failed to create load offer.', details: offerErr.message });
-    }
-
-    res.status(201).json({ message: 'Order created successfully and broadcasted to loads board.', order });
+    const { order } = await orderLifecycleService.createOrder(req.user.id, req.user.fullName || 'Customer', req.body);
+    return res.status(201).json({ message: 'Order created successfully and broadcasted to loads board.', order });
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
     logger.error('Order creation exception:', err.message);
-    res.status(500).json({ error: 'Internal Server Error.' });
+    return res.status(500).json({ error: 'Internal Server Error.' });
   }
 });
 
 // ============================================================================
 // 2. FETCH MY ACTIVE ORDERS (CUSTOMER)
 // ============================================================================
-router.get('/my/active', authenticate, userLimiter, requireRole(['customer']), async (req, res) => {
-  const activeStatuses = ['pending', 'active', 'truck_assigned', 'en_route_pickup', 'arrived_pickup', 'picked_up', 'in_transit', 'arriving'];
-
+/**
+ * @openapi
+ * /api/orders/my/active:
+ *   get:
+ *     tags: [Orders]
+ *     summary: Get customer's active orders
+ *     description: Returns active orders for the authenticated customer.
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Active orders
+ */
+router.get('/my/active', authenticate, userLimiter, requirePolicy('order:view-active'), async (req, res) => {
   try {
-    const { data: orders, error } = await supabase
-      .from('orders')
-      .select('*')
-      .eq('customer_id', req.user.id)
-      .in('status', activeStatuses)
-      .order('pickup_date', { ascending: false });
-
-    if (error) return res.status(500).json({ error: 'Failed to fetch active orders.', details: error.message });
-
-    const driverIds = [...new Set(orders.filter(o => o.driver_id).map(o => o.driver_id))];
-    if (driverIds.length > 0) {
-      const { data: profiles } = await supabase.from('profiles').select('id, full_name').in('id', driverIds);
-      const driverMap = Object.fromEntries((profiles || []).map(p => [p.id, p.full_name]));
-      orders.forEach(o => { o.driver_name = driverMap[o.driver_id] || 'Driver Assigned'; });
-    }
-
+    const orders = await orderLifecycleService.getActiveOrders(req.user.id);
     res.json(orders);
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
     logger.error("[orderRoutes] Failed to fetch active orders:", err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   }
@@ -410,18 +354,41 @@ router.get('/my/active', authenticate, userLimiter, requireRole(['customer']), a
 // ============================================================================
 // 3. FETCH LOAD OFFERS (MARKETPLACE)
 // ============================================================================
+/**
+ * @openapi
+ * /api/orders/load-offers:
+ *   get:
+ *     tags: [Orders]
+ *     summary: Get order load offers
+ *     description: Returns load offers related to orders for the authenticated user.
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Load offers
+ */
 router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+  const cacheKey = `load-offers:${page}:${limit}`;
   try {
-    const { data: offers, error } = await supabase
-      .from('load_offers')
-      .select('*')
-      .eq('is_en_route', false)
-      .order('created_at', { ascending: false });
+    const cachedOffers = await readLoadOfferCache(cacheKey);
+    if (cachedOffers) {
+      return res.json(cachedOffers);
+    }
+
+    const { data: offers, error } = await orderRepository.findLoadOffers(
+      { is_en_route: false },
+      { pagination: { page, limit } }
+    );
 
     if (error) return res.status(500).json({ error: 'Failed to fetch load offers.', details: error.message });
+
+    await writeLoadOfferCache(cacheKey, offers);
+
     res.json(offers);
   } catch (err) {
-    logger.error("[orderRoutes] Failed to fetch load offers:", err.message);
+    logger.error('Fetch load offers exception:', err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -429,18 +396,105 @@ router.get('/load-offers', authenticate, userLimiter, async (req, res) => {
 // ============================================================================
 // 4. FETCH EN-ROUTE LOADS (MARKETPLACE)
 // ============================================================================
+/**
+ * @openapi
+ * /api/orders/load-offers/en-route:
+ *   get:
+ *     tags: [Orders]
+ *     summary: Get en-route load offers
+ *     description: Returns load offers along the driver's current route.
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: En-route offers
+ */
 router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) => {
-  try {
-    const { data: offers, error } = await supabase
-      .from('load_offers')
-      .select('*')
-      .eq('is_en_route', true)
-      .order('created_at', { ascending: false });
+  // Optional driver GPS — used to score loads by detour distance
+  const currentLat = parseFloat(req.query.current_lat);
+  const currentLng = parseFloat(req.query.current_lng);
 
-    if (error) return res.status(500).json({ error: 'Failed to fetch en-route loads.', details: error.message });
-    res.json(offers);
+  // Validate and clamp max_detour_km: the raw client value is unbounded and is
+  // embedded in the cache key, so an unclamped value lets clients mint an
+  // unlimited number of distinct cache entries (each forcing a DB read + ML
+  // ranking pass on miss). Absent/empty falls back to the default; non-numeric
+  // input is rejected; out-of-range values are clamped to [1, 500].
+  let maxDetourKm;
+  if (req.query.max_detour_km === undefined || req.query.max_detour_km === '') {
+    maxDetourKm = 50;
+  } else {
+    const parsed = Number(req.query.max_detour_km);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return res.status(400).json({ error: 'max_detour_km must be a positive number' });
+    }
+    maxDetourKm = Math.min(Math.max(parsed, 1), 500);
+  }
+
+  const hasGps = Number.isFinite(currentLat) && Number.isFinite(currentLng);
+
+  // Cache key includes GPS bucket (0.1° resolution ≈ 11 km) so nearby drivers
+  // share a cache entry without stale results. max_detour_km is bucketed to
+  // 5 km steps so the key space is bounded even for valid values.
+  const latBucket = hasGps ? (Math.round(currentLat * 10) / 10).toFixed(1) : 'x';
+  const lngBucket = hasGps ? (Math.round(currentLng * 10) / 10).toFixed(1) : 'x';
+  const maxDetourBucket = Math.round(maxDetourKm / 5) * 5;
+  const cacheKey = `load-offers:en-route:${latBucket}:${lngBucket}:${maxDetourBucket}`;
+
+  try {
+    const cachedOffers = await readLoadOfferCache(cacheKey);
+    if (cachedOffers) {
+      return res.json(cachedOffers);
+    }
+
+    // Fetch ALL available offers (not pre-filtered by is_en_route flag which may
+    // not be populated) so the ML model can rank by detour from the driver.
+    const { data: rawOffers, error } = await orderRepository.findLoadOffers(
+      { status: 'available' },
+      { pagination: { page: 1, limit: 100 } }
+    );
+
+    if (error) {
+      return res.status(500).json({ error: 'Failed to fetch load offers.', details: error.message });
+    }
+
+    let enriched;
+    let mlUnavailable = false;
+
+    if (hasGps && rawOffers && rawOffers.length > 0) {
+      try {
+        enriched = await matchEnRouteLoads({
+          currentLat,
+          currentLng,
+          offers: rawOffers,
+          maxDetourKm,
+        });
+      } catch (mlErr) {
+        // matchEnRouteLoads already handles its own fallback internally;
+        // this outer catch is a last-resort safety net.
+        logger.error('[orderRoutes] matchEnRouteLoads threw unexpectedly:', mlErr.message);
+        enriched = rawOffers;
+        mlUnavailable = true;
+      }
+    } else {
+      // No GPS provided — return all available offers unscored
+      enriched = (rawOffers || []).map(o => ({
+        ...o,
+        detour_km: null,
+        extra_earnings: o.freight_value || 0,
+        match_score: null,
+        ml_used: false,
+      }));
+    }
+
+    if (mlUnavailable) {
+      // Still return the data — just tell the client ML was not available
+      res.set('X-ML-Status', 'unavailable');
+    }
+
+    await writeLoadOfferCache(cacheKey, enriched);
+    res.json(enriched);
   } catch (err) {
-    logger.error("[orderRoutes] Failed to fetch en-route loads:", err.message);
+    logger.error('[orderRoutes] Failed to fetch en-route loads:', err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -448,48 +502,39 @@ router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) 
 // ============================================================================
 // 5. FETCH MY ORDER HISTORY (CUSTOMER)
 // ============================================================================
-router.get('/history', authenticate, userLimiter, requireRole(['customer']), async (req, res) => {
+/**
+ * @openapi
+ * /api/orders/history:
+ *   get:
+ *     tags: [Orders]
+ *     summary: Get customer's order history
+ *     description: Returns paginated order history for the authenticated customer.
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Order history
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/OrderListResponse'
+ */
+router.get('/history', authenticate, userLimiter, requirePolicy('order:view-history'), async (req, res) => {
   try {
-    const pageParam = req.query.page ?? '1';
+    const cursor = req.query.cursor;
     const limitParam = req.query.limit ?? '10';
-    const page = typeof pageParam === 'string' ? Number(pageParam) : NaN;
     const limit = typeof limitParam === 'string' ? Number(limitParam) : NaN;
-
-    if (!Number.isInteger(page) || page < 1) {
-      return res.status(400).json({ error: 'page must be greater than or equal to 1' });
-    }
 
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       return res.status(400).json({ error: 'limit must be between 1 and 100' });
     }
 
-    const from = (page - 1) * limit;
-    const to = from + limit - 1;
-
-    const { data: history, error, count } = await supabase
-      .from('orders')
-      .select('id, order_display_id, status, pickup_address, drop_address, pickup_date, total_amount, goods_type, driver_id, eta, created_at', { count: 'exact' })
-      .eq('customer_id', req.user.id)
-      .order('created_at', { ascending: false })
-      .range(from, to);
-
-    if (error) return res.status(500).json({ error: 'Failed to fetch history.', details: error.message });
-
-    const driverIds = [...new Set((history || []).filter(o => o.driver_id).map(o => o.driver_id))];
-    if (driverIds.length > 0) {
-      const { data: profiles } = await supabase.from('profiles').select('id, full_name').in('id', driverIds);
-      const driverMap = Object.fromEntries((profiles || []).map(p => [p.id, p.full_name]));
-      (history || []).forEach(o => { o.driver_name = driverMap[o.driver_id] || 'Driver Assigned'; });
-    }
-
-    res.json({
-      page,
-      limit,
-      total: count || 0,
-      totalPages: Math.ceil((count || 0) / limit),
-      history: history || []
-    });
+    const result = await orderLifecycleService.getOrderHistory(req.user.id, cursor, limit);
+    res.json(result);
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
     logger.error("[orderRoutes] Failed to fetch order history:", err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   }
@@ -498,36 +543,46 @@ router.get('/history', authenticate, userLimiter, requireRole(['customer']), asy
 // ============================================================================
 // 6. FETCH SPECIFIC ORDER DETAILS AND TIMELINE (CUSTOMER OR DRIVER)
 // ============================================================================
+/**
+ * @openapi
+ * /api/orders/{id}:
+ *   get:
+ *     tags: [Orders]
+ *     summary: Get order details
+ *     description: Returns details for a specific order by ID.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Order ID (UUID or display ID)
+ *     responses:
+ *       200:
+ *         description: Order details
+ *       404:
+ *         description: Order not found
+ */
 router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
   try {
-    let order = null;
-    let orderErr = null;
-    const resultById = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
-    order = resultById.data;
-    orderErr = resultById.error;
-    if (!order && !orderErr) {
-      const resultByDisplayId = await supabase.from('orders').select('*').eq('order_display_id', orderId).maybeSingle();
-      order = resultByDisplayId.data;
-      orderErr = resultByDisplayId.error;
-    }
-    if (orderErr) return res.status(500).json({ error: 'Query failed.', details: orderErr.message });
-    if (!order) return res.status(404).json({ error: 'Order not found.' });
-
-    if (order.customer_id !== req.user.id && order.driver_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
-    }
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, '*');
+    orderValidationService.assertOrderFound(order);
+    orderValidationService.assertOrderAccess(order, req.user);
 
     const responseOrder = { ...order };
-
-    const { data: timeline } = await supabase.from('order_timeline').select('milestone, milestone_time, completed, sort_order').eq('order_display_id', order.order_display_id).order('sort_order', { ascending: true });
+    const timeline = await orderTimelineService.getOrderTimeline(order.order_display_id);
 
     let driverProfile = null;
     if (order.driver_id) {
-      const { data: profile } = await supabase.from('profiles').select('full_name, phone, avatar_url').eq('id', order.driver_id).maybeSingle();
-      const { data: details } = await supabase.from('driver_details').select('rating, total_trips').eq('user_id', order.driver_id).maybeSingle();
+      const [profileResult, detailsResult] = await Promise.all([
+        orderRepository.findProfile(order.driver_id, 'full_name, phone, avatar_url'),
+        orderRepository.findDriverDetail(order.driver_id),
+      ]);
+      const profile = profileResult.data;
+      const details = detailsResult.data;
 
       if (profile && details) {
         driverProfile = { name: profile.full_name, phone: profile.phone, avatar: profile.avatar_url, rating: details.rating, trips: details.total_trips };
@@ -536,6 +591,9 @@ router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), asy
 
     res.json({ order: responseOrder, timeline: timeline || [], driver: driverProfile });
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
     logger.error("[orderRoutes] Failed to fetch order details:", err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   }
@@ -544,71 +602,93 @@ router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), asy
 // ============================================================================
 // 7. FETCH ORDER TIMELINE (CUSTOMER OR DRIVER)
 // ============================================================================
+/**
+ * @openapi
+ * /api/orders/{id}/timeline:
+ *   get:
+ *     tags: [Orders]
+ *     summary: Get order timeline
+ *     description: Returns the event timeline for a specific order.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Order timeline events
+ */
 router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
   try {
-    let order = null;
-    if (uuidRegex.test(orderId)) {
-      const { data: orderById } = await supabase.from('orders').select('customer_id, driver_id, order_display_id').eq('id', orderId).maybeSingle();
-      order = orderById;
-    }
-    if (!order) {
-      const { data: orderByDisplay } = await supabase.from('orders').select('customer_id, driver_id, order_display_id').eq('order_display_id', orderId).maybeSingle();
-      order = orderByDisplay;
-    }
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'customer_id, driver_id, order_display_id');
+    orderValidationService.assertOrderFound(order);
+    orderValidationService.assertOrderAccess(order, req.user);
 
-    if (!order) return res.status(404).json({ error: 'Order not found.' });
-
-    if (order.customer_id !== req.user.id && order.driver_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You do not own or are not assigned to this order.' });
-    }
-
-    const { data: timeline, error: timelineErr } = await supabase
-      .from('order_timeline')
-      .select('milestone, milestone_time, completed, sort_order')
-      .eq('order_display_id', order.order_display_id)
-      .order('sort_order', { ascending: true });
-
-    if (timelineErr) return res.status(500).json({ error: 'Failed to fetch timeline.', details: timelineErr.message });
-    res.json(timeline || []);
+    const timeline = await orderTimelineService.getOrderTimeline(order.order_display_id);
+    res.json(timeline);
   } catch (err) {
-    logger.error("[orderRoutes] Failed to fetch order timeline:", err.message);
-    res.status(500).json({ error: 'Internal Server Error' });
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
+    logger.error("[orderRoutes] Failed to fetch timeline:", err.message);
+    return res.status(500).json({ error: 'Failed to fetch timeline.' });
   }
 });
 
 // ============================================================================
 // 8. SUBMIT BID FOR LOAD OFFER (DRIVER)
 // ============================================================================
-router.post('/:id/bids', authenticate, userLimiter, requireRole(['driver']), bidLimiter, validateParams(paramIdSchema), validateBody(submitBidSchema), async (req, res) => {
-  const loadOfferId = req.params.id;
-  const { bid_amount } = req.body;
-
+/**
+ * @openapi
+ * /api/orders/{id}/bids:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Submit a bid on an order
+ *     description: Allows a driver to place a bid on an order. Rate-limited per driver.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/SubmitBidRequest'
+ *     responses:
+ *       201:
+ *         description: Bid submitted
+ *       400:
+ *         description: Validation error
+ *       429:
+ *         description: Rate limited
+ */
+router.post('/:id/bids', authenticate, userLimiter, requirePolicy('bid:submit'), bidLimiter, validateParams(paramIdSchema), validateBody(submitBidSchema), async (req, res) => {
   try {
-    const { data: offer, error: offerErr } = await supabase.from('load_offers').select('id, status, customer_id').eq('id', loadOfferId).maybeSingle();
-    if (offerErr || !offer) return res.status(404).json({ error: 'Load offer not found.' });
-    if (offer.status !== 'available') return res.status(410).json({ error: 'Load is no longer available for bidding.' });
-    if (offer.customer_id === req.user.id) return res.status(403).json({ error: 'You cannot bid on your own load offer' });
+    const loadOfferId = req.params.id;
+    const { bid_amount } = req.body;
+    const offer = await orderValidationService.assertLoadOfferAvailable(loadOfferId);
+    orderValidationService.assertNotOwnLoad(offer.customer_id, req.user.id);
+    await orderValidationService.assertTruckAssigned(req.user.id);
+    await orderValidationService.assertHosCompliant(req.user.id);
+    await orderValidationService.assertNoDuplicateBid(loadOfferId, req.user.id);
 
-    const { data: driverDetails, error: driverDetailsErr } = await supabase.from('driver_details').select('truck_id').eq('user_id', req.user.id).maybeSingle();
-    if (driverDetailsErr) return res.status(500).json({ error: 'Failed to verify driver profile.', details: driverDetailsErr.message });
-    if (!driverDetails?.truck_id) return res.status(400).json({ error: 'You must assign a valid truck to your profile before bidding on loads' });
-
-    const { data: truck, error: truckErr } = await supabase.from('trucks').select('id').eq('id', driverDetails.truck_id).maybeSingle();
-    if (truckErr) return res.status(500).json({ error: 'Failed to verify assigned truck.', details: truckErr.message });
-    if (!truck) return res.status(400).json({ error: 'Assigned truck record could not be found' });
-
-    const { data: existingBid, error: existingBidErr } = await supabase.from('load_bids').select('id').eq('load_id', loadOfferId).eq('driver_id', req.user.id).eq('status', 'pending').maybeSingle();
-    if (existingBidErr) return res.status(500).json({ error: 'Failed to verify existing bids.', details: existingBidErr.message });
-    if (existingBid) return res.status(409).json({ error: 'You already have a pending bid for this load.' });
-
-    const { data: bid, error: bidErr } = await supabase.from('load_bids').insert({ load_id: loadOfferId, driver_id: req.user.id, bid_amount, status: 'pending' }).select('*').single();
+    const { data: bid, error: bidErr } = await orderRepository.createBid({ load_id: loadOfferId, driver_id: req.user.id, bid_amount, status: 'pending' });
     if (bidErr) return res.status(500).json({ error: 'Failed to record bid.', details: bidErr.message });
 
     res.status(201).json({ message: 'Bid submitted successfully.', bid });
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
     logger.error("[orderRoutes] Failed to submit bid:", err.message);
     res.status(500).json({ error: 'Internal Server Error.' });
   }
@@ -617,92 +697,72 @@ router.post('/:id/bids', authenticate, userLimiter, requireRole(['driver']), bid
 // ============================================================================
 // 9. SUBMIT RATING FOR A DELIVERED ORDER (CUSTOMER)
 // ============================================================================
-router.post('/:id/ratings', authenticate, userLimiter, requireRole(['customer']), validateParams(paramIdSchema), validateBody(submitRatingSchema), async (req, res) => {
-  const orderId = req.params.id;
-  const { stars, comment = null } = req.body;
-
+/**
+ * @openapi
+ * /api/orders/{id}/ratings:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Submit a rating for an order
+ *     description: Allows a customer to submit a rating and review for a completed order.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/SubmitRatingRequest'
+ *     responses:
+ *       201:
+ *         description: Rating submitted
+ *       400:
+ *         description: Validation error
+ */
+router.post('/:id/ratings', authenticate, userLimiter, requirePolicy('order:submit-rating'), validateParams(paramIdSchema), validateBody(submitRatingSchema), async (req, res) => {
   try {
-    const { data: order, error: orderErr } = await supabase
-      .from('orders')
-      .select('id, order_display_id, customer_id, driver_id, status')
-      .eq('id', orderId)
-      .maybeSingle();
+    const orderId = req.params.id;
+    const { stars, comment } = req.body;
 
-    if (orderErr) {
-      return res.status(500).json({ error: 'Failed to fetch order.', details: orderErr.message });
-    }
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, customer_id, driver_id, status');
+    orderValidationService.assertOrderFound(order);
+    orderValidationService.assertCustomerOwnership(order, req.user.id);
+    orderValidationService.assertRatingDeliverable(order);
+    await orderValidationService.assertNoDuplicateRating(order.order_display_id, req.user.id);
 
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found.' });
-    }
-
-    if (order.customer_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
-    }
-
-    if (!['delivered', 'payment_released'].includes(order.status)) {
-      return res.status(400).json({ error: 'Order must be delivered before a rating can be submitted.' });
-    }
-
-    if (!order.driver_id) {
-      return res.status(400).json({ error: 'Order does not have an assigned driver.' });
-    }
-
-    const { data: existingRating, error: ratingCheckErr } = await supabase
-      .from('ratings')
-      .select('id')
-      .eq('order_display_id', order.order_display_id)
-      .eq('customer_id', req.user.id)
-      .maybeSingle();
-
-    if (ratingCheckErr) {
-      return res.status(500).json({ error: 'Failed to verify existing rating.', details: ratingCheckErr.message });
-    }
-
-    if (existingRating) {
-      return res.status(409).json({ error: 'A rating has already been submitted for this order.' });
-    }
-
-    const { error: rpcErr } = await supabase.rpc('submit_rating_tx', {
+    const { data: ratingData, error: rpcErr } = await orderRepository.executeRpc('submit_rating_tx', {
       p_order_display_id: order.order_display_id,
       p_customer_id: req.user.id,
       p_driver_id: order.driver_id,
       p_stars: stars,
       p_comment: comment,
-    });
+    }, req.token ? createUserClient(req.token) : undefined);
 
     if (rpcErr) {
       return res.status(500).json({ error: 'Failed to submit rating.', details: rpcErr.message });
     }
 
-    // Fetch driver's registered Polygon wallet address for on-chain reputation update.
-    // This is intentionally fire-and-forget — a blockchain failure must never block
-    // the HTTP response. The Supabase rating is the source of truth.
-    const { data: driverDetails } = await supabase
-      .from('driver_details')
-      .select('polygon_wallet_address')
-      .eq('user_id', order.driver_id)
-      .maybeSingle();
-
+    const { data: driverDetails } = await orderRepository.findDriverWallet(order.driver_id);
     const polygonAddress = driverDetails?.polygon_wallet_address ?? null;
 
     if (polygonAddress) {
-      // Fire-and-forget: blockchain confirmation must never block the HTTP response.
       void awardReputationPoints(polygonAddress, stars).catch((repErr) => {
         logger.error('[reputation] On-chain reputation update failed:', repErr.message);
-        supabase.from('reputation_failures').insert({
+        orderRepository.insertReputationFailure({
           driver_wallet: polygonAddress,
           stars,
-          rating_id: ratingData?.id ?? null,
           failed_at: new Date().toISOString(),
           retry_count: 0,
           last_error: repErr.message,
-        }).then().catch(() => {});
+        }).catch((dbErr) => logger.error('[reputation] Failed to log failure:', dbErr.message));
       });
     } else {
-      logger.warn(
-        `[reputation] Driver ${order.driver_id} has no polygon_wallet_address — skipping on-chain update.`
-      );
+      logger.warn(`[reputation] Driver ${order.driver_id} has no polygon_wallet_address — skipping on-chain update.`);
     }
 
     return res.status(201).json({
@@ -716,38 +776,60 @@ router.post('/:id/ratings', authenticate, userLimiter, requireRole(['customer'])
       },
     });
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
     logger.error("[orderRoutes] Failed to submit rating:", err.message);
-    return res.status(500).json({ error: 'Internal Server Error.' });
+    res.status(500).json({ error: 'Internal Server Error.' });
   }
 });
 
 // ============================================================================
 // 10. VIEW BIDS FOR AN ORDER (CUSTOMER)
 // ============================================================================
-router.get('/:id/bids', authenticate, userLimiter, requireRole(['customer']), validateParams(paramIdSchema), async (req, res) => {
+/**
+ * @openapi
+ * /api/orders/{id}/bids:
+ *   get:
+ *     tags: [Orders]
+ *     summary: List bids on an order
+ *     description: Returns all bids for a specific order. Customer role required.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Array of bids
+ */
+router.get('/:id/bids', authenticate, userLimiter, requirePolicy('order:view-bids'), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
-
   try {
-    const { data: order } = await supabase.from('orders').select('order_display_id, customer_id').eq('id', orderId).maybeSingle();
-    if (!order || order.customer_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'order_display_id, customer_id');
+    if (!order) return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
+    if (order.customer_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
 
-    const { data: offer } = await supabase.from('load_offers').select('id').eq('order_display_id', order.order_display_id).maybeSingle();
+    const { data: offer } = await orderRepository.findLoadOfferByOrderDisplayId(order.order_display_id);
     if (!offer) return res.json([]);
 
-    const { data: bids, error: bidErr } = await supabase.from('load_bids').select('*').eq('load_id', offer.id).eq('status', 'pending').order('bid_amount', { ascending: true });
+    const { data: bids, error: bidErr } = await orderRepository.findBidsByLoad(offer.id, 'pending', { orderBy: 'bid_amount', ascending: true });
     if (bidErr) return res.status(500).json({ error: 'Query failed.', details: bidErr.message });
     if (!bids || bids.length === 0) return res.json([]);
 
     const driverIds = bids.map(b => b.driver_id);
     const [profilesRes, detailsRes] = await Promise.all([
-      supabase.from('profiles').select('id, full_name, avatar_url, phone').in('id', driverIds),
-      supabase.from('driver_details').select('user_id, rating, total_trips, completion_rate, truck_id').in('user_id', driverIds)
+      orderRepository.findProfilesByIds(driverIds, 'id, full_name, avatar_url, phone'),
+      orderRepository.findDriverDetails(driverIds)
     ]);
 
     const profiles = profilesRes.data || [];
     const details  = detailsRes.data || [];
     const truckIds = details.map(d => d.truck_id).filter(Boolean);
-    const trucksRes = truckIds.length > 0 ? await supabase.from('trucks').select('id, name, number_plate').in('id', truckIds) : { data: [] };
+    const trucksRes = truckIds.length > 0 ? await orderRepository.findTrucksByIds(truckIds) : { data: [] };
     const trucks = trucksRes.data || [];
 
     const profileMap = Object.fromEntries(profiles.map(p => [p.id, p]));
@@ -771,6 +853,10 @@ router.get('/:id/bids', authenticate, userLimiter, requireRole(['customer']), va
 
     res.json(enrichedBids);
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
+    logger.error("[orderRoutes] Failed to fetch bids:", err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -778,16 +864,42 @@ router.get('/:id/bids', authenticate, userLimiter, requireRole(['customer']), va
 // ============================================================================
 // 11. ACCEPT BID (CUSTOMER)
 // ============================================================================
-router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requireRole(['customer']), validateParams(acceptBidParamsSchema), async (req, res) => {
-  const orderId = req.params.id;
-  const bidId = req.params.bidId;
+/**
+ * @openapi
+ * /api/orders/{id}/bids/{bidId}/accept:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Accept a bid on an order
+ *     description: Accepts a driver's bid for an order. Handles escrow deposit, reputation award, and bid acceptance with idempotency.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: path
+ *         name: bidId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Bid accepted
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AcceptBidResponse'
+ *       400:
+ *         description: Bid acceptance failed
+ *       409:
+ *         description: Bid already accepted or conflict
+ */
 
+router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requirePolicy('order:accept-bid'), auditLog({ action: 'order:accept-bid', resourceType: 'order' }), requireIdempotency(86400), validateParams(acceptBidParamsSchema), async (req, res) => {
   try {
-    const result = await bidAcceptanceService.acceptBid({
-      orderId,
-      bidId,
-      customerId: req.user.id,
-    });
+    const result = await orderLifecycleService.acceptBid(req.params.id, req.params.bidId, req.user.id);
     return res.status(result.status).json(result.body);
   } catch (err) {
     if (err instanceof DomainError) {
@@ -801,97 +913,49 @@ router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requireRole(['
 // ============================================================================
 // 12. UPDATE ORDER MILESTONE (ASSIGNED DRIVER)
 // ============================================================================
-router.put('/:id/milestones', authenticate, userLimiter, requireRole(['driver']), milestoneLimiter, validateParams(paramIdSchema), validateBody(updateMilestoneSchema), async (req, res) => {
+/**
+ * @openapi
+ * /api/orders/{id}/milestones:
+ *   put:
+ *     tags: [Orders]
+ *     summary: Update order milestones
+ *     description: Updates the milestone status for an order. Rate-limited to 5 updates per minute per driver.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/UpdateMilestoneRequest'
+ *     responses:
+ *       200:
+ *         description: Milestone updated
+ *       429:
+ *         description: Rate limited
+ */
+router.put('/:id/milestones', authenticate, userLimiter, requirePolicy('milestone:update'), milestoneLimiter, validateParams(paramIdSchema), validateBody(updateMilestoneSchema), async (req, res) => {
   const orderId = req.params.id;
   const { milestone } = req.body;
 
-  const milestoneMap = {
-    'Truck Assigned': 'truck_assigned',
-    'En Route to Pickup': 'en_route_pickup',
-    'Arrived at Pickup': 'arrived_pickup',
-    'Goods Loaded': 'picked_up',
-    'In Transit': 'in_transit',
-    'Arriving': 'arriving',
-  };
-
-  if (milestone === 'Delivered') return res.status(400).json({ error: 'Cannot set Delivered milestone directly. Use /verify-delivery endpoint to confirm delivery.' });
-
   try {
-    const { data: order, error: orderErr } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
-    if (orderErr || !order) return res.status(404).json({ error: 'Order not found.' });
-    if (order.driver_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: You are not assigned to this order.' });
-
-    const { data: timeline, error: tlErr } = await supabase
-      .from('order_timeline')
-      .select('milestone, sort_order, completed')
-      .eq('order_display_id', order.order_display_id)
-      .order('sort_order', { ascending: true });
-    if (tlErr) return res.status(500).json({ error: 'Failed to fetch order timeline.' });
-
-    const canonicalMilestones = new Set([...Object.keys(milestoneMap), 'Order Placed', 'Delivered']);
-    const lastCompleted = [...timeline].reverse().find(t => t.completed && canonicalMilestones.has(t.milestone));
-    const lastCompletedSortOrder = lastCompleted ? lastCompleted.sort_order : 10;
-
-    const timelineEntry = timeline.find(t => t.milestone === milestone);
-    if (!timelineEntry) return res.status(400).json({ error: `Milestone "${milestone}" is not part of this order's timeline.` });
-
-    if (timelineEntry.completed) {
-      return res.status(409).json({ error: `Milestone "${milestone}" has already been completed.` });
+    if (milestone === 'Delivered') {
+      return res.status(400).json({ error: 'Cannot set Delivered milestone directly. Use /verify-delivery endpoint to confirm delivery.' });
     }
 
-    const nextExpected = timeline.find(t => !t.completed && t.sort_order > lastCompletedSortOrder);
-    if (!nextExpected || nextExpected.sort_order !== timelineEntry.sort_order) {
-      return res.status(422).json({
-        error: `Milestone out of sequence. Expected "${nextExpected ? nextExpected.milestone : 'none'}" before "${milestone}".`,
-      });
-    }
-
-    const status = milestoneMap[milestone];
-    const updates = { status, updated_at: new Date().toISOString() };
-    let generatedOtp = null;
-
-    if (milestone === 'In Transit') {
-      const activeOtp = await getActiveDeliveryOtp(orderId);
-      if (!activeOtp) {
-        generatedOtp = crypto.randomInt(100000, 1000000).toString();
-        const stored = await storeDeliveryOtp(orderId, generatedOtp, OTP_TTL_MINUTES);
-        if (stored) {
-          await clearOtpState(orderId);
-        }
-      } else {
-        logger.warn(`[OTP] Driver ${req.user.id} attempted OTP regeneration for order ${orderId}`);
-      }
-    }
-
-    const { error: timelineErr } = await supabase.from('order_timeline').update({ completed: true, milestone_time: new Date().toISOString() }).eq('order_display_id', order.order_display_id).eq('milestone', milestone);
-    if (timelineErr) return res.status(500).json({ error: 'Failed to update order timeline.', details: timelineErr.message });
-
-    const { data: updatedOrder, error: updateErr } = await supabase.from('orders').update(updates).eq('id', orderId).select('*').single();
-    if (updateErr) {
-      // Roll back the timeline mark since the order update failed
-      await supabase
-        .from('order_timeline')
-        .update({ completed: false, milestone_time: null })
-        .eq('order_display_id', order.order_display_id)
-        .eq('milestone', milestone);
-      return res.status(500).json({ error: 'Failed to update order.', details: updateErr.message });
-    }
-
-    if (generatedOtp) {
-      const notifResult = await sendDeliveryOtpNotification(order.customer_id, order.order_display_id, generatedOtp);
-      if (!notifResult.success) {
-        logger.warn(`[OrderRoutes] Delivery OTP notification failed for order ${order.order_display_id} — FCM error: ${notifResult.fcm?.error || 'unknown'}`);
-        await supabase.from('orders').update({
-          notification_failed: true,
-          updated_at: new Date().toISOString(),
-        }).eq('id', orderId);
-      }
-    }
-
-    const response = { message: 'Milestone updated successfully.', order: updatedOrder, milestone, status };
-
-    res.json(response);
+    const result = await orderMilestoneService.updateMilestone({ orderId, milestone, driverId: req.user.id });
+    res.json({ message: 'Milestone updated successfully.', ...result });
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
+    logger.error(err, "[orderRoutes] Milestone update error:");
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -899,204 +963,243 @@ router.put('/:id/milestones', authenticate, userLimiter, requireRole(['driver'])
 // ============================================================================
 // 13. VERIFY DELIVERY OTP AND RELEASE FUNDS (DRIVER)
 // ============================================================================
-router.post('/:id/verify-delivery', authenticate, userLimiter, requireRole(['driver']), verifyDeliveryLimiter, requireIdempotency(86400), validateParams(paramIdSchema), validateBody(verifyDeliverySchema), async (req, res) => {
-  const orderId = req.params.id;
-  const { otp } = req.body;
-
-  // Check for active lockout from previous failed attempts
-  if (await checkOtpLockout(orderId)) {
-    return res.status(429).json({
-      error: `Too many failed OTP attempts. Verification is locked for ${OTP_LOCKOUT_MINUTES} minutes.`,
-    });
-  }
-
+/**
+ * @openapi
+ * /api/orders/{id}/verify-delivery:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Verify delivery with OTP
+ *     description: Verifies delivery completion using OTP. Idempotent for 24 hours. Rate-limited to 20 attempts per 15 minutes.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Delivery verified
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/VerifyDeliveryResponse'
+ *       429:
+ *         description: Rate limited
+ */
+router.post('/:id/verify-delivery', authenticate, userLimiter, requirePolicy('delivery:verify'), auditLog({ action: 'delivery:verify', resourceType: 'delivery_verification' }), verifyDeliveryLimiter, requireIdempotency(86400), validateParams(paramIdSchema), validateBody(verifyDeliverySchema), async (req, res) => {
   try {
-    const { data: order, error: orderErr } = await supabase.from('orders')
-      .select('id, order_display_id, driver_id, customer_id, escrow_status, escrow_release_attempts, status')
-      .eq('id', orderId)
-      .maybeSingle();
-    if (orderErr || !order) return res.status(404).json({ error: 'Order not found.' });
-    if (order.driver_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: You are not assigned to this order.' });
-    if (!DELIVERY_OTP_READY_STATUSES.has(order.status)) {
-      return res.status(409).json({ error: 'Delivery OTP can only be verified after the shipment reaches the delivery location.' });
-    }
+    const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(req.params.id, req.user.id, req.body.otp, req.token ? createUserClient(req.token) : undefined);
 
-    const otpRecord = await getActiveDeliveryOtp(orderId);
-    if (!otpRecord) {
-      return res.status(400).json({
-        error: 'OTP not available or has expired. Please request a new delivery OTP.',
-      });
-    }
-
-    const submittedHash = crypto.createHash('sha256').update(String(otp)).digest('hex');
-    let isMatch = false;
-    if (otpRecord.otp_hash && otpRecord.otp_hash.length === submittedHash.length) {
-      isMatch = crypto.timingSafeEqual(
-        Buffer.from(otpRecord.otp_hash, 'hex'),
-        Buffer.from(submittedHash, 'hex')
-      );
-    }
-    if (!isMatch) {
-      const count = await recordOtpFailure(orderId);
-      const remaining = Math.max(0, OTP_MAX_FAILED_ATTEMPTS - count);
-      const message = remaining > 0
-        ? `Invalid OTP. ${remaining} attempt(s) remaining before lockout.`
-        : `Invalid OTP. Verification is locked for ${OTP_LOCKOUT_MINUTES} minutes due to too many failed attempts.`;
-      logger.warn(`[OTP] Failed verification attempt for order ${orderId} by driver ${req.user.id}. ${remaining} attempts remaining.`);
-      return res.status(400).json({ error: message });
-    }
-
-    // Guard against cancellation or a previous successful verification.
-    const { data: preUpdatedOrder, error: updateErr } = await supabase.from('orders').update({
-      updated_at: new Date().toISOString()
-    })
-      .eq('id', orderId)
-      .not('status', 'eq', 'cancelled')
-      .not('status', 'eq', 'payment_released')
-      .select('id, order_display_id, status')
-      .single();
-
-    if (updateErr) {
-      if (updateErr.code === 'PGRST116') {
-        return res.status(409).json({ error: 'Order was already cancelled or payment released.' });
-      }
-      return res.status(500).json({ error: 'Failed to verify OTP.', details: updateErr.message });
-    }
-
-    // Phase 1: Execute blockchain escrow release BEFORE crediting the driver's wallet.
-    // If the blockchain call fails, the database state is NOT modified and the driver can retry.
-    let releaseTxHash = null;
-    let escrowAlreadyReleased = false;
-    if (order.escrow_status === 'funded' || order.escrow_status === 'release_failed') {
-      try {
-        const releaseResult = await escrowRelease(order.order_display_id);
-        if (releaseResult.txHash) {
-          releaseTxHash = releaseResult.txHash;
-        } else if (releaseResult.alreadyReleased) {
-          escrowAlreadyReleased = true;
-        } else {
-          throw new Error('Escrow release returned no transaction hash');
-        }
-      } catch (releaseErr) {
-        logger.error('[escrow] Blockchain release failed for order', orderId, ':', releaseErr.message);
-        return res.status(503).json({
-          error: 'Blockchain escrow release failed. Payment cannot be processed. Please retry.',
-          retryable: true,
-        });
-      }
-    } else {
-      logger.info(`[escrow] Escrow not funded (status: ${order.escrow_status}) — skipping on-chain release.`);
-    }
-
-    // Phase 2: Only on blockchain success (or skip), call complete_trip_tx to credit the driver's wallet.
-    const { data: tripData, error: rpcErr } = await supabase.rpc('complete_trip_tx', {
-      p_order_id: orderId,
-      p_otp_id: otpRecord.id,
-      p_release_tx_hash: releaseTxHash,
-    });
-    if (rpcErr) {
-      logger.error('complete_trip_tx RPC failed:', rpcErr.message);
-      return res.status(500).json({ error: 'Failed to complete trip and release payment.', details: rpcErr.message });
-    }
-
-    // Post-RPC verification: confirm the order was actually updated to payment_released
-    const { data: verifiedOrder, error: verifyErr } = await supabase
-      .from('orders')
-      .select('status, escrow_status, escrow_release_attempts')
-      .eq('id', orderId)
-      .maybeSingle();
-
-    if (verifyErr || !verifiedOrder) {
-      logger.error(`[verify-delivery] Failed to verify order status after RPC for order ${orderId}`);
-      return res.status(500).json({ error: 'Failed to verify order status after payment release.' });
-    }
-
-    if (verifiedOrder.status !== 'payment_released') {
-      logger.warn(`[verify-delivery] Order ${orderId} status changed to "${verifiedOrder.status}" — payment was not released.`);
-      return res.status(409).json({
-        error: 'Order status changed during processing. Payment was not released.',
-      });
-    }
-
-    // OTP is only consumed after the RPC and blockchain release succeed — if either fails the driver can retry
-    await verifyDeliveryOtp(otpRecord.id);
-    await clearOtpState(orderId);
-
-    // Record blockchain release status in the database.
-    if (releaseTxHash || escrowAlreadyReleased) {
-      const { error: releaseUpdateErr } = await supabase.from('orders').update({
+    if (escrowUpdateFailed) {
+      return res.status(202).json({
+        message: 'Delivery verified successfully. Escrow payout requires reconciliation.',
         escrow_status: 'released',
-        escrow_release_error: null,
-        escrow_released_at: new Date().toISOString(),
-        release_tx_hash: releaseTxHash,
-      }).eq('id', orderId);
-
-      if (releaseUpdateErr) {
-        logger.error('[escrow] Release confirmed but persistence failed:', releaseUpdateErr.message);
-        return res.status(202).json({
-          message: 'Delivery verified successfully. Escrow payout requires reconciliation.',
-          escrow_status: 'released',
-          payment_released: true,
-        });
-      }
-
-      const driverId = tripData?.driver_id || order.driver_id;
-      const displayId = tripData?.order_display_id || order.order_display_id;
-      if (driverId) {
-        const { error: walletErr } = await supabase
-          .from('wallet_transactions')
-          .update({ description: `Escrow payout for ${displayId}` })
-          .eq('driver_id', driverId)
-          .eq('order_display_id', displayId)
-          .eq('txn_type', 'credit');
-
-        if (walletErr) {
-          logger.error('[wallet] Failed to persist escrow payout:', walletErr.message);
-        }
-      }
+        payment_released: true,
+      });
     }
 
     res.json({ message: 'Delivery verified successfully! Payment released to driver.' });
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
     logger.error('[verify-delivery] Exception:', err.message);
-    res.status(500).json({ error: 'Internal Server Error' });
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
 // ============================================================================
+// 13b. GPS GEOFENCE AUTO-CONFIRM DELIVERY (DRIVER)
+// ============================================================================
+/**
+ * @openapi
+ * /api/orders/{id}/geofence-confirm:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Auto-confirm delivery via GPS geofence
+ *     description: |
+ *       If the driver's GPS position is within 500m of the drop location,
+ *       automatically confirms delivery and releases escrow payment without
+ *       requiring the customer to share an OTP. Falls back gracefully if
+ *       the driver is too far away (returns autoConfirmed: false).
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [driver_lat, driver_lng]
+ *             properties:
+ *               driver_lat:
+ *                 type: number
+ *               driver_lng:
+ *                 type: number
+ *               geofence_radius_m:
+ *                 type: number
+ *                 description: Override default 500m geofence radius
+ *     responses:
+ *       200:
+ *         description: Auto-confirm result (check autoConfirmed field)
+ *       409:
+ *         description: Order not in arriving status
+ */
+router.post(
+  '/:id/geofence-confirm',
+  authenticate,
+  userLimiter,
+  requirePolicy('delivery:verify'),
+  validateParams(paramIdSchema),
+  async (req, res) => {
+    try {
+      const { driver_lat, driver_lng, geofence_radius_m } = req.body;
+
+      if (!driver_lat || !driver_lng) {
+        return res.status(400).json({ error: 'driver_lat and driver_lng are required.' });
+      }
+
+      const lat = parseFloat(driver_lat);
+      const lng = parseFloat(driver_lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return res.status(400).json({ error: 'driver_lat and driver_lng must be valid numbers.' });
+      }
+
+      const result = await orderLifecycleService.deliveryVerification.geofenceAutoConfirm({
+        orderId: req.params.id,
+        driverId: req.user.id,
+        driverLat: lat,
+        driverLng: lng,
+        geofenceRadiusM: geofence_radius_m ? parseFloat(geofence_radius_m) : 500,
+      });
+
+      return res.json(result);
+    } catch (err) {
+      if (err instanceof DomainError) {
+        return res.status(err.status).json(err.payload);
+      }
+      logger.error('[geofence-confirm] Exception:', err.message);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+  }
+);
+
+// ============================================================================
+// 13c. DRIVER OTP CONFIRM ALIAS — POST /api/deliveries/:id/confirm-otp
+// ============================================================================
+/**
+ * Friendly alias of /:id/verify-delivery for the driver app.
+ * Accepts the same body { otp } and delegates to the same pipeline.
+ * Mounted on the *orders* router but exposed as /api/deliveries/:id/confirm-otp
+ * via the separate deliveryRoutes mount in index.js (see below).
+ *
+ * This keeps the driver app URL surface clean while reusing identical logic.
+ */
+router.post(
+  '/:id/confirm-otp',
+  authenticate,
+  userLimiter,
+  requirePolicy('delivery:verify'),
+  auditLog({ action: 'delivery:verify', resourceType: 'delivery_verification' }),
+  verifyDeliveryLimiter,
+  requireIdempotency(86400),
+  validateParams(paramIdSchema),
+  validateBody(verifyDeliverySchema),
+  async (req, res) => {
+    try {
+      const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(
+        req.params.id,
+        req.user.id,
+        req.body.otp,
+        req.token ? createUserClient(req.token) : undefined
+      );
+
+      // Fetch the released amount to include in the response
+      const { data: order } = await orderRepository.findOrderByIdOrDisplayId(
+        req.params.id,
+        'total_amount, order_display_id'
+      );
+      const amountInr = order?.total_amount
+        ? (order.total_amount / 100).toFixed(0)
+        : null;
+
+      if (escrowUpdateFailed) {
+        return res.status(202).json({
+          message: 'Delivery confirmed. Escrow payout requires reconciliation.',
+          payment_released: true,
+          escrow_status: 'released',
+          amount_inr: amountInr,
+        });
+      }
+
+      return res.json({
+        message: 'Delivery confirmed! Payment released to driver.',
+        payment_released: true,
+        escrow_status: 'released',
+        amount_inr: amountInr,
+        order_display_id: order?.order_display_id,
+      });
+    } catch (err) {
+      if (err instanceof DomainError) {
+        return res.status(err.status).json(err.payload);
+      }
+      logger.error('[confirm-otp] Exception:', err.message);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+  }
+);
+
+// ============================================================================
 // 14. RESEND DELIVERY OTP (DRIVER)
 // ============================================================================
-router.post('/:id/resend-otp', authenticate, userLimiter, resendOtpLimiter, requireRole(['driver']), validateParams(paramIdSchema), async (req, res) => {
-  const orderId = req.params.id;
-
+/**
+ * @openapi
+ * /api/orders/{id}/resend-otp:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Resend delivery OTP
+ *     description: Resends the delivery verification OTP to the customer. Rate-limited.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: OTP resent
+ *       429:
+ *         description: Rate limited
+ */
+router.post('/:id/resend-otp', authenticate, userLimiter, resendOtpLimiter, requirePolicy('delivery:resend-otp'), validateParams(paramIdSchema), async (req, res) => {
   try {
-    const { data: order, error: orderErr } = await supabase.from('orders').select('id, order_display_id, driver_id, customer_id, status').eq('id', orderId).maybeSingle();
-    if (orderErr || !order) return res.status(404).json({ error: 'Order not found.' });
-    if (order.driver_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: You are not assigned to this order.' });
+    const orderId = req.params.id;
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, driver_id, customer_id, status');
+    orderValidationService.assertOrderFound(order);
+    orderValidationService.assertDriverAssignment(order, req.user.id);
 
-    const terminalStatuses = ['delivered', 'cancelled', 'payment_released'];
-    if (terminalStatuses.includes(order.status)) {
-      return res.status(400).json({ error: 'Cannot resend OTP for a completed or cancelled order.' });
-    }
-    if (!DELIVERY_OTP_READY_STATUSES.has(order.status)) {
-      return res.status(409).json({ error: 'Delivery OTP can only be sent after the shipment reaches the delivery location.' });
-    }
+    const { expiresInMinutes } = await deliveryVerificationService.resendDeliveryOtp({
+      orderId,
+      customerId: order.customer_id,
+      orderDisplayId: order.order_display_id,
+      orderStatus: order.status,
+    });
 
-    const otp = crypto.randomInt(100000, 1000000).toString();
-    const stored = await storeDeliveryOtp(orderId, otp, OTP_TTL_MINUTES);
-    if (!stored) {
-      return res.status(500).json({ error: 'Failed to generate delivery OTP.' });
-    }
-
-    await clearOtpState(orderId);
-
-    const notifResult = await sendDeliveryOtpNotification(order.customer_id, order.order_display_id, otp);
-    if (!notifResult.success) {
-      logger.warn(`[OrderRoutes] Resend OTP notification failed for order ${order.order_display_id} — FCM error: ${notifResult.fcm?.error || 'unknown'}`);
-    }
-
-    res.json({ message: 'New delivery OTP sent.', expiresInMinutes: OTP_TTL_MINUTES });
+    res.json({ message: 'New delivery OTP sent.', expiresInMinutes });
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
     logger.error('[OrderRoutes] Resend OTP error:', err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   }
@@ -1105,30 +1208,42 @@ router.post('/:id/resend-otp', authenticate, userLimiter, resendOtpLimiter, requ
 // ============================================================================
 // 15. CHANGE DROP (CUSTOMER)
 // ============================================================================
-router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, requireRole(['customer']), validateParams(paramIdSchema), validateBody(changeDropSchema), async (req, res) => {
-  const orderId = req.params.id;
+/**
+ * @openapi
+ * /api/orders/{id}/change-drop:
+ *   put:
+ *     tags: [Orders]
+ *     summary: Change drop location
+ *     description: Updates the drop location for an active order. Customer role required. Rate-limited.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/ChangeDropRequest'
+ *     responses:
+ *       200:
+ *         description: Drop location updated
+ *       429:
+ *         description: Rate limited
+ */
+router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, requirePolicy('order:change-drop'), auditLog({ action: 'order:change-drop', resourceType: 'order' }), validateParams(paramIdSchema), validateBody(changeDropSchema), async (req, res) => {
+  const { id: orderId } = req.params;
   const { drop_address, drop_lat, drop_lng } = req.body;
-
   try {
-    let { data: order, error: orderErr } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
-    if (!order && !orderErr) {
-      const result = await supabase.from('orders').select('*').eq('order_display_id', orderId).maybeSingle();
-      order = result.data;
-      orderErr = result.error;
-    }
-    if (orderErr) return res.status(500).json({ error: 'Failed to fetch order.', details: orderErr.message });
-    if (!order) return res.status(404).json({ error: 'Order not found.' });
-    if (order.customer_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
-    if (order.escrow_status === 'funded' || order.status !== 'pending') {
-      const reason = order.escrow_status === 'funded'
-        ? 'after escrow has been funded'
-        : `after order status is '${order.status}'`;
-      return res.status(409).json({
-        error: `Drop location cannot be changed ${reason}.`,
-        recovery: 'Cancel this order to receive a refund, then rebook with the correct destination.',
-      });
-    }
-    if (order.weight_tonnes == null) return res.status(500).json({ error: 'Data inconsistency: Order is missing weight_tonnes.' });
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, '*');
+    orderValidationService.assertOrderFound(order);
+    orderValidationService.assertCustomerOwnership(order, req.user.id);
+    orderValidationService.assertChangeDropAllowed(order);
+    orderValidationService.assertHasWeight(order);
 
     let pricing;
     try {
@@ -1165,33 +1280,36 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       updated_at: new Date().toISOString(),
     };
 
-    const { data: updatedOrder, error: updateErr } = await supabase.from('orders').update(updates).eq('id', order.id).select('*').single();
-    if (updateErr) return res.status(500).json({ error: 'Failed to update order.', details: updateErr.message });
+    const offerUpdates = {
+      drop_address,
+      drop_lat: Number(drop_lat),
+      drop_lng: Number(drop_lng),
+      route_label: `${(order.pickup_address || '').split(',')[0]} → ${drop_address.split(',')[0]}`,
+      freight_value: pricing.totalAmount,
+      fuel_cost: pricing.fuelCost,
+      toll_cost: pricing.tollEstimate,
+      net_profit: pricing.netProfit,
+      extra_distance_km: pricing.distanceKm,
+    };
 
-    const { error: offerUpdateErr } = await supabase
-      .from('load_offers')
-      .update({
-        drop_address,
-        drop_lat: Number(drop_lat),
-        drop_lng: Number(drop_lng),
-        route_label: `${(order.pickup_address || '').split(',')[0]} → ${drop_address.split(',')[0]}`,
-        freight_value: pricing.totalAmount,
-        fuel_cost: pricing.fuelCost,
-        toll_cost: pricing.tollEstimate,
-        net_profit: pricing.netProfit,
-        extra_distance_km: pricing.distanceKm,
-      })
-      .eq('order_display_id', order.order_display_id);
+    const { data: updatedOrder, error: updateErr } = await orderRepository.executeRpc('update_order_and_load_offer', {
+      p_order_id: order.id,
+      p_order_display_id: order.order_display_id,
+      p_order_updates: updates,
+      p_offer_updates: offerUpdates
+    }, req.token ? createUserClient(req.token) : undefined);
 
-    if (offerUpdateErr) {
-      logger.error('Load offer update failed for change-drop:', offerUpdateErr.message);
+    if (updateErr) {
+      logger.error('Order and load offer atomic update failed for change-drop:', updateErr.message);
+      return res.status(500).json({ error: 'Failed to update order atomically.', details: updateErr.message });
     }
 
     try {
-      await supabase.from('order_timeline').insert({ order_display_id: order.order_display_id, milestone: 'Drop Changed', milestone_time: new Date().toISOString(), completed: true, sort_order: 25 });
+      await orderRepository.insertTimelineEntry({ order_display_id: order.order_display_id, milestone: 'Drop Changed', milestone_time: new Date().toISOString(), completed: true, sort_order: 25 });
     } catch (timelineErr) {
       logger.warn('Failed to update timeline for change-drop:', timelineErr.message);
     }
+    await orderTimelineService.insertDropChangedEvent(order.order_display_id);
 
     await expireDeliveryOtps(order.id);
 
@@ -1206,6 +1324,9 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       order: updatedOrder,
     });
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
     logger.error('Change drop exception:', err.message);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
@@ -1214,210 +1335,41 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
 // ============================================================================
 // 16. CANCEL ORDER AND REFUND ESCROW (CUSTOMER)
 // ============================================================================
-router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']), validateParams(paramIdSchema), validateBody(cancelOrderSchema), async (req, res) => {
-  const orderId = req.params.id;
-  const { reason = null } = req.body || {};
-
+/**
+ * @openapi
+ * /api/orders/{id}/cancel:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Cancel an order
+ *     description: Cancels an order with a required reason. Customer role required.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/CancelOrderRequest'
+ *     responses:
+ *       200:
+ *         description: Order cancelled
+ *       400:
+ *         description: Validation error
+ */
+router.post('/:id/cancel', authenticate, userLimiter, requirePolicy('order:cancel'), auditLog({ action: 'order:cancel', resourceType: 'order' }), requireIdempotency(86400), validateParams(paramIdSchema), validateBody(cancelOrderSchema), async (req, res) => {
   try {
-    let { data: order, error: orderErr } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
-    if (!order && !orderErr) {
-      const result = await supabase.from('orders').select('*').eq('order_display_id', orderId).maybeSingle();
-      order = result.data;
-      orderErr = result.error;
-    }
-    if (orderErr) return res.status(500).json({ error: 'Failed to fetch order.', details: orderErr.message });
-    if (!order) return res.status(404).json({ error: 'Order not found.' });
-    if (order.customer_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
-
-    // Prevent cancellation if delivery OTP was already verified
-    const { data: otpCheck, error: otpCheckErr } = await supabase
-      .from('delivery_otps')
-      .select('id')
-      .eq('order_id', order.id)
-      .eq('verified', true)
-      .limit(1)
-      .maybeSingle();
-
-    if (!otpCheckErr && otpCheck) {
-      return res.status(409).json({ error: 'Cannot cancel: delivery OTP has already been verified.' });
-    }
-
-    if (order.status === 'cancelled' && order.escrow_status === 'refunded') {
-      return res.json({
-        message: 'Order was already cancelled and refunded.',
-        cancellation_fee: order.cancellation_fee ?? 0,
-        order,
-      });
-    }
-
-    const requiresRefund = ['funded', 'refund_pending', 'refund_failed'].includes(order.escrow_status);
-    let workingOrder = order;
-
-    // Persist cancellation before touching the blockchain. A failed or delayed
-    // refund must never leave the order available for continued work.
-    if (requiresRefund && (order.status !== 'cancelled' || order.escrow_status !== 'refund_pending')) {
-      const attemptAt = new Date().toISOString();
-      const { data: pendingOrder, error: pendingErr } = await supabase
-        .from('orders')
-        .update({
-          status: 'cancelled',
-          cancellation_reason: reason ?? order.cancellation_reason,
-          escrow_status: 'refund_pending',
-          escrow_refund_error: null,
-          escrow_refund_attempts: (order.escrow_refund_attempts ?? 0) + 1,
-          escrow_refund_last_attempt_at: attemptAt,
-          updated_at: attemptAt,
-        })
-        .eq('id', order.id)
-        .not('status', 'in', '("delivered","payment_released")')
-        .select('*')
-        .single();
-
-      if (pendingErr) {
-        if (pendingErr.code === 'PGRST116') {
-          return res.status(409).json({ error: 'Order was already delivered or payment released. Cannot cancel.' });
-        }
-        return res.status(500).json({
-          error: 'Failed to place the order into refund reconciliation.',
-          details: pendingErr.message,
-        });
-      }
-      workingOrder = pendingOrder;
-    }
-
-    if (requiresRefund) {
-      const lockKey = `escrow_lock:${workingOrder.id}`;
-      const lockValue = await acquireLock(lockKey, 30000);
-      if (!lockValue) {
-        return res.status(409).json({ error: 'Refund is currently being processed. Please try again later.' });
-      }
-
-      try {
-        let refundTxHash = workingOrder.refund_tx_hash ?? null;
-
-        try {
-          let receipt;
-
-          if (refundTxHash) {
-            receipt = await confirmEscrowRefund(refundTxHash);
-          } else {
-            const submitted = await submitEscrowRefund(order.order_display_id);
-            refundTxHash = submitted.txHash;
-            if (!refundTxHash || !submitted.waitForConfirmation) {
-              throw new Error('Escrow refund transaction was not submitted.');
-            }
-
-            const submittedAt = new Date().toISOString();
-            const { error: hashErr } = await supabase
-              .from('orders')
-              .update({
-                refund_tx_hash: refundTxHash,
-                escrow_refund_submitted_at: submittedAt,
-                updated_at: submittedAt,
-              })
-              .eq('id', order.id)
-              .eq('escrow_status', 'refund_pending');
-
-            if (hashErr) {
-              logger.error('[escrow] Failed to persist refund tx hash for order', orderId, ':', hashErr.message);
-            }
-            receipt = await submitted.waitForConfirmation();
-          }
-
-          const refundedAt = new Date().toISOString();
-          const { data: updatedOrder, error: updateErr } = await supabase
-            .from('orders')
-            .update({
-              status: 'cancelled',
-              cancellation_reason: reason ?? workingOrder.cancellation_reason,
-              escrow_status: 'refunded',
-              refund_tx_hash: receipt.hash ?? refundTxHash,
-              escrow_refunded_at: refundedAt,
-              escrow_refund_error: null,
-              updated_at: refundedAt,
-            })
-            .eq('id', order.id)
-            .in('escrow_status', ['refund_pending', 'refund_failed'])
-            .select('cancellation_fee, order_display_id, status, cancellation_reason, escrow_status, refund_tx_hash')
-            .single();
-
-          if (updateErr) {
-            logger.error('[escrow] Refund confirmed but final order update failed for', orderId, ':', updateErr.message);
-            return res.status(202).json({
-              message: 'Order cancelled and escrow refund confirmed. Database reconciliation is pending.',
-              refund_tx_hash: receipt.hash ?? refundTxHash,
-              escrow_status: 'refund_pending',
-              reconciliation_required: true,
-            });
-          }
-
-          await supabase.from('order_timeline').update({ completed: true, milestone_time: refundedAt })
-            .eq('order_display_id', order.order_display_id)
-            .eq('milestone', 'Order Placed');
-
-          await expireDeliveryOtps(order.id);
-
-          return res.json({
-            message: 'Order cancelled and escrow refunded successfully.',
-            cancellation_fee: updatedOrder?.cancellation_fee ?? 0,
-            order: updatedOrder,
-          });
-        } catch (refundErr) {
-          logger.error('[escrow] Refund failed for order', orderId, ':', refundErr.message);
-          const failedAt = new Date().toISOString();
-          const nextEscrowStatus = refundTxHash ? 'refund_pending' : 'refund_failed';
-          await supabase.from('orders').update({
-            status: 'cancelled',
-            escrow_status: nextEscrowStatus,
-            refund_tx_hash: refundTxHash,
-            escrow_refund_error: String(refundErr.message || refundErr).slice(0, 1000),
-            escrow_refund_last_attempt_at: failedAt,
-            updated_at: failedAt,
-          }).eq('id', order.id);
-
-          return res.status(202).json({
-            message: 'Order cancelled. Escrow refund requires reconciliation.',
-            escrow_status: nextEscrowStatus,
-            refund_tx_hash: refundTxHash,
-            retryable: true,
-          });
-        }
-      } finally {
-        await releaseLock(lockKey, lockValue);
-      }
-    } else if (order.escrow_booking_id) {
-      logger.info(`[escrow] Escrow not funded (status: ${order.escrow_status}) — skipping on-chain refund.`);
-    }
-
-    const updatePayload = {
-      status: 'cancelled',
-      cancellation_reason: reason,
-      updated_at: new Date().toISOString(),
-    };
-
-    const { data: updatedOrder, error: updateErr } = await supabase.from('orders')
-      .update(updatePayload)
-      .eq('id', order.id)
-      .not('status', 'in', '("delivered","payment_released","cancelled")')
-      .select('cancellation_fee, order_display_id, status, cancellation_reason, escrow_status')
-      .single();
-    if (updateErr) {
-      if (updateErr.code === 'PGRST116') {
-        return res.status(409).json({ error: 'Order was already cancelled, delivered, or payment released. Cannot cancel.' });
-      }
-      return res.status(500).json({ error: 'Failed to cancel order.', details: updateErr.message });
-    }
-
-    const cancellationFee = updatedOrder?.cancellation_fee ?? 0;
-
-    await supabase.from('order_timeline').update({ completed: true, milestone_time: new Date().toISOString() })
-      .eq('order_display_id', order.order_display_id)
-      .eq('milestone', 'Order Placed');
-
-    await expireDeliveryOtps(order.id);
-
-    return res.json({ message: 'Order cancelled successfully.', cancellation_fee: cancellationFee, order: updatedOrder });
+    const result = await orderLifecycleService.cancelOrder(req.params.id, req.user.id, req.body.reason);
+    return res.status(result.status).json(result.body);
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
     logger.error('Cancel order exception:', err.message);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
@@ -1426,88 +1378,172 @@ router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']),
 // ============================================================================
 // 17. CONFIRM ESCROW DEPOSIT (CUSTOMER)
 // ============================================================================
-router.post('/:id/confirm-deposit', authenticate, userLimiter, requireRole(['customer']), validateParams(paramIdSchema), validateBody(
+/**
+ * @openapi
+ * /api/orders/{id}/confirm-deposit:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Confirm escrow deposit
+ *     description: Confirms that an escrow deposit transaction has been completed for an order.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Deposit confirmed
+ */
+router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('order:confirm-deposit'), auditLog({ action: 'order:confirm-deposit', resourceType: 'order' }), validateParams(paramIdSchema), validateBody(
   z.object({ txHash: z.string().regex(/^0x([A-Fa-f0-9]{64})$/, 'Invalid transaction hash') }),
 ), async (req, res) => {
   const orderId = req.params.id;
   const { txHash } = req.body;
 
-  const lockKey = `deposit_lock:${orderId}`;
-  const lockTimeoutMs = 10000;
-  let lockValue = null;
-  if (redisClient) {
-    lockValue = crypto.randomUUID();
-    const acquired = await redisClient.set(lockKey, lockValue, 'PX', lockTimeoutMs, 'NX');
-    if (!acquired) {
-      return res.status(409).json({ error: 'Another deposit confirmation is in progress for this order. Please try again.' });
-    }
+  const lockKey = `escrow_lock:${orderId}`;
+  const lockValue = await acquireLock(lockKey, 120000);
+  if (!lockValue) {
+    return res.status(409).json({ error: 'Another deposit confirmation is in progress for this order. Please try again.' });
   }
 
   try {
-    const { data: order, error: fetchErr } = await supabase
-      .from('orders')
-      .select('id, order_display_id, customer_id, escrow_booking_id, escrow_status')
-      .eq('id', orderId)
-      .maybeSingle();
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet, pending_bid_acceptance');
+    orderValidationService.assertOrderFound(order);
+    orderValidationService.assertCustomerOwnership(order, req.user.id);
+    orderValidationService.assertEscrowState(order, ['funding'], 'Order is not in funding state');
+    if (order.status === 'cancelled') return res.status(409).json({ error: 'Order is already cancelled. Cannot confirm deposit.' });
 
-    if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
-    if (order.customer_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
-    }
-    if (order.escrow_status !== 'funding') {
-      return res.status(400).json({ error: 'Order is not in funding state' });
-    }
-
-    const { data: customerProfile } = await supabase
-      .from('profiles')
-      .select('polygon_wallet_address')
-      .eq('id', req.user.id)
-      .maybeSingle();
-
+    const { data: customerProfile } = await orderRepository.findCustomerWallet(req.user.id);
     const customerWallet = customerProfile?.polygon_wallet_address ?? null;
+    const bookingId = order.escrow_booking_id || (order.order_display_id ? getEscrowBookingId(order.order_display_id) : orderId);
 
-    const bookingId = order.escrow_booking_id || `escrow:${order.order_display_id}`;
-    const result = await recordDepositTx(bookingId, txHash, customerWallet);
+    // Two-phase acceptance (#5724): once the deposit is verified on-chain we
+    // finalize the driver assignment via accept_bid_tx. If that cannot be
+    // completed the deposit is refunded and the order stays pending.
+    const finalizeAcceptance = async () => {
+      const pending = order.pending_bid_acceptance;
+      if (!pending) return;
+      const { error: acceptErr } = await orderRepository.executeRpc('accept_bid_tx', {
+        p_bid_id: pending.bid_id,
+        p_order_id: orderId,
+        p_load_id: pending.load_id,
+        p_driver_id: pending.driver_id,
+        p_truck_id: pending.truck_id,
+        p_driver_name: pending.driver_name,
+        p_driver_rating: pending.driver_rating,
+        p_truck_number: pending.truck_number,
+        p_bid_amount: pending.bid_amount,
+        p_order_display_id: pending.order_display_id,
+        p_expected_version: pending.version,
+        p_escrow_booking_id: bookingId,
+      }, req.token ? createUserClient(req.token) : undefined);
+      if (acceptErr) {
+        logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
+        try {
+          await escrowRefund(order.order_display_id);
+        } catch (refundErr) {
+          logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
+        }
+        await orderRepository.revertEscrowStatus(orderId).catch((revertErr) => {
+          logger.error('[confirm-deposit] Failed to revert escrow status:', revertErr.message);
+        });
+        throw new DomainError(409, {
+          error: 'Deposit confirmed but the driver assignment could not be finalized. The escrow deposit has been refunded. Please try again.',
+          details: acceptErr.message,
+        });
+      }
+      sendPushNotification(
+        pending.driver_id,
+        'Bid Accepted!',
+        `Your bid for order ${pending.order_display_id} has been accepted. You are now assigned to this load.`,
+        'bid_accepted',
+        { orderId, orderDisplayId: pending.order_display_id }
+      ).catch((err) => logger.error(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
+    };
 
-    if (result.error) return res.status(422).json({ error: result.error });
+    const result = await recordDepositTx(
+      bookingId,
+      txHash,
+      customerWallet,
+      order.escrow_driver_wallet ?? null,
+      order.escrow_amount_wei ?? null
+    );
 
-    const { error: updateErr } = await supabase.from('orders').update({
+    if (result.alreadyFunded) {
+      const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
+        escrow_status: 'funded',
+        deposit_tx_hash: result.txHash,
+        escrow_deposited_at: new Date().toISOString(),
+      }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
+
+      if (!updateErr && updatedData) {
+        await finalizeAcceptance();
+        return res.json({ message: 'Escrow deposit confirmed (recovered).', txHash: result.txHash });
+      }
+      return res.status(202).json({ message: 'Escrow deposit confirmed on-chain. Database sync pending.', txHash: result.txHash });
+    }
+
+    if (result.error) {
+      return res.status(422).json({ error: result.error });
+    }
+
+    const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
       escrow_status: 'funded',
       deposit_tx_hash: result.txHash,
       escrow_deposited_at: new Date().toISOString(),
-    }).eq('id', orderId).eq('escrow_status', 'funding');
+    }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
 
     if (updateErr) {
       logger.error('[confirm-deposit] DB update failed:', updateErr.message);
       return res.status(500).json({ error: 'Database update failed after deposit confirmation. Please contact support.' });
     }
 
+    if (!updatedData) {
+      logger.error('[confirm-deposit] No row updated — escrow_status may not have been "funding"');
+      return res.status(409).json({ error: 'Order was not in funding state. Please refresh and try again.' });
+    }
+
+    await finalizeAcceptance();
     res.json({ message: 'Escrow deposit confirmed', txHash: result.txHash });
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
     logger.error('[confirm-deposit] Exception:', err.message);
     res.status(500).json({ error: 'Internal Server Error' });
   } finally {
-    if (redisClient && lockValue) {
-      const luaScript = `
-        if redis.call('GET', KEYS[1]) == ARGV[1] then
-          redis.call('DEL', KEYS[1])
-          return 1
-        end
-        return 0
-      `;
-      try {
-        await redisClient.eval(luaScript, 1, lockKey, lockValue);
-      } catch (err) {
-        logger.warn('[confirm-deposit] Failed to release deposit lock for key %s: %s', lockKey, err.message);
-      }
-    }
+    await releaseLock(lockKey, lockValue);
   }
 });
 
 // ============================================================================
 // 18. PREDICT RIDE DEMAND (CUSTOMER OR DRIVER)
 // ============================================================================
-router.post('/predict-demand', authenticate, userLimiter, requireRole(['customer', 'driver']), predictDemandLimiter, validateBody(predictDemandSchema), async (req, res) => {
+/**
+ * @openapi
+ * /api/orders/predict-demand:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Predict demand/price
+ *     description: Uses ML to predict demand or price for a given route. Rate-limited to 10 requests per minute.
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/PredictDemandRequest'
+ *     responses:
+ *       200:
+ *         description: Prediction result
+ *       429:
+ *         description: Rate limited
+ */
+router.post('/predict-demand', authenticate, userLimiter, requirePolicy('order:predict-demand'), predictDemandLimiter, validateBody(predictDemandSchema), async (req, res) => {
   try {
     const prediction = await predictDemand(req.body);
     return res.json(prediction);
@@ -1523,37 +1559,35 @@ router.post('/predict-demand', authenticate, userLimiter, requireRole(['customer
 // ============================================================================
 // 19. GET DRIVER LOCATION (CUSTOMER OR DRIVER)
 // ============================================================================
-router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requireRole(['customer', 'driver']), validateParams(paramIdSchema), async (req, res) => {
+/**
+ * @openapi
+ * /api/orders/{id}/driver-location:
+ *   get:
+ *     tags: [Orders]
+ *     summary: Get driver's current location
+ *     description: Returns the current GPS location of the driver assigned to an order.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Driver location
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/DriverLocationResponse'
+ */
+router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-driver-location'), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
-  const isUuid = UUID_RE.test(orderId);
   try {
-    // 1. Resolve order and check authentication / authorization
-    let { data: order, error: orderErr } = isUuid
-      ? await supabase
-          .from('orders')
-          .select('id, customer_id, driver_id, status')
-          .eq('id', orderId)
-          .maybeSingle()
-      : { data: null, error: null };
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, customer_id, driver_id, status');
+    orderValidationService.assertOrderFound(order);
 
-    if (!order && !orderErr) {
-      const result = await supabase
-        .from('orders')
-        .select('id, customer_id, driver_id, status')
-        .eq('order_display_id', orderId)
-        .maybeSingle();
-      order = result.data;
-      orderErr = result.error;
-    }
-
-    if (orderErr) {
-      return res.status(500).json({ error: 'Failed to fetch order details.' });
-    }
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found.' });
-    }
-
-    // Authorization: User must be either the customer who owns the order or the assigned driver
     if (req.user.role === 'customer' && order.customer_id !== req.user.id) {
       return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
     }
@@ -1565,7 +1599,6 @@ router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, 
       return res.status(404).json({ error: 'No driver assigned to this order.' });
     }
 
-    // 2. Query MongoDB telemetry collection
     if (!mongoDb) {
       return res.status(503).json({ error: 'Telemetry database not available.' });
     }
@@ -1587,10 +1620,12 @@ router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, 
       orderId: telemetry.order_id || order.id,
       lat: telemetry.lat,
       lng: telemetry.lng,
-      timestamp: telemetry.timestamp
+      timestamp: telemetry.timestamp,
     });
-
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
     logger.error({ err }, 'Fetch driver location exception');
     return res.status(500).json({ error: 'Internal Server Error' });
   }
@@ -1600,25 +1635,36 @@ router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, 
 // 20. GET LIVE ROUTE GEOMETRY (CUSTOMER OR DRIVER)
 // ============================================================================
 
-router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requireRole(['customer', 'driver']), validateParams(paramIdSchema), async (req, res) => {
-  const orderId = req.params.id; // this is order_display_id from client
+/**
+ * @openapi
+ * /api/orders/{id}/route:
+ *   get:
+ *     tags: [Orders]
+ *     summary: Get order route
+ *     description: Returns the computed route geometry and distance/duration for an order.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Route data
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/OrderRouteResponse'
+ */
+router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-route'), validateParams(paramIdSchema), async (req, res) => {
+  const orderId = req.params.id;
 
   try {
-    // 1. Resolve order and check authentication / authorization
-    const { data: order, error: orderErr } = await supabase
-      .from('orders')
-      .select('id, customer_id, driver_id, status, pickup_lat, pickup_lng, drop_lat, drop_lng')
-      .eq('order_display_id', orderId)
-      .maybeSingle();
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, customer_id, driver_id, status, pickup_lat, pickup_lng, drop_lat, drop_lng');
+    orderValidationService.assertOrderFound(order);
 
-    if (orderErr) {
-      return res.status(500).json({ error: 'Failed to fetch order details.' });
-    }
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found.' });
-    }
-
-    // Authorization: User must be either the customer who owns the order or the assigned driver
     if (req.user.role === 'customer' && order.customer_id !== req.user.id) {
       return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
     }
@@ -1631,8 +1677,6 @@ router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requireRol
     }
 
     if (!order.driver_id) {
-      // No driver assigned yet — return a straight-line pickup-to-drop route
-      // so the tracking screen shows a route before driver assignment.
       const originLat = Number(order.pickup_lat);
       const originLng = Number(order.pickup_lng);
       const destLat = Number(order.drop_lat);
@@ -1650,7 +1694,6 @@ router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requireRol
       return res.json({ ...feature, fallback: true });
     }
 
-    // 2. Query MongoDB telemetry collection for the driver's latest position
     if (!mongoDb) {
       return res.status(503).json({ error: 'Telemetry database not available.' });
     }
@@ -1681,8 +1724,6 @@ router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requireRol
       return res.status(500).json({ error: 'Order has invalid destination coordinates.' });
     }
 
-    // 3. Call OSRM for a road-following route, falling back to a straight
-    // line if OSRM is unavailable so the tracking screen never goes blank.
     let feature = await getRouteGeometry({ originLat, originLng, destLat, destLng });
     let usedFallback = false;
 
@@ -1697,13 +1738,138 @@ router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requireRol
     }
 
     return res.json({ ...feature, fallback: usedFallback });
-
   } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
     logger.error({ err }, 'Fetch order route exception');
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
-export default router;
+const POD_ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png'];
+const POD_MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
-// Resolves #2056: Sub-controllers for order processing
+const podUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: POD_MAX_FILE_SIZE },
+  fileFilter: (_req, file, cb) => {
+    if (POD_ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(null, false);
+    }
+  },
+});
+
+function computeFileHash(buffer) {
+  return crypto.createHash('sha256').update(buffer).digest('hex');
+}
+
+async function validateAndScanPodFile(file, label) {
+  validateDocumentBuffer(file.buffer, file.mimetype);
+  const scanResult = await scanDocument(file.buffer);
+
+  if (!scanResult.clean) {
+    const err = new Error(`${label} file failed malware scanning.`);
+    err.status = 422;
+    throw err;
+  }
+}
+
+// POST /api/orders/:id/pod
+// PoD uploads are rate-limited per driver + order: each request may carry up to
+// 20MB and triggers a malware scan, so without a limiter a driver could exhaust
+// storage, RAM (multer memoryStorage), and scan CPU with an unbounded stream.
+router.post('/:id/pod', authenticate, requireRole(['driver']), podUploadLimiter, podUpload.fields([{ name: 'signature', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const { data: order, error: orderErr } = await orderRepository.findOrderById(orderId);
+
+    if (orderErr || !order) return res.status(404).json({ error: 'Order not found' });
+    if (order.driver_id !== req.user.id) return res.status(403).json({ error: 'Access Denied: Not your order' });
+
+    let signatureUrl = order.pod_signature_url;
+    let photoUrl = order.pod_photo_url;
+    let signatureHash = order.pod_signature_hash || null;
+    let photoHash = order.pod_photo_hash || null;
+    const files = req.files || {};
+
+    let uploadedAny = false;
+
+    if (files.signature && files.signature[0]) {
+      const file = files.signature[0];
+      try {
+        await validateAndScanPodFile(file, 'Signature');
+      } catch (validationErr) {
+        return res.status(validationErr.status || 400).json({ error: `Invalid signature file: ${validationErr.message}` });
+      }
+      const ext = file.mimetype === 'image/png' ? 'png' : 'jpg';
+      const storagePath = `${req.user.id}/pod_sig_${orderId}_${Date.now()}.${ext}`;
+      const { error: upErr } = await supabase.storage
+        .from('driver-documents')
+        .upload(storagePath, file.buffer, { contentType: file.mimetype });
+      if (upErr) {
+        logger.error('Signature upload to storage failed:', upErr.message);
+        return res.status(500).json({ error: 'Failed to upload signature to storage' });
+      }
+      signatureUrl = storagePath;
+      signatureHash = computeFileHash(file.buffer);
+      uploadedAny = true;
+    }
+
+    if (files.photo && files.photo[0]) {
+      const file = files.photo[0];
+      try {
+        await validateAndScanPodFile(file, 'Photo');
+      } catch (validationErr) {
+        return res.status(validationErr.status || 400).json({ error: `Invalid photo file: ${validationErr.message}` });
+      }
+      const ext = file.mimetype === 'image/png' ? 'png' : 'jpg';
+      const storagePath = `${req.user.id}/pod_photo_${orderId}_${Date.now()}.${ext}`;
+      const { error: upErr } = await supabase.storage
+        .from('driver-documents')
+        .upload(storagePath, file.buffer, { contentType: file.mimetype });
+      if (upErr) {
+        logger.error('Photo upload to storage failed:', upErr.message);
+        return res.status(500).json({ error: 'Failed to upload photo to storage' });
+      }
+      photoUrl = storagePath;
+      photoHash = computeFileHash(file.buffer);
+      uploadedAny = true;
+    }
+
+    if (!uploadedAny) {
+      return res.status(400).json({ error: 'At least one valid proof file (signature or photo) is required' });
+    }
+
+    const updates = {
+      updated_at: new Date().toISOString(),
+    };
+    if (signatureUrl !== order.pod_signature_url) updates.pod_signature_url = signatureUrl;
+    if (photoUrl !== order.pod_photo_url) updates.pod_photo_url = photoUrl;
+    if (signatureHash) updates.pod_signature_hash = signatureHash;
+    if (photoHash) updates.pod_photo_hash = photoHash;
+
+    const { data: updatedOrder, error: updateErr } = await orderRepository.updateOrder(orderId, updates);
+
+    if (updateErr) {
+      logger.error('Failed to update order with PoD:', updateErr.message);
+      return res.status(500).json({ error: 'Failed to update order with PoD data' });
+    }
+
+    return res.json({
+      message: 'Proof of Delivery uploaded successfully',
+      photoUrl: updatedOrder.pod_photo_url,
+      signatureUrl: updatedOrder.pod_signature_url,
+      photoHash: updatedOrder.pod_photo_hash,
+      signatureHash: updatedOrder.pod_signature_hash,
+      uploadTimestamp: updatedOrder.updated_at,
+    });
+  } catch (err) {
+    logger.error('PoD upload error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+export default router;

@@ -5,11 +5,18 @@ import express from 'express';
 vi.mock('../../src/lib/profileCache.js', () => ({
   invalidateCachedProfile: vi.fn(),
   invalidateCachedSupabaseProfile: vi.fn(),
+  invalidateCachedSupabaseProfileAll: vi.fn(),
   getCachedProfile: vi.fn(),
   setCachedProfile: vi.fn(),
+  getCachedSupabaseProfile: vi.fn(),
+  setCachedSupabaseProfile: vi.fn(),
+  getCachedCustomerStats: vi.fn(),
+  setCachedCustomerStats: vi.fn(),
+  getCachedDriverDetails: vi.fn(),
+  setCachedDriverDetails: vi.fn(),
 }));
 
-const { invalidateCachedProfile } = await import('../../src/lib/profileCache.js');
+const { invalidateCachedProfile, invalidateCachedSupabaseProfileAll } = await import('../../src/lib/profileCache.js');
 
 const { createSupabaseMock } = await vi.importActual('../helpers/supabaseMock.js');
 const m = createSupabaseMock();
@@ -104,6 +111,8 @@ describe('Profile Routes', () => {
         language: 'en',
         darkMode: false,
         isActive: true,
+        walletAddress: null,
+        polygonWalletAddress: null,
       });
 
       expect(res.body.extra).toEqual({
@@ -154,11 +163,13 @@ describe('Profile Routes', () => {
         fullName: 'John Driver',
         phone: '+919999999999',
         email: 'john@example.com',
-        companyName: null,
+        companyName: '',
         avatarUrl: 'https://r2.com/driver.jpg',
         language: 'hi',
         darkMode: true,
         isActive: true,
+        walletAddress: null,
+        polygonWalletAddress: null,
       });
 
       expect(res.body.extra).toEqual({
@@ -171,6 +182,68 @@ describe('Profile Routes', () => {
         walletPending: 12000,
         walletTotal: 62000,
       });
+    });
+  });
+
+  describe('GET /api/profile/customer-stats', () => {
+    it('returns 403 for non-customer role', async () => {
+      m.store.profiles.push({
+        id: 'driver-uuid-456',
+        firebase_uid: 'firebase-driver-uid',
+        role: 'driver',
+        full_name: 'Test Driver',
+      });
+
+      const res = await request(buildApp())
+        .get('/api/profile/customer-stats')
+        .set(DRIVER_HEADERS);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain('Customer stats are only available');
+    });
+
+    it('returns customer stats for customer role', async () => {
+      m.store.profiles.push({
+        id: 'customer-uuid-123',
+        firebase_uid: 'firebase-cust-uid',
+        role: 'customer',
+        full_name: 'Jane Doe',
+      });
+
+      m.store.customer_stats.push({
+        id: 'stats-1',
+        user_id: 'customer-uuid-123',
+        total_orders: 42,
+        total_saved: 12500,
+        co2_reduced_kg: 15.6,
+      });
+
+      const res = await request(buildApp())
+        .get('/api/profile/customer-stats')
+        .set(CUSTOMER_HEADERS);
+
+      expect(res.status).toBe(200);
+      expect(res.body.stats).toEqual({
+        totalOrders: 42,
+        totalSaved: 12500,
+        co2ReducedKg: 15.6,
+      });
+    });
+
+    it('returns null stats when no customer_stats row exists', async () => {
+      m.store.profiles.push({
+        id: 'customer-uuid-123',
+        firebase_uid: 'firebase-cust-uid',
+        role: 'customer',
+        full_name: 'New Customer',
+      });
+
+      const res = await request(buildApp())
+        .get('/api/profile/customer-stats')
+        .set(CUSTOMER_HEADERS);
+
+      expect(res.status).toBe(200);
+      expect(res.body.stats).toBeNull();
     });
   });
 
@@ -213,6 +286,7 @@ describe('Profile Routes', () => {
       expect(res.body.message).toBe('Profile updated');
       expect(res.body.profile).toEqual(updatedProfileRow);
       expect(invalidateCachedProfile).toHaveBeenCalledWith('test_firebase_uid_123');
+      expect(invalidateCachedSupabaseProfileAll).toHaveBeenCalledWith('customer-uuid-123');
 
       const profileUpdateCall = m.calls.find(c => c.table === 'profiles' && c.mode === 'update');
       expect(profileUpdateCall.payload).toEqual({
@@ -273,6 +347,7 @@ describe('Profile Routes', () => {
       expect(res.body.message).toBe('Profile updated');
       expect(res.body.profile).toEqual(updatedProfileRow);
       expect(invalidateCachedProfile).toHaveBeenCalledWith('test_firebase_uid_123');
+      expect(invalidateCachedSupabaseProfileAll).toHaveBeenCalledWith('driver-uuid-456');
 
       const profileUpdateCall = m.calls.find(c => c.table === 'profiles' && c.mode === 'update');
       expect(profileUpdateCall.payload).toEqual({
@@ -310,6 +385,7 @@ describe('Profile Routes', () => {
         walletAddress: '0x1234567890abcdef1234567890abcdef12345678',
       });
       expect(invalidateCachedProfile).toHaveBeenCalledWith('test_firebase_uid_123');
+      expect(invalidateCachedSupabaseProfileAll).toHaveBeenCalledWith('customer-uuid-123');
 
       const profileUpdateCall = m.calls.find(c => c.table === 'profiles' && c.mode === 'update');
       expect(profileUpdateCall.payload).toEqual({

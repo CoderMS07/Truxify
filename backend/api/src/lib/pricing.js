@@ -15,6 +15,16 @@
  * `load_bids.bid_amount` is documented as paisa in orderRoutes.js:215).
  */
 
+function clamp(value, min, max) {
+  if (typeof value !== 'number' || isNaN(value)) return min || 0;
+  return Math.max(min || 0, Math.min(max || Infinity, value));
+}
+
+function sanitizePrice(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num >= 0 ? Math.round(num) : 0;
+}
+
 const EARTH_RADIUS_KM = 6371.0088;
 
 const DEFAULTS = Object.freeze({
@@ -30,7 +40,7 @@ const DEFAULTS = Object.freeze({
 function parsePositiveInt(raw, fallback) {
   if (raw === null || raw === undefined || raw === '') return fallback;
   const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
+  return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
 function parsePositiveFloat(raw, fallback) {
@@ -129,7 +139,7 @@ export function computeOrderPricing(input, rateCard = readRateCard()) {
   const netProfit = baseFreight - fuelCost - tollEstimate;
 
   return {
-    distanceKm: Math.round(distanceKm * 100) / 100, // 2-decimal precision
+    distanceKm: Math.round(distanceKm * 100 + Number.EPSILON) / 100, // 2-decimal precision
     baseFreight,
     tollEstimate,
     platformFee,

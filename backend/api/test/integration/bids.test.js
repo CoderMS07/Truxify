@@ -12,18 +12,21 @@ vi.mock('../../src/config/db.js', () => ({
   mongoDb: null,
 }));
 
-vi.mock('../../src/services/escrow.js', () => ({
-  buildDepositTx: vi.fn(),
-  recordDepositTx: vi.fn(),
-  escrowDeposit: vi.fn(),
-  escrowRelease: vi.fn(),
-  escrowRefund: vi.fn(),
-  submitEscrowRefund: vi.fn(),
-  confirmEscrowRefund: vi.fn(),
-  // Mirrors the real implementation's escrow:<id> booking id derivation
-  bookingIdFromUuid: vi.fn((orderId) => `escrow:${orderId}`),
-  ESCROW_MATIC_PER_PAISA: 0.01,
-}));
+vi.mock('../../src/services/escrow.js', async () => {
+  const actual = await vi.importActual('../../src/services/escrow.js');
+  return {
+    ...actual,
+    buildDepositTx: vi.fn(),
+    recordDepositTx: vi.fn(),
+    escrowDeposit: vi.fn(),
+    escrowRelease: vi.fn(),
+    escrowRefund: vi.fn(),
+    submitEscrowRefund: vi.fn(),
+    confirmEscrowRefund: vi.fn(),
+    // Mirrors the real implementation's escrow:<id> booking id derivation
+    bookingIdFromUuid: vi.fn((orderId) => `escrow:${orderId}`),
+  };
+});
 
 const { default: orderRouter } = await import('../../src/routes/orderRoutes.js');
 const { buildDepositTx: mockBuildDepositTx, recordDepositTx: mockRecordDepositTx, escrowDeposit: mockEscrowDeposit, escrowRefund: mockEscrowRefund } = await import('../../src/services/escrow.js');
@@ -622,7 +625,7 @@ describe('Bid Routes', () => {
     expect(res.status).toBe(403);
   });
 
-  it('POST /:id/bids/:bidId/accept returns 500 when load offer is already claimed', async () => {
+  it('POST /:id/bids/:bidId/accept returns 409 when load offer is no longer available', async () => {
     m.store.orders.push({
       id: 'order-1',
       customer_id: 'customer-1',
@@ -657,12 +660,13 @@ describe('Bid Routes', () => {
       .post('/api/orders/order-1/bids/bid-1/accept')
       .set(CUSTOMER);
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Conflict: This load offer was already accepted or is no longer available.');
     expect(res.body.details).toBe('Load offer is no longer available');
     expect(m.calls.find(c => c.rpc === 'accept_bid_tx')).toBeTruthy();
   });
 
-  it('POST /:id/bids/:bidId/accept returns 500 when order is no longer pending', async () => {
+  it('POST /:id/bids/:bidId/accept returns 409 when order is no longer pending', async () => {
     m.store.orders.push({
       id: 'order-1',
       customer_id: 'customer-1',
@@ -695,7 +699,8 @@ describe('Bid Routes', () => {
     const app = buildApp();
     const res = await request(app).post('/api/orders/order-1/bids/bid-1/accept').set(CUSTOMER);
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Conflict: This load offer was already accepted or is no longer available.');
     expect(res.body.details).toBe('Order is no longer pending');
     expect(m.calls.find(c => c.rpc === 'accept_bid_tx')).toBeTruthy();
   });  
@@ -746,7 +751,32 @@ describe('Bid Routes', () => {
 
       expect(res.status).toBe(422);
       expect(res.body.error).toBe('Transaction reverted or not found on chain');
-      expect(mockRecordDepositTx).toHaveBeenCalledWith('escrow:OD1', '0x' + '1'.repeat(64), null);
+      expect(mockRecordDepositTx).toHaveBeenCalledWith('escrow:OD1', '0x' + '1'.repeat(64), null, null, null);
+    });
+
+    it('POST /:id/confirm-deposit hashes the order display id when escrow_booking_id is missing', async () => {
+      m.store.orders.push({
+        id: 'order-1',
+        customer_id: 'customer-1',
+        order_display_id: 'OD1',
+        escrow_booking_id: null,
+        escrow_status: 'funding',
+      });
+
+      const { getEscrowBookingId } = await import('../../src/services/escrow.js');
+
+      mockRecordDepositTx.mockResolvedValue({ txHash: '0x' + '1'.repeat(64), bookingId: 'x' });
+
+      const app = buildApp();
+      const res = await request(app)
+        .post('/api/orders/order-1/confirm-deposit')
+        .set(CUSTOMER)
+        .send({ txHash: '0x' + '1'.repeat(64) });
+
+      expect(res.status).toBe(200);
+      // The fallback must be the deterministic hash, NOT a raw `escrow:OD1` string
+      expect(mockRecordDepositTx).toHaveBeenCalledWith(getEscrowBookingId('OD1'), '0x' + '1'.repeat(64), null, null, null);
+      expect(mockRecordDepositTx.mock.calls[0][0]).not.toBe('escrow:OD1');
     });
 
     it('POST /:id/confirm-deposit succeeds and marks order as funded', async () => {

@@ -3,10 +3,19 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class TruxifyController extends ChangeNotifier {
   static const String _themeModeKey = 'driver_theme_mode';
+  static const String _availabilityKey = 'driver_is_available';
+  static const String _autoAcceptKey = 'auto_accept_orders';
+  static const String _languageKey = 'driver_language_code';
 
   ThemeMode _themeMode = ThemeMode.system;
+  bool _isAvailable = false;
+  bool _autoAcceptOrders = false;
+  Locale _locale = const Locale('en');
 
   ThemeMode get themeMode => _themeMode;
+  bool get isAvailable => _isAvailable;
+  bool get autoAcceptOrders => _autoAcceptOrders;
+  Locale get locale => _locale;
 
   Future<void> loadThemeMode() async {
     final prefs = await SharedPreferences.getInstance();
@@ -16,6 +25,9 @@ class TruxifyController extends ChangeNotifier {
       (mode) => mode.name == savedTheme,
       orElse: () => ThemeMode.system,
     );
+
+    _isAvailable = prefs.getBool(_availabilityKey) ?? false;
+    _autoAcceptOrders = prefs.getBool(_autoAcceptKey) ?? false;
 
     notifyListeners();
   }
@@ -29,6 +41,45 @@ class TruxifyController extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_themeModeKey, mode.name);
   }
+
+  Future<void> setAvailability(bool value) async {
+    if (_isAvailable == value) return;
+    _isAvailable = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_availabilityKey, value);
+  }
+
+  Future<void> toggleAutoAccept() async {
+    _autoAcceptOrders = !_autoAcceptOrders;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_autoAcceptKey, _autoAcceptOrders);
+  }
+
+  Future<void> loadLocale() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedCode = prefs.getString(_languageKey) ?? 'en';
+      _locale = Locale(savedCode);
+      notifyListeners();
+    } catch (_) {
+      // Ignore shared preferences loading errors, fallback to English
+    }
+  }
+
+  Future<void> setLocale(String languageCode) async {
+    if (_locale.languageCode == languageCode) return;
+    _locale = Locale(languageCode);
+    notifyListeners();
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_languageKey, languageCode);
+    } catch (_) {
+      // Ignore shared preferences errors
+    }
+  }
 }
 
 class TruxifyScope extends InheritedNotifier<TruxifyController> {
@@ -40,7 +91,13 @@ class TruxifyScope extends InheritedNotifier<TruxifyController> {
 
   static TruxifyController of(BuildContext context) {
     final scope = context.dependOnInheritedWidgetOfExactType<TruxifyScope>();
-    assert(scope != null, 'TruxifyScope not found in widget tree.');
-    return scope!.notifier!;
+    if (scope == null) {
+      throw FlutterError('TruxifyScope not found in widget tree.');
+    }
+    final controller = scope.notifier;
+    if (controller == null) {
+      throw FlutterError('TruxifyScope.notifier is null.');
+    }
+    return controller;
   }
 }

@@ -4,6 +4,7 @@ import {
   validateDocumentBuffer,
   DocumentValidationError,
 } from '../lib/documentValidation.js';
+import { scanDocument, MalwareScanError } from '../lib/malwareScanner.js';
 
 const ALLOWED_DOCUMENT_TYPES = Object.freeze([
   'aadhaar_card',
@@ -48,6 +49,26 @@ export async function uploadDriverDocument(req, res) {
       throw validationError;
     }
 
+    try {
+      const scanResult = await scanDocument(req.file.buffer, req.file.originalname);
+      if (!scanResult.clean) {
+        return res.status(422).json({
+          error: 'Uploaded document failed malware scanning.',
+        });
+      }
+    } catch (scanError) {
+      if (scanError instanceof MalwareScanError) {
+        logger.warn(
+          { driverId, documentType, reason: scanError.message },
+          '[DocumentController] Upload rejected by malware scanner',
+        );
+        return res.status(422).json({
+          error: scanError.message,
+        });
+      }
+      throw scanError;
+    }
+
     const extension = verifiedMimeType === 'application/pdf' ? 'pdf'
       : verifiedMimeType === 'image/png' ? 'png'
       : 'jpg';
@@ -79,6 +100,9 @@ export async function uploadDriverDocument(req, res) {
 
     if (insertError) {
       logger.error('[DocumentController] Failed to record document metadata:', insertError.message);
+      await supabase.storage.from('driver-documents').remove([storagePath]).catch((storageCleanErr) => {
+        logger.error('[DocumentController] Failed to clean up document storage path:', storageCleanErr.message);
+      });
       return res.status(500).json({ error: 'Failed to store document' });
     }
 

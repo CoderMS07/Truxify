@@ -1,33 +1,157 @@
+/**
+ * @openapi
+ * components:
+ *   schemas:
+ *     LoadOffer:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           format: uuid
+ *         pickup_address:
+ *           type: string
+ *         drop_address:
+ *           type: string
+ *         freight_value:
+ *           type: number
+ *         goods_type:
+ *           type: string
+ *         status:
+ *           type: string
+ *           enum: [available, claimed, expired, cancelled]
+ *         pickup:
+ *           type: string
+ *         destination:
+ *           type: string
+ *         estimated_price:
+ *           type: number
+ *         vehicle_type:
+ *           type: string
+ *     LoadListResponse:
+ *       type: object
+ *       properties:
+ *         page:
+ *           type: integer
+ *         limit:
+ *           type: integer
+ *         total:
+ *           type: integer
+ *         totalPages:
+ *           type: integer
+ *         loads:
+ *           type: array
+ *           items:
+ *             $ref: '#/components/schemas/LoadOffer'
+ *     LoadSingleResponse:
+ *       type: object
+ *       properties:
+ *         load:
+ *           $ref: '#/components/schemas/LoadOffer'
+ */
+
 import express from 'express';
 import { supabase } from '../config/db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
+import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 import logger from '../middleware/logger.js';
 import { loadFilterQuerySchema } from '../validation/loadSchemas.js';
-import { validateParams } from '../middleware/validate.js';
-import { paramIdSchema } from '../validation/requestSchemas.js';
-import { uuidParamSchema } from '../validation/requestSchemas.js';
+import { validateParams, validateQuery } from '../middleware/validate.js';
+import { paramIdSchema, uuidParamSchema } from '../validation/requestSchemas.js';
 import { escapeLike } from '../lib/escapeLike.js';
 
+
 const router = express.Router();
+
+
+// Sanitize load filter query params to prevent injection attacks
+function sanitizeLoadFilters(query) {
+  const allowed = ['min_price', 'max_price', 'distance', 'goods_type', 'weight', 'origin', 'destination', 'page', 'limit'];
+  const sanitized = {};
+  for (const key of Object.keys(query)) {
+    if (allowed.includes(key)) {
+      sanitized[key] = query[key];
+    }
+  }
+  return sanitized;
+}
 
 // ============================================================================
 // 1. GET ALL AVAILABLE LOAD OFFERS (DRIVER)
 // GET /api/loads
 // ============================================================================
-router.get('/', authenticate, userLimiter, requireRole(['driver']), async (req, res) => {
+/**
+ * @openapi
+ * /api/loads:
+ *   get:
+ *     tags: [Loads]
+ *     summary: List available load offers
+ *     description: Returns paginated load offers for drivers. Supports filtering by status, location, price range, goods type, and distance. Results sorted by specified field.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *           maximum: 100
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [open, available, claimed, expired, cancelled]
+ *       - in: query
+ *         name: pickup_location
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: destination
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: goods_type
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: min_price
+ *         schema:
+ *           type: number
+ *         description: Minimum price in Rupees
+ *       - in: query
+ *         name: max_price
+ *         schema:
+ *           type: number
+ *         description: Maximum price in Rupees
+ *       - in: query
+ *         name: sort_by
+ *         schema:
+ *           type: string
+ *           enum: [estimated_price, created_at, distance]
+ *       - in: query
+ *         name: order
+ *         schema:
+ *           type: string
+ *           enum: [asc, desc]
+ *           default: desc
+ *     responses:
+ *       200:
+ *         description: Paginated load offers
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/LoadListResponse'
+ *       400:
+ *         description: Validation error
+ */
+router.get('/', authenticate, userLimiter, requirePolicy('load-offer:browse'), async (req, res) => {
   try {
-    const filterResult = loadFilterQuerySchema.safeParse(req.query);
-    if (!filterResult.success) {
-      return res.status(400).json({
-        error: 'Validation failed',
-        details: filterResult.error.issues.map(issue => ({
-          field: issue.path.join('.') || 'query',
-          message: issue.message,
-        })),
-      });
-    }
-    const filters = filterResult.data;
+    const filters = req.query;
 
     const pageVal = req.query.page || '1';
     const limitVal = req.query.limit || '10';
@@ -94,14 +218,20 @@ router.get('/', authenticate, userLimiter, requireRole(['driver']), async (req, 
 
     // Filters
     if (req.query.pickup_location) {
-      const pickupLocation = Array.isArray(req.query.pickup_location) ? req.query.pickup_location[0] : req.query.pickup_location;
+      const pickupLocation = (Array.isArray(req.query.pickup_location) ? req.query.pickup_location[0] : req.query.pickup_location).trim();
+      if (!pickupLocation) {
+        return res.status(400).json({ error: 'pickup_location must not be empty' });
+      }
       if (pickupLocation.length > 200) {
         return res.status(400).json({ error: 'pickup_location too long (max 200 chars)' });
       }
       query = query.ilike('pickup_address', `%${escapeLike(pickupLocation)}%`);
     }
     if (req.query.destination) {
-      const destination = Array.isArray(req.query.destination) ? req.query.destination[0] : req.query.destination;
+      const destination = (Array.isArray(req.query.destination) ? req.query.destination[0] : req.query.destination).trim();
+      if (!destination) {
+        return res.status(400).json({ error: 'destination must not be empty' });
+      }
       if (destination.length > 200) {
         return res.status(400).json({ error: 'destination too long (max 200 chars)' });
       }
@@ -111,7 +241,11 @@ router.get('/', authenticate, userLimiter, requireRole(['driver']), async (req, 
       if (typeof req.query.goods_type !== 'string') {
         return res.status(400).json({ error: 'goods_type must be a single string' });
       }
-      query = query.eq('goods_type', req.query.goods_type);
+      const goodsType = req.query.goods_type.trim();
+      if (!goodsType) {
+        return res.status(400).json({ error: 'goods_type must not be empty' });
+      }
+      query = query.eq('goods_type', goodsType);
     }
     if (filters.min_price !== undefined) {
       // Map min_price (in Rupees) to freight_value (in paisa)
@@ -122,12 +256,11 @@ router.get('/', authenticate, userLimiter, requireRole(['driver']), async (req, 
       query = query.lte('freight_value', Math.round(filters.max_price * 100));
     }
     if (filters.distance !== undefined) {
-      query = query.lte('extra_distance_km', filters.distance);
+      query = query.or(`extra_distance_km.is.null,extra_distance_km.lte.${filters.distance}`);
     }
 
     // Sorting
-    const validSortFields = ['estimated_price', 'created_at', 'distance'];
-    const sortByParam = validSortFields.includes(req.query.sort_by) ? req.query.sort_by : 'created_at';
+    const sortByParam = filters.sort_by || 'created_at';
     
     // Map sort fields to database columns
     let sortBy = 'created_at';
@@ -172,10 +305,95 @@ router.get('/', authenticate, userLimiter, requireRole(['driver']), async (req, 
 });
 
 // ============================================================================
+// 1.5 CREATE NEW LOAD OFFER (CUSTOMER)
+// POST /api/loads
+// ============================================================================
+router.post('/', authenticate, userLimiter, requireRole(['customer']), async (req, res) => {
+  try {
+    const { origin, destination, weight_tons, expected_price, material_type } = req.body;
+
+    if (!origin || !origin.lat || !origin.lng) {
+      return res.status(400).json({ error: 'Origin with lat/lng is required' });
+    }
+    if (!destination || !destination.lat || !destination.lng) {
+      return res.status(400).json({ error: 'Destination with lat/lng is required' });
+    }
+
+    if (weight_tons === undefined || weight_tons === null || Number.isNaN(Number(weight_tons))) {
+      return res.status(400).json({ error: 'Valid weight_tons is required' });
+    }
+    if (expected_price === undefined || expected_price === null || Number.isNaN(Number(expected_price))) {
+      return res.status(400).json({ error: 'Valid expected_price is required' });
+    }
+
+    const pickupAddress = origin.address || 'Unknown Origin';
+    const dropAddress = destination.address || 'Unknown Destination';
+    const routeLabel = `${pickupAddress.split(',')[0]} \u2192 ${dropAddress.split(',')[0]}`;
+
+    const { data, error } = await supabase
+      .from('load_offers')
+      .insert({
+        customer_id: req.user.id,
+        customer_name: req.user.fullName || 'Customer',
+        pickup_address: pickupAddress,
+        drop_address: dropAddress,
+        pickup_lat: origin.lat,
+        pickup_lng: origin.lng,
+        drop_lat: destination.lat,
+        drop_lng: destination.lng,
+        route_label: routeLabel,
+        weight: `${weight_tons} tonnes`,
+        freight_value: Math.round(parseFloat(expected_price) * 100), // Assuming paisa representation
+        goods_type: material_type || 'General',
+        status: 'available'
+      })
+      .select()
+      .single();
+
+    if (error) {
+      logger.error('Failed to create load offer:', error);
+      return res.status(500).json({ error: 'Failed to create load offer', details: error.message });
+    }
+
+    res.status(201).json({ message: 'Load posted successfully', load: data });
+  } catch (err) {
+    logger.error('Internal Server Error in POST /api/loads:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
 // 2. GET SINGLE LOAD OFFER BY ID (DRIVER)
 // GET /api/loads/:id
 // ============================================================================
-router.get('/:id', authenticate, userLimiter, requireRole(['driver']), validateParams(paramIdSchema), async (req, res) => {
+/**
+ * @openapi
+ * /api/loads/{id}:
+ *   get:
+ *     tags: [Loads]
+ *     summary: Get single load offer
+ *     description: Returns details for a specific available load offer by ID.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Load offer UUID
+ *     responses:
+ *       200:
+ *         description: Load offer details
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/LoadSingleResponse'
+ *       404:
+ *         description: Load offer not found or no longer available
+ */
+router.get('/:id', authenticate, userLimiter, requirePolicy('load-offer:browse'), validateParams(paramIdSchema), async (req, res) => {
   try {
     const { data: load, error } = await supabase
       .from('load_offers')

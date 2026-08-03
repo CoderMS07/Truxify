@@ -1,30 +1,37 @@
 import asyncio
-import hmac
 import logging
 import os
 import time
-from fastapi import FastAPI, HTTPException, Header, Depends
+import numpy as np
+from datetime import datetime, timedelta
+from fastapi import FastAPI, HTTPException, Depends, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from .app.models.eta_prediction import eta_predictor
+from app.models.eta_prediction import eta_predictor
 
-from .app.models.demand_forecast import (
+from app.models.demand_forecast import (
     predict_demand,
     train_demand_forecast_model,
     FEATURE_NAMES,
 )
-from .app.models.price_prediction import predict_price, train_price_model
-from .app.models.bilateral_matcher import match_bilateral
-from .app.models.driver_profit import driver_profit_predictor
-from .app.models.bin_packing import optimise_packing
-from .app.models.collaborative_filter import collaborative_filter
-from .app.models.trust_scorer import trust_scorer
-from .app.models.deadhead_eliminator import find_return_loads
-from .app.models.mid_trip_reoptimiser import find_mid_trip_loads
-from .app.models.base import model_exists
-from .app.models.demand_forecast import MODEL_NAME as DEMAND_MODEL_NAME
-from .app.models.price_prediction import MODEL_NAME as PRICE_MODEL_NAME
+from app.models.price_prediction import (
+    predict_price,
+    train_price_model,
+    PriceModelDataUnavailableError,
+)
+from app.models.bilateral_matcher import match_bilateral
+from app.models.driver_profit import driver_profit_predictor
+from app.models.bin_packing import optimise_packing
+from app.models.collaborative_filter import collaborative_filter
+from app.models.trust_scorer import trust_scorer
+from app.models.deadhead_eliminator import find_return_loads
+from app.models.mid_trip_reoptimiser import find_mid_trip_loads
+from app.models.ocr_verifier import ocr_verifier
+from app.models.base import model_exists
+from app.models.demand_forecast import MODEL_NAME as DEMAND_MODEL_NAME
+from app.models.price_prediction import MODEL_NAME as PRICE_MODEL_NAME
+from routes import register_ml_routers, verify_api_key
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,60 +39,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-async def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
-    ml_api_key = os.environ.get("ML_API_KEY")
-    if not ml_api_key:
-        logger.warning("ML_API_KEY not set - ML engine running without authentication")
-        raise HTTPException(status_code=503, detail="ML engine not configured: missing ML_API_KEY")
-    if not x_api_key or not hmac.compare_digest(x_api_key, ml_api_key):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-# ── Health Check ─────────────────────────────────────────────────────────────
-# Added for Issue #<number>: Node.js backend calls this before routing
-# any prediction request to verify the ML service is up.
-
-import time
-
-# Track when the service started (for uptime reporting)
-_SERVICE_START_TIME = time.time()
+# Track loaded models for health reporting
+loaded_models: set[str] = set()
 
 app = FastAPI(
     title="Truxify ML Engine",
     description="ML prediction service for load matching, pricing, ETA, and route optimization",
     version="1.0.0",
-    docs_url="/docs",      # Swagger UI at /docs
-    redoc_url="/redoc", 
+    # Swagger/ReDoc interactive docs are disabled in production.
+    docs_url=None if os.environ.get("ENVIRONMENT") == "production" else "/docs",
+    redoc_url=None if os.environ.get("ENVIRONMENT") == "production" else "/redoc",
 )
 
-@app.get(
-    "/health",
-    tags=["Health"],
-    summary="ML service health check",
-    response_description="Service status and loaded model count",
-)
-async def health_check():
-    """
-    Returns the current health status of the ML engine.
 
-    The Node.js API gateway calls this endpoint before routing
-    prediction requests. If this returns non-200, the gateway
-    returns a 503 to the Flutter app instead of a failed prediction.
 
-    Returns:
-        status: "ok" if service is healthy
-        uptime_seconds: time since service started
-        models_loaded: number of ML models currently in memory
-    """
-    return {
-        "status": "ok",
-        "uptime_seconds": round(time.time() - _SERVICE_START_TIME, 2),
-        # Replace `loaded_models` with your actual variable that holds loaded models
-        # If you don't have one, use a hardcoded count for now
-        "models_loaded": len(loaded_models) if "loaded_models" in dir() else "unknown",
-        "version": "1.0.0",
-    }
-# ─────────────────────────────────────────────────────────────────────────────
-
+# Register all available ML route modules dynamically
+registered_routers = register_ml_routers(app)
+logger.info("ML routers registered: %s", registered_routers)
 
 # CORS: restrict to known origins — no wildcard "*" to prevent unauthorized cross-origin access
 app.add_middleware(
@@ -104,10 +74,14 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    from .models.base import preload_all_models
+    from app.models.base import preload_all_models
+
     logger.info("ML Engine starting, pre-loading models...")
-    await preload_all_models()
-    logger.info("ML Engine startup complete")
+    persisted_models = await preload_all_models()
+    loaded_models.update(persisted_models)
+    if eta_predictor.model is not None:
+        loaded_models.add("eta_prediction")
+    logger.info("ML Engine startup complete — loaded: %s", sorted(loaded_models))
 
 
 # ---------------------------------------------------------------------------
@@ -151,23 +125,6 @@ class PricePredictOutput(BaseModel):
     min_price: float
     max_price: float
     currency: str = "INR"
-
-
-# ---------------------------------------------------------------------------
-# Schemas — ETA Prediction
-# ---------------------------------------------------------------------------
-
-class ETAPredictInput(BaseModel):
-    route_distance: float = Field(..., gt=0)
-    time_of_day: int = Field(..., ge=0, le=23)
-    day_of_week: int = Field(..., ge=0, le=6)
-    route_type: str = Field(..., description="highway or city")
-    historical_speed: float = Field(..., gt=0)
-
-
-class ETAPredictOutput(BaseModel):
-    eta_minutes: float
-    confidence_interval: dict
 
 
 # ---------------------------------------------------------------------------
@@ -407,16 +364,20 @@ async def root(_auth=Depends(verify_api_key)):
 async def health():
     """Health check endpoint for Docker container orchestration."""
     models = {
-        "eta_predictor": eta_predictor.model is not None,
         "demand_forecast": model_exists(DEMAND_MODEL_NAME),
         "price_forecast": model_exists(PRICE_MODEL_NAME),
         "driver_profit": model_exists("driver_profit"),
+        "trust_scorer": model_exists("trust_scorer"),
+        "collaborative_filter": model_exists("collaborative_filter"),
+        "eta_predictor": eta_predictor.model is not None,
     }
-    all_ready = all(models.values())
+    non_optional = {k: v for k, v in models.items() if k != 'eta_predictor'}
+    all_ready = all(non_optional.values())
     return {
         "status": "healthy" if all_ready else "degraded",
         "service": "ml-engine",
         "models": models,
+        "models_loaded": len(loaded_models),
     }
 
 
@@ -464,34 +425,20 @@ async def predict_price_endpoint(input: PricePredictInput, _auth=Depends(verify_
             fuel_price=input.fuel_price,
             cargo_type=input.cargo_type,
         )
+        if result is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Price model unavailable: no model trained on real historical data. "
+                       "Train via POST /train/price once completed trips exist.",
+            )
         return PricePredictOutput(**result)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Price prediction failed: %s", e)
         raise HTTPException(status_code=500, detail="Price prediction failed")
-
-
-# ---------------------------------------------------------------------------
-# ETA Prediction
-# ---------------------------------------------------------------------------
-
-@app.post("/predict/eta", response_model=ETAPredictOutput)
-async def predict_eta_endpoint(input: ETAPredictInput, _auth=Depends(verify_api_key)):
-    try:
-        result = eta_predictor.predict(
-            distance=input.route_distance,
-            time_of_day=input.time_of_day,
-            day_of_week=input.day_of_week,
-            route_type=input.route_type,
-            historical_speed=input.historical_speed,
-        )
-        return ETAPredictOutput(**result)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        logger.error("ETA prediction failed: %s", e)
-        raise HTTPException(status_code=500, detail="ETA prediction failed")
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +447,11 @@ async def predict_eta_endpoint(input: ETAPredictInput, _auth=Depends(verify_api_
 
 @app.post("/match/bilateral", response_model=BilateralMatchOutput)
 async def bilateral_match_endpoint(input: BilateralMatchInput, _auth=Depends(verify_api_key)):
+    """
+    Two-Sided Bilateral Matcher endpoint.
+    Accepts a list of AvailableLoads and Drivers to find the most optimal matches.
+    Related Issue: #5552
+    """
     try:
         loads = [load.model_dump() for load in input.loads]
         drivers = [driver.model_dump() for driver in input.drivers]
@@ -683,6 +635,9 @@ async def train_price_endpoint(_auth=Depends(verify_api_key)):
             timeout=timeout,
         )
         return TrainResponse(status="success", metrics=metrics)
+    except PriceModelDataUnavailableError as e:
+        logger.warning("Price model training skipped: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
     except asyncio.TimeoutError:
         logger.error("Price model training timed out after %d seconds", timeout)
         raise HTTPException(status_code=504, detail="Training timed out")
@@ -697,7 +652,7 @@ async def train_price_endpoint(_auth=Depends(verify_api_key)):
 
 @app.get("/models")
 async def list_models(_auth=Depends(verify_api_key)):
-    from .models.base import MODEL_STORAGE_DIR
+    from app.models.base import MODEL_STORAGE_DIR
     import os, json
     models = []
     if os.path.isdir(MODEL_STORAGE_DIR):
@@ -706,3 +661,59 @@ async def list_models(_auth=Depends(verify_api_key)):
                 with open(os.path.join(MODEL_STORAGE_DIR, f)) as fh:
                     models.append(json.load(fh))
     return {"models": models}
+
+# ---------------------------------------------------------------------------
+# Predictive Fleet Maintenance
+# ---------------------------------------------------------------------------
+from app.models.predictive_maintenance import predictive_maintenance
+
+class PredictiveMaintenanceInput(BaseModel):
+    engine_temperature: float = Field(..., description="Engine temperature in Celsius")
+    tire_pressure: float = Field(..., description="Tire pressure in PSI")
+    oil_level: float = Field(..., description="Oil level percentage")
+    coolant_level: float = Field(..., description="Coolant level percentage")
+    mileage: float = Field(..., description="Total vehicle mileage")
+
+class PredictiveMaintenanceOutput(BaseModel):
+    failure_probability: float
+    is_at_risk: bool
+    anomalies_detected: List[str]
+    recommendation: str
+
+@app.post("/predict/maintenance", response_model=PredictiveMaintenanceOutput)
+async def predict_maintenance_endpoint(input: PredictiveMaintenanceInput, _auth=Depends(verify_api_key)):
+    try:
+        result = predictive_maintenance.predict(
+            engine_temperature=input.engine_temperature,
+            tire_pressure=input.tire_pressure,
+            oil_level=input.oil_level,
+            coolant_level=input.coolant_level,
+            mileage=input.mileage
+        )
+        return PredictiveMaintenanceOutput(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error("Predictive maintenance prediction failed: %s", e)
+        raise HTTPException(status_code=500, detail="Predictive maintenance prediction failed")
+
+# ---------------------------------------------------------------------------
+# KYC Document OCR Verification
+# ---------------------------------------------------------------------------
+
+class KYCVerificationOutput(BaseModel):
+    verified: bool
+    document_type: str
+    extracted_number: Optional[str] = None
+    raw_text: str
+
+@app.post("/verify/kyc", response_model=KYCVerificationOutput)
+async def verify_kyc_endpoint(file: UploadFile = File(...), _auth=Depends(verify_api_key)):
+    try:
+        image_bytes = await file.read()
+        text = ocr_verifier.extract_text(image_bytes)
+        result = ocr_verifier.verify_license(text)
+        return KYCVerificationOutput(**result)
+    except Exception as e:
+        logger.error("KYC OCR verification failed: %s", e)
+        raise HTTPException(status_code=500, detail="KYC OCR verification failed")

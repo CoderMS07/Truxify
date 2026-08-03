@@ -1,47 +1,78 @@
-import 'dart:convert';
-
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/earnings_daily_model.dart';
+import 'api_client.dart';
 
 class DriverEarningsService {
   DriverEarningsService({
     SupabaseClient? client,
-    http.Client? httpClient,
+    ApiClient? apiClient,
     String? apiBaseUrl,
+    http.Client? httpClient,
   })  : _providedClient = client,
-        _isClientOwned = httpClient == null,
-        _httpClient = httpClient ?? http.Client(),
-        _apiBaseUrl = (apiBaseUrl ?? defaultApiBaseUrl).replaceFirst(RegExp(r'/$'), '',);
+        _apiClient = apiClient ?? ApiClient(baseUrl: apiBaseUrl, httpClient: httpClient);
 
   static const String defaultApiBaseUrl = String.fromEnvironment(
     'TRUXIFY_API_BASE_URL',
-    defaultValue: 'http://localhost:5000',
   );
 
   final SupabaseClient? _providedClient;
   SupabaseClient get _client => _providedClient ?? Supabase.instance.client;
-  final http.Client _httpClient;
-  final bool _isClientOwned;
-  final String _apiBaseUrl;
+  final ApiClient _apiClient;
+
+  final Map<String, dynamic> _cache = {};
+  static const Duration _cacheTtl = Duration(minutes: 5);
+  DateTime? _lastCacheTime;
+
+  bool _isCacheValid() {
+    if (_cache.isEmpty) return false;
+    if (_lastCacheTime == null) return false;
+    return DateTime.now().difference(_lastCacheTime!) < _cacheTtl;
+  }
+
+  void _clearCache() {
+    _cache.clear();
+    _lastCacheTime = null;
+  }
+
+  void _updateCache(Map<String, dynamic> data) {
+    _cache.clear();
+    _cache.addAll(data);
+    _lastCacheTime = DateTime.now();
+  }
+
+  Future<Map<String, dynamic>?> _getCached(String key) async {
+    if (!_isCacheValid()) return null;
+    return _cache[key] as Map<String, dynamic>?;
+  }
+
+  DateTime? _parseDate(String dateStr) {
+    try {
+      return DateTime.parse(dateStr);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _isWithinRange(DateTime target, DateTime? start, DateTime? end) {
+    if (start != null && target.isBefore(start)) return false;
+    if (end != null && target.isAfter(end)) return false;
+    return true;
+  }
+
+  List<Map<String, dynamic>> _mapResponseRows(Object? response, String label) {
+    if (response is! List) {
+      throw StateError('Unexpected $label response type');
+    }
+    return response.map((item) {
+      if (item is Map<String, dynamic>) return item;
+      if (item is Map) return Map<String, dynamic>.from(item);
+      throw StateError('Unexpected $label item type');
+    }).toList(growable: false);
+  }
 
   String? get driverId => _client.auth.currentUser?.id;
-
-  Future<Map<String, String>> get _authHeaders async {
-    String? token;
-    try {
-      token = await FirebaseAuth.instance.currentUser?.getIdToken();
-    } catch (_) {
-      // Firebase not initialised; fall through to Supabase session
-    }
-    token ??= _client.auth.currentSession?.accessToken;
-    return {
-      'Content-Type': 'application/json',
-      if (token != null) 'Authorization': 'Bearer $token',
-    };
-  }
 
   Future<List<Map<String, dynamic>>> fetchWalletTransactions({
     int page = 1,
@@ -49,45 +80,36 @@ class DriverEarningsService {
   }) async {
     if (driverId == null) return [];
 
-    final uri = Uri.parse('$_apiBaseUrl/api/driver/wallet/history').replace(
-      queryParameters: {'page': '$page', 'limit': '$limit'},
-    );
+    final path = '/api/driver/wallet/history?page=$page&limit=$limit';
 
-    final http.Response response;
     try {
-      response = await _httpClient.get(uri, headers: await _authHeaders);
+      final decoded = await _apiClient.get(path);
+      
+      if (decoded is! Map) {
+        throw Exception('Invalid wallet history response format.');
+      }
+
+      final transactions = decoded['transactions'];
+      if (transactions is! List) {
+        throw StateError('Unexpected wallet transactions response type');
+      }
+
+      return transactions
+          .map((t) {
+            if (t is! Map) return null;
+            return Map<String, dynamic>.from(t);
+          })
+          .whereType<Map<String, dynamic>>()
+          .toList();
     } catch (e) {
+      if (e is StateError) {
+        throw Exception(e.message);
+      }
+      if (e is ApiException) {
+        throw Exception(e.message.isNotEmpty ? e.message : 'Failed to load wallet history.');
+      }
       throw Exception('Network error: Failed to fetch wallet history.');
     }
-
-    final dynamic decoded;
-    try {
-      decoded = jsonDecode(response.body);
-    } catch (_) {
-      throw Exception('Failed to parse wallet history response.');
-    }
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      final errorMsg = (decoded is Map) ? decoded['error']?.toString() : null;
-      throw Exception(errorMsg ?? 'Failed to load wallet history.');
-    }
-
-    if (decoded is! Map) {
-      throw Exception('Invalid wallet history response format.');
-    }
-
-    final transactions = decoded['transactions'];
-    if (transactions is! List) {
-      return [];
-    }
-
-    return transactions
-        .map((t) {
-          if (t is! Map) return null;
-          return Map<String, dynamic>.from(t);
-        })
-        .whereType<Map<String, dynamic>>()
-        .toList();
   }
 
   Future<List<Map<String, dynamic>>> fetchMonthlyEarnings({
@@ -112,52 +134,47 @@ class DriverEarningsService {
           .gte('day_date', start.toIso8601String().split('T').first)
           .lt('day_date', end.toIso8601String().split('T').first)
           .order('day_date');
-      return List<Map<String, dynamic>>.from(response);
+      if (response is! List) {
+        throw StateError('Unexpected monthly earnings response type');
+      }
+      return response.map((item) {
+        if (item is Map<String, dynamic>) return item;
+        if (item is Map) return Map<String, dynamic>.from(item);
+        throw StateError('Unexpected monthly earnings item type');
+      }).toList(growable: false);
     }
 
     final days = daysSinceMonthStart.clamp(1, 365);
 
-    final uri = Uri.parse('$_apiBaseUrl/api/driver/earnings/summary').replace(
-      queryParameters: {'days': '$days'},
-    );
+    final path = '/api/driver/earnings/summary?days=$days';
 
-    final http.Response response;
     try {
-      response = await _httpClient.get(uri, headers: await _authHeaders);
+      final decoded = await _apiClient.get(path);
+      
+      if (decoded is! List) {
+        throw Exception('Invalid earnings summary response format.');
+      }
+
+      return decoded
+          .map((e) {
+            if (e is! Map) return null;
+            return Map<String, dynamic>.from(e);
+          })
+          .whereType<Map<String, dynamic>>()
+          .where((e) {
+            final dateStr = e['day_date'];
+            if (dateStr == null) return false;
+            final date = DateTime.tryParse(dateStr.toString());
+            if (date == null) return false;
+            return !date.isBefore(start) && date.isBefore(end);
+          })
+          .toList();
     } catch (e) {
+      if (e is ApiException) {
+        throw Exception(e.message.isNotEmpty ? e.message : 'Failed to load earnings summary.');
+      }
       throw Exception('Network error: Failed to fetch earnings summary.');
     }
-
-    final dynamic decoded;
-    try {
-      decoded = jsonDecode(response.body);
-    } catch (_) {
-      throw Exception('Failed to parse earnings summary response.');
-    }
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      final error = decoded is Map ? decoded['error']?.toString() : null;
-      throw Exception(error ?? 'Failed to load earnings summary.');
-    }
-
-    if (decoded is! List) {
-      throw Exception('Invalid earnings summary response format.');
-    }
-
-    return decoded
-        .map((e) {
-          if (e is! Map) return null;
-          return Map<String, dynamic>.from(e);
-        })
-        .whereType<Map<String, dynamic>>()
-        .where((e) {
-          final dateStr = e['day_date'];
-          if (dateStr == null) return false;
-          final date = DateTime.tryParse(dateStr.toString());
-          if (date == null) return false;
-          return !date.isBefore(start) && date.isBefore(end);
-        })
-        .toList();
   }
 
   Future<List<Map<String, dynamic>>> fetchCompletedTripsForDay({
@@ -167,15 +184,19 @@ class DriverEarningsService {
 
     final day = date.toIso8601String().split('T').first;
 
-    final response = await _client
-        .from('trips')
-        .select()
-        .eq('driver_id', driverId!)
-        .eq('status', 'completed')
-        .eq('trip_date', day)
-        .order('created_at', ascending: false);
+    try {
+      final response = await _client
+          .from('trips')
+          .select()
+          .eq('driver_id', driverId!)
+          .eq('status', 'completed')
+          .eq('trip_date', day)
+          .order('created_at', ascending: false);
 
-    return List<Map<String, dynamic>>.from(response);
+      return _mapResponseRows(response, 'completed trips');
+    } catch (e) {
+      throw Exception('Failed to fetch completed trips: $e');
+    }
   }
 
   /// Fetches today's earnings summary (amount, hours driven, trip count).
@@ -185,68 +206,64 @@ class DriverEarningsService {
     final today = DateTime.now();
     final dayStr = today.toIso8601String().split('T').first;
 
-    final uri = Uri.parse('$_apiBaseUrl/api/driver/earnings/summary').replace(
-      queryParameters: {'days': '1'},
-    );
+    final path = '/api/driver/earnings/summary?days=1';
 
-    final http.Response response;
     try {
-      response = await _httpClient.get(uri, headers: await _authHeaders);
+      final decoded = await _apiClient.get(path);
+      
+      if (decoded is! List) {
+        throw StateError('Unexpected earnings summary response type');
+      }
+
+      for (final entry in decoded) {
+        if (entry is! Map) {
+          throw StateError('Unexpected earnings summary item type');
+        }
+        final dateStr = entry['day_date']?.toString();
+        if (dateStr == dayStr) {
+          return EarningsDailyModel.fromMap(Map<String, dynamic>.from(entry));
+        }
+      }
+
+      return null;
     } catch (e) {
+      if (e is StateError) {
+        throw Exception(e.message);
+      }
+      if (e is ApiException) {
+        throw Exception(e.message.isNotEmpty ? e.message : 'Failed to load today\'s earnings.');
+      }
       throw Exception('Network error: Failed to fetch today\'s earnings.');
     }
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Failed to load today\'s earnings.');
-    }
-
-    final dynamic decoded;
-    try {
-      decoded = jsonDecode(response.body);
-    } catch (_) {
-      throw Exception('Failed to parse earnings response.');
-    }
-
-    if (decoded is! List) return null;
-
-    for (final entry in decoded) {
-      if (entry is! Map) continue;
-      final dateStr = entry['day_date']?.toString();
-      if (dateStr == dayStr) {
-        return EarningsDailyModel.fromMap(Map<String, dynamic>.from(entry));
-      }
-    }
-
-    return null;
   }
 
   /// Fetches driver stats including rating, total trips, completion rate.
   Future<Map<String, dynamic>> fetchDriverStats() async {
     if (driverId == null) return {};
 
-    final uri = Uri.parse('$_apiBaseUrl/api/driver/stats');
+    final path = '/api/driver/stats';
 
-    final http.Response response;
     try {
-      response = await _httpClient.get(uri, headers: await _authHeaders);
+      final decoded = await _apiClient.get(path);
+      
+      if (decoded is! Map) {
+        throw StateError('Unexpected driver stats response type');
+      }
+
+      final stats = decoded['stats'];
+      if (stats == null) return {};
+      if (stats is Map<String, dynamic>) return stats;
+      if (stats is Map) return Map<String, dynamic>.from(stats);
+      throw StateError('Unexpected driver stats payload type');
     } catch (e) {
+      if (e is StateError) {
+        throw Exception(e.message);
+      }
+      if (e is ApiException) {
+        throw Exception(e.message.isNotEmpty ? e.message : 'Failed to load driver stats.');
+      }
       throw Exception('Network error: Failed to fetch driver stats.');
     }
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Failed to load driver stats.');
-    }
-
-    final dynamic decoded;
-    try {
-      decoded = jsonDecode(response.body);
-    } catch (_) {
-      throw Exception('Failed to parse driver stats response.');
-    }
-
-    if (decoded is! Map) return {};
-
-    return Map<String, dynamic>.from(decoded['stats'] ?? {});
   }
 
   Future<Map<String, dynamic>> fetchWalletSummary() async {
@@ -257,15 +274,102 @@ class DriverEarningsService {
         .select('wallet_confirmed, wallet_pending, wallet_total')
         .eq('user_id', driverId!);
 
+    if (response is! List) {
+      throw StateError('Unexpected wallet summary response type');
+    }
     if (response.isNotEmpty) {
-      return Map<String, dynamic>.from(response.first as Map);
+      final first = response.first;
+      if (first is Map<String, dynamic>) return first;
+      if (first is Map) return Map<String, dynamic>.from(first);
+      throw StateError('Unexpected wallet summary item type');
     }
     return {};
   }
 
-  void dispose() {
-    if (_isClientOwned) {
-      _httpClient.close();
+  /// Withdraws funds from the driver's confirmed wallet balance.
+  ///
+  /// [amountPaisa] must be a positive integer representing the amount in paisa.
+  ///
+  /// Throws [ApiException] on non-2xx responses with the server error message.
+  /// Throws a generic [Exception] on network errors.
+  Future<void> withdrawFunds(int amountPaisa) async {
+    if (driverId == null) {
+      throw Exception('You must be logged in to withdraw funds.');
     }
+
+    final path = '/api/driver/wallet/withdraw';
+
+    try {
+      await _apiClient.post(path, body: {
+        'amount': amountPaisa,
+      });
+    } on ApiException {
+      rethrow;
+    } catch (e) {
+      throw Exception('Network error: Failed to withdraw funds.');
+    }
+  }
+
+  /// Fetches the driver's earnings statement for a date range.
+  ///
+  /// When [format] is `"json"`, returns parsed JSON data.
+  /// When [format] is `"csv"`, returns the raw CSV as a [String].
+  Future<dynamic> fetchStatement({
+    required DateTime startDate,
+    required DateTime endDate,
+    String format = "json",
+  }) async {
+    final startStr =
+        '${startDate.year}-${startDate.month.toString().padLeft(2, '0')}-${startDate.day.toString().padLeft(2, '0')}';
+    final endStr =
+        '${endDate.year}-${endDate.month.toString().padLeft(2, '0')}-${endDate.day.toString().padLeft(2, '0')}';
+
+    final path =
+        '/api/profile/driver/statement?start_date=$startStr&end_date=$endStr&format=$format';
+
+    if (format == 'csv') {
+      try {
+        final raw = await _apiClient.getRaw(path);
+        return raw;
+      } on ApiException {
+        rethrow;
+      } catch (e) {
+        throw Exception('Network error: Failed to fetch statement CSV.');
+      }
+    }
+
+    try {
+      final decoded = await _apiClient.get(path);
+      return decoded;
+    } on ApiException {
+      rethrow;
+    } catch (e) {
+      throw Exception('Network error: Failed to fetch earnings statement.');
+    }
+  }
+
+  Future<Map<String, dynamic>> fetchEarningsAnalytics({
+    required String period,
+  }) async {
+    if (driverId == null) return {};
+
+    final path = '/api/driver/$driverId/earnings?period=$period';
+
+    try {
+      final decoded = await _apiClient.get(path);
+      if (decoded is! Map) {
+        throw StateError('Unexpected earnings analytics response format');
+      }
+      return Map<String, dynamic>.from(decoded);
+    } catch (e) {
+      if (e is ApiException) {
+        throw Exception(e.message.isNotEmpty ? e.message : 'Failed to load earnings analytics.');
+      }
+      throw Exception('Network error: Failed to fetch earnings analytics.');
+    }
+  }
+
+  void dispose() {
+    _apiClient.dispose();
   }
 }
