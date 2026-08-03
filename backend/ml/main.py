@@ -4,7 +4,7 @@ import os
 import time
 import numpy as np
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -27,6 +27,7 @@ from app.models.collaborative_filter import collaborative_filter
 from app.models.trust_scorer import trust_scorer
 from app.models.deadhead_eliminator import find_return_loads
 from app.models.mid_trip_reoptimiser import find_mid_trip_loads
+from app.models.ocr_verifier import ocr_verifier
 from app.models.base import model_exists
 from app.models.demand_forecast import MODEL_NAME as DEMAND_MODEL_NAME
 from app.models.price_prediction import MODEL_NAME as PRICE_MODEL_NAME
@@ -695,3 +696,24 @@ async def predict_maintenance_endpoint(input: PredictiveMaintenanceInput, _auth=
     except Exception as e:
         logger.error("Predictive maintenance prediction failed: %s", e)
         raise HTTPException(status_code=500, detail="Predictive maintenance prediction failed")
+
+# ---------------------------------------------------------------------------
+# KYC Document OCR Verification
+# ---------------------------------------------------------------------------
+
+class KYCVerificationOutput(BaseModel):
+    verified: bool
+    document_type: str
+    extracted_number: Optional[str] = None
+    raw_text: str
+
+@app.post("/verify/kyc", response_model=KYCVerificationOutput)
+async def verify_kyc_endpoint(file: UploadFile = File(...), _auth=Depends(verify_api_key)):
+    try:
+        image_bytes = await file.read()
+        text = ocr_verifier.extract_text(image_bytes)
+        result = ocr_verifier.verify_license(text)
+        return KYCVerificationOutput(**result)
+    except Exception as e:
+        logger.error("KYC OCR verification failed: %s", e)
+        raise HTTPException(status_code=500, detail="KYC OCR verification failed")
