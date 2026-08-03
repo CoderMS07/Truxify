@@ -90,6 +90,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     super.dispose();
   }
 
+  bool _isDigilockerVerified = false;
+
   Future<void> _loadWalletAddress() async {
     try {
       final client = Supabase.instance.client;
@@ -97,12 +99,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (userId != null) {
         final data = await client
             .from('profiles')
-            .select('polygon_wallet_address')
+            .select('polygon_wallet_address, full_name, phone, email, is_digilocker_verified')
             .eq('id', userId)
             .maybeSingle();
         if (data != null && mounted) {
           setState(() {
             _walletAddress = data['polygon_wallet_address']?.toString() ?? '';
+            _driverName = data['full_name']?.toString() ?? '';
+            _driverPhone = data['phone']?.toString() ?? '';
+            _driverEmail = data['email']?.toString() ?? '';
+            _isDigilockerVerified = data['is_digilocker_verified'] as bool? ?? false;
           });
         }
       }
@@ -802,13 +808,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        _driverName,
-                        style: GoogleFonts.dmSans(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
+                      Row(
+                        children: [
+                          Text(
+                            _driverName,
+                            style: GoogleFonts.dmSans(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                          if (_isDigilockerVerified) ...[
+                            const SizedBox(width: 6),
+                            const Icon(
+                              Icons.verified_user_rounded,
+                              color: Colors.greenAccent,
+                              size: 18,
+                            ),
+                          ],
+                        ],
                       ),
                       const SizedBox(height: 4),
                       Text(
