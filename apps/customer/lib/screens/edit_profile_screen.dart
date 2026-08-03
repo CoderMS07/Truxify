@@ -253,10 +253,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         TextFormField(
                           controller: _phoneController,
                           keyboardType: TextInputType.phone,
-                          validator: (v) =>
-                              (v == null || v.trim().isEmpty)
-                                  ? AppLocalizations.of(context)!.phoneNumberIsRequired
-                                  : null,
+                          validator: (v) {
+                            if (v == null || v.trim().isEmpty) {
+                              return AppLocalizations.of(context)!.phoneNumberIsRequired;
+                            }
+                            final cleanPhone = v.replaceAll(RegExp(r'[\s\-()]'), '');
+                            if (!RegExp(r'^\+?\d{7,15}$').hasMatch(cleanPhone)) {
+                              return 'Enter a valid phone number (7-15 digits)';
+                            }
+                            return null;
+                          },
                           decoration: InputDecoration(
                             hintText: AppLocalizations.of(context)!.enterPhoneNumber,
                             border: OutlineInputBorder(

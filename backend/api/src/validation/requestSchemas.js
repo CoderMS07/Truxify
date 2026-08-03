@@ -46,13 +46,27 @@ export const createOrderSchema = z.object({
   drop_address: z.string().min(5, "Drop address is too short").max(255, "Drop address is too long"),
   drop_lat: latitudeSchema,
   drop_lng: longitudeSchema,
-  pickup_date: isoDateStringSchema,
+  pickup_date: isoDateStringSchema.refine(val => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const parts = val.split('T')[0].split('-');
+    if (parts.length === 3) {
+      const year = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10) - 1;
+      const day = parseInt(parts[2], 10);
+      const localDate = new Date(year, month, day);
+      return localDate >= today;
+    }
+    return new Date(val) >= today;
+  }, {
+    message: "Pickup date cannot be in the past",
+  }),
   pickup_time: z.string().regex(timeRegex, "Time must be in HH:MM format").optional(),
   goods_type: z.string().min(2, "Goods type must be specified"),
   weight_tonnes: coerceNumber(z.number().positive({ message: 'Must be greater than 0' }).max(100, "Weight exceeds maximum legal limits")),
-  length_ft: coerceNumber(z.number().positive().max(60)).optional(),
-  width_ft: coerceNumber(z.number().positive().max(15)).optional(),
-  height_ft: coerceNumber(z.number().positive().max(15)).optional(),
+  length_ft: coerceNumber(z.number({ invalid_type_error: "Length must be a number" }).positive("Length must be greater than 0").max(60)).optional(),
+  width_ft: coerceNumber(z.number({ invalid_type_error: "Width must be a number" }).positive("Width must be greater than 0").max(15)).optional(),
+  height_ft: coerceNumber(z.number({ invalid_type_error: "Height must be a number" }).positive("Height must be greater than 0").max(15)).optional(),
   is_stackable: z.boolean().default(false).optional(),
   is_fragile: z.boolean().default(false).optional(),
   requires_refrigeration: z.boolean().default(false).optional(),
