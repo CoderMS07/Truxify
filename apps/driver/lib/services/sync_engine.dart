@@ -12,6 +12,18 @@ class SyncEngine {
   static Database? _db;
   static bool _isSyncing = false;
 
+  /// Backend base URL, injected at build time via --dart-define.
+  /// Mirrors ApiClient so this service never bakes in a hardcoded
+  /// cleartext host (previously `http://10.0.2.2:5000`).
+  static String get apiBaseUrl {
+    const envUrl = String.fromEnvironment('TRUXIFY_API_BASE_URL');
+    if (envUrl.isNotEmpty) return envUrl;
+    if (kReleaseMode) {
+      throw StateError('TRUXIFY_API_BASE_URL must be set in release mode');
+    }
+    return 'http://localhost:5000';
+  }
+
   static Future<Database> get database async {
     if (_db != null) return _db!;
     _db = await _initDb();
@@ -81,9 +93,6 @@ class SyncEngine {
       if (user == null) return;
       final token = await user.getIdToken();
 
-      // We use a single arbitrary tripId for the sync endpoint, usually the backend 
-      // routes it via `/api/trips/:id/sync`. Here we use the first event's tripId.
-      final tripId = events.first['trip_id'] as String;
       final idempotencyKey = const Uuid().v4();
 
       final requestBody = {
@@ -97,10 +106,10 @@ class SyncEngine {
         }).toList(),
       };
 
-      // Ensure your api_client or this endpoint exists on the backend.
-      // Based on tripRoutes.js, the endpoint is POST /api/trips/:id/sync
+      // The backend batch sync endpoint is POST /api/v1/trips/events/batch
+      // (see tripRoutes.js). The base URL is injected via --dart-define.
       final response = await http.post(
-        Uri.parse('http://10.0.2.2:5000/api/v1/trips/$tripId/sync'), // Adjust URL for prod
+        Uri.parse('${apiBaseUrl}/api/v1/trips/events/batch'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
