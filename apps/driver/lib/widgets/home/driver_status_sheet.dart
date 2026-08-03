@@ -4,8 +4,10 @@ import '../../models/earnings_daily_model.dart';
 import '../../theme/app_theme.dart';
 import '../earnings_shimmer.dart';
 import 'metrics_error_card.dart';
-import 'shift_metrics_row.dart';
 
+/// Bottom sheet shown on the Home screen when no active trip is selected.
+/// Displays the driver online/offline toggle and today's earnings summary
+/// (gross, net after fuel/toll estimate, and trip count).
 class DriverStatusSheet extends StatelessWidget {
   const DriverStatusSheet({
     super.key,
@@ -34,15 +36,13 @@ class DriverStatusSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final payValue = todayEarnings != null
+    final gross = todayEarnings != null
         ? '₹${todayEarnings!.amount.toStringAsFixed(0)}'
         : '—';
-    final hoursValue = todayEarnings != null
-        ? '${todayEarnings!.hoursDriven.toStringAsFixed(1)} hrs'
+    final net = todayEarnings != null
+        ? '₹${todayEarnings!.netAmount.toStringAsFixed(0)}'
         : '—';
-    final ratingValue = driverRating != null
-        ? driverRating!.toStringAsFixed(2)
-        : '—';
+    final trips = todayEarnings != null ? '${todayEarnings!.tripCount}' : '—';
 
     return Container(
       decoration: BoxDecoration(
@@ -62,6 +62,7 @@ class DriverStatusSheet extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── Online / Offline toggle ──────────────────────────────────────
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -105,7 +106,10 @@ class DriverStatusSheet extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 8),
+
+          const SizedBox(height: 4),
+
+          // Subtitle / radar text
           Text(
             !isOnline
                 ? 'Offline. Go online to receive load assignments.'
@@ -117,8 +121,10 @@ class DriverStatusSheet extends StatelessWidget {
               color: TruxifyColors.adaptiveSecondaryText(context),
             ),
           ),
+
+          // Battery indicator
           if (batteryLevel != null) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             Row(
               children: [
                 Icon(
@@ -138,17 +144,56 @@ class DriverStatusSheet extends StatelessWidget {
               ],
             ),
           ],
+
           const SizedBox(height: 16),
+
+          // ── Today's Earnings card ────────────────────────────────────────
           if (isLoadingMetrics)
             const SummaryCardsShimmer()
           else if (metricsError != null)
             MetricsErrorCard(errorMessage: metricsError)
-          else
-            ShiftMetricsRow(
-              payValue: payValue,
-              hoursValue: hoursValue,
-              ratingValue: ratingValue,
+          else ...[
+            Text(
+              "Today's Earnings",
+              style: GoogleFonts.dmSans(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: TruxifyColors.adaptiveSecondaryText(context),
+                letterSpacing: 0.4,
+              ),
             ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: _EarningsMetricCard(
+                    icon: Icons.account_balance_wallet_outlined,
+                    value: gross,
+                    label: 'Gross',
+                    valueKey: const Key('today_gross_label'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _EarningsMetricCard(
+                    icon: Icons.local_gas_station_outlined,
+                    value: net,
+                    label: 'Net (est.)',
+                    valueKey: const Key('today_net_label'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _EarningsMetricCard(
+                    icon: Icons.local_shipping_outlined,
+                    value: trips,
+                    label: 'Trips',
+                    valueKey: const Key('today_trips_label'),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -167,5 +212,57 @@ class DriverStatusSheet extends StatelessWidget {
     if (level <= 10) return TruxifyColors.errorRed;
     if (level <= 20) return TruxifyColors.warning;
     return TruxifyColors.success;
+  }
+}
+
+// ── Private metric card widget ────────────────────────────────────────────────
+
+class _EarningsMetricCard extends StatelessWidget {
+  const _EarningsMetricCard({
+    required this.icon,
+    required this.value,
+    required this.label,
+    this.valueKey,
+  });
+
+  final IconData icon;
+  final String value;
+  final String label;
+  final Key? valueKey;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).brightness == Brightness.dark
+            ? Theme.of(context).colorScheme.surfaceContainerHighest
+            : TruxifyColors.background,
+        border: Border.all(color: TruxifyColors.border),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, size: 16, color: TruxifyColors.accent),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            key: valueKey,
+            style: GoogleFonts.dmSans(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
+          ),
+          Text(
+            label,
+            style: GoogleFonts.dmSans(
+              fontSize: 9,
+              color: TruxifyColors.adaptiveSecondaryText(context),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
