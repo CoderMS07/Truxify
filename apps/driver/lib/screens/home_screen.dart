@@ -44,11 +44,21 @@ class HomeScreen extends StatefulWidget {
     required this.marketplaceRepo,
     required this.earningsService,
     this.mockLocationText,
+    this.onNavigateToLoads,
+    this.onNavigateToActiveTrip,
   });
 
   final MarketplaceRepository marketplaceRepo;
   final DriverEarningsService earningsService;
   final String? mockLocationText;
+
+  /// Called when the driver taps "Find New Load" CTA.
+  /// Typically navigates to the loads marketplace tab.
+  final VoidCallback? onNavigateToLoads;
+
+  /// Called when the driver taps "View Active Trip" CTA.
+  /// Typically navigates to the trips tab.
+  final VoidCallback? onNavigateToActiveTrip;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -140,6 +150,10 @@ class _HomeScreenState extends State<HomeScreen> {
   String _activeTripDistance = '';
   String _activeTripDuration = '';
   String _activeTripPayout = '';
+  /// Number of stops not yet completed on the active trip.
+  int _activeTripStopsRemaining = 0;
+  /// Current milestone of the active trip (e.g. 'en_route_pickup').
+  String _activeTripMilestone = '';
   bool _isLoadingLocation = true;
   String? _locationError;
   late final MarketplaceRepository _marketplaceRepo;
@@ -640,6 +654,12 @@ class _HomeScreenState extends State<HomeScreen> {
         final isTripStarted = stops.any((s) => s['is_completed'] == true || s['is_current'] == true);
         await prefs.setBool('cached_is_started', isTripStarted);
 
+        // Compute stops remaining and current milestone for the home card.
+        final pendingStops = stops.where((s) => s['is_completed'] != true).length;
+        final currentStop = stops.where((s) => s['is_current'] == true).firstOrNull;
+        final milestone = (currentStop?['status'] as String?) ??
+            (currentStop?['milestone'] as String?) ?? '';
+
         setState(() {
           _isOffline = false;
           _activeTripId = tripId;
@@ -648,6 +668,8 @@ class _HomeScreenState extends State<HomeScreen> {
           _activeTripDuration = prefs.getString('cached_duration') ?? '';
           _activeTripPayout = prefs.getString('cached_payout') ?? '';
           _isTripStarted = isTripStarted;
+          _activeTripStopsRemaining = pendingStops;
+          _activeTripMilestone = milestone;
         });
         
         if (stops.isNotEmpty) {
@@ -931,9 +953,21 @@ class _HomeScreenState extends State<HomeScreen> {
                         isCritical: _batteryLevel <= 10,
                       ),
                     _isTripStarted
-                        ? ActiveNavigationHeader(
+                        ? ActiveTripSheet(
+                            isTripStarted: _isTripStarted,
+                            truckLabel: _activeTruckLabel,
+                            currentLocationLabel: _currentLocationLabel,
                             destinationAddress:
                                 _destination?.address ?? 'Destination',
+                            distance: _activeTripDistance,
+                            duration: _activeTripDuration,
+                            payout: _activeTripPayout,
+                            stopsRemaining: _activeTripStopsRemaining > 0
+                                ? _activeTripStopsRemaining
+                                : null,
+                            currentMilestone: _activeTripMilestone.isNotEmpty
+                                ? _activeTripMilestone
+                                : null,
                           )
                         : SearchDestinationCard(
                             currentLocationText: _currentLocationText,
@@ -1118,6 +1152,17 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
+            // Heatmap legend — shown bottom-left when heatmap data is loaded
+            if (_heatmapData != null)
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut,
+                left: 16,
+                bottom:
+                    _showStatusCard ? (_destination == null ? 228 : 278) : 40,
+                child: _buildHeatmapLegend(context),
+              ),
+
             // Recenter FAB
             if (_currentLocation != null)
               AnimatedPositioned(
@@ -1167,6 +1212,11 @@ class _HomeScreenState extends State<HomeScreen> {
                             onToggleOnline: _toggleOnlineState,
                             batteryLevel: _batteryLevel,
                             isCharging: _isCharging,
+                            hasActiveTrip: _activeTripId != null,
+                            onFindLoad: widget.onNavigateToLoads,
+                            onViewTrip: _activeTripId != null
+                                ? widget.onNavigateToActiveTrip
+                                : null,
                           )
                         : ActiveTripSheet(
                             isTripStarted: _isTripStarted,
@@ -1177,6 +1227,12 @@ class _HomeScreenState extends State<HomeScreen> {
                             distance: _activeTripDistance,
                             duration: _activeTripDuration,
                             payout: _activeTripPayout,
+                            stopsRemaining: _activeTripStopsRemaining > 0
+                                ? _activeTripStopsRemaining
+                                : null,
+                            currentMilestone: _activeTripMilestone.isNotEmpty
+                                ? _activeTripMilestone
+                                : null,
                             onStartTrip: () async {
                               if (_activeTripId == null) {
                                 setState(() => _isTripStarted = true);
@@ -1814,6 +1870,17 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// Maps an intensity value [0–1] to a demand zone colour.
+  ///
+  /// - ≥ 0.7 → red   (high demand)
+  /// - ≥ 0.4 → orange (medium demand)
+  /// -  < 0.4 → green  (low demand)
+  Color _heatmapZoneColor(double intensity) {
+    if (intensity >= 0.7) return Colors.red;
+    if (intensity >= 0.4) return Colors.orange;
+    return Colors.green;
+  }
+
   Widget? _buildHeatmapLayer() {
     if (_heatmapData == null) return null;
     final features = _heatmapData!['features'] as List?;
@@ -1826,11 +1893,14 @@ class _HomeScreenState extends State<HomeScreen> {
         final coords = geom['coordinates'] as List;
         final props = feature['properties'] ?? {};
         final intensity = (props['intensity'] as num?)?.toDouble() ?? 0.5;
+        final zoneColor = _heatmapZoneColor(intensity);
 
         circles.add(CircleMarker(
           point: ll.LatLng(coords[1], coords[0]),
-          color: Colors.red.withValues(alpha: (intensity * 0.5).clamp(0.1, 0.5)),
-          borderStrokeWidth: 0,
+          // Fill: zone colour with intensity-scaled alpha for depth effect
+          color: zoneColor.withValues(alpha: (intensity * 0.45).clamp(0.08, 0.45)),
+          borderColor: zoneColor.withValues(alpha: 0.6),
+          borderStrokeWidth: 1.0,
           useRadiusInMeter: true,
           radius: 2000,
         ));
@@ -1842,6 +1912,56 @@ class _HomeScreenState extends State<HomeScreen> {
     if (circles.isEmpty) return null;
 
     return CircleLayer(circles: circles);
+  }
+
+  /// Compact demand-heatmap legend shown in the bottom-left of the map.
+  Widget _buildHeatmapLegend(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg = isDark
+        ? Colors.black.withValues(alpha: 0.72)
+        : Colors.white.withValues(alpha: 0.88);
+
+    Widget _dot(Color c) => Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(color: c, shape: BoxShape.circle),
+        );
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(10),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.12),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'DEMAND',
+            style: GoogleFonts.dmSans(
+              fontSize: 8,
+              fontWeight: FontWeight.bold,
+              color: isDark ? Colors.white70 : TruxifyColors.secondaryText,
+              letterSpacing: 0.6,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Row(children: [_dot(Colors.red), const SizedBox(width: 5), Text('High', style: GoogleFonts.dmSans(fontSize: 9, color: isDark ? Colors.white : TruxifyColors.primaryText))]),
+          const SizedBox(height: 3),
+          Row(children: [_dot(Colors.orange), const SizedBox(width: 5), Text('Med', style: GoogleFonts.dmSans(fontSize: 9, color: isDark ? Colors.white : TruxifyColors.primaryText))]),
+          const SizedBox(height: 3),
+          Row(children: [_dot(Colors.green), const SizedBox(width: 5), Text('Low', style: GoogleFonts.dmSans(fontSize: 9, color: isDark ? Colors.white : TruxifyColors.primaryText))]),
+        ],
+      ),
+    );
   }
 
   Future<void> _openGoogleMapsRoute() async {

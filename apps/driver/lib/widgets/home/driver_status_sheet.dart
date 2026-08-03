@@ -19,6 +19,9 @@ class DriverStatusSheet extends StatelessWidget {
     required this.onToggleOnline,
     this.batteryLevel,
     this.isCharging = false,
+    this.hasActiveTrip = false,
+    this.onFindLoad,
+    this.onViewTrip,
   });
 
   final bool isOnline;
@@ -32,6 +35,16 @@ class DriverStatusSheet extends StatelessWidget {
   final int? batteryLevel;
   final bool isCharging;
 
+  /// Whether the driver currently has an active trip.
+  /// Controls visibility of the "View Active Trip" CTA.
+  final bool hasActiveTrip;
+
+  /// Called when the driver taps "Find New Load".
+  final VoidCallback? onFindLoad;
+
+  /// Called when the driver taps "View Active Trip".
+  final VoidCallback? onViewTrip;
+
   @override
   Widget build(BuildContext context) {
     final payValue = todayEarnings != null
@@ -43,6 +56,13 @@ class DriverStatusSheet extends StatelessWidget {
     final ratingValue = driverRating != null
         ? driverRating!.toStringAsFixed(2)
         : '—';
+    final tripCountValue = todayEarnings != null
+        ? '${todayEarnings!.tripCount}'
+        : null;
+    // Net estimate: gross × 0.85 (accounts for ~15% fuel/toll costs).
+    final netValue = todayEarnings != null && todayEarnings!.amount > 0
+        ? 'Net ≈ ₹${(todayEarnings!.amount * 0.85).toStringAsFixed(0)}'
+        : null;
 
     return Container(
       decoration: BoxDecoration(
@@ -148,7 +168,57 @@ class DriverStatusSheet extends StatelessWidget {
               payValue: payValue,
               hoursValue: hoursValue,
               ratingValue: ratingValue,
+              tripCountValue: tripCountValue,
+              netValue: netValue,
             ),
+          // ── Quick CTA Buttons ─────────────────────────────────────────────
+          if (isOnline && (onFindLoad != null || (hasActiveTrip && onViewTrip != null))) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                if (onFindLoad != null)
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      key: const Key('find_new_load_button'),
+                      onPressed: onFindLoad,
+                      icon: const Icon(Icons.search_rounded, size: 16),
+                      label: const Text('Find New Load'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        textStyle: GoogleFonts.dmSans(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (hasActiveTrip && onViewTrip != null) ...[
+                  if (onFindLoad != null) const SizedBox(width: 8),
+                  Expanded(
+                    child: FilledButton.icon(
+                      key: const Key('view_active_trip_button'),
+                      onPressed: onViewTrip,
+                      icon: const Icon(Icons.route_rounded, size: 16),
+                      label: const Text('Active Trip'),
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        textStyle: GoogleFonts.dmSans(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ],
         ],
       ),
     );
