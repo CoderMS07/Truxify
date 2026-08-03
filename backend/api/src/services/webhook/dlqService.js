@@ -65,8 +65,7 @@ export const dlqService = {
         .update({ status: 'processing', updated_at: now })
         .eq('status', 'pending')
         .in('id', eventIds)
-        .eq('status', 'pending')
-        .select();
+        .select('id, provider, event_type, payload, retry_count');
 
       if (claimErr) {
         logger.error(`[DLQ] Failed to claim pending events: ${claimErr.message}`);

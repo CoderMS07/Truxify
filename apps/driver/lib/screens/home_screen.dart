@@ -28,6 +28,7 @@ import '../services/weigh_station_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/map_markers.dart';
+import '../widgets/slide_to_confirm_button.dart';
 import '../widgets/home/offline_banner.dart';
 import '../widgets/home/low_battery_banner.dart';
 import '../widgets/home/active_navigation_header.dart';
@@ -144,6 +145,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _locationError;
   late final MarketplaceRepository _marketplaceRepo;
   StreamSubscription? _tripSubscription;
+  StreamSubscription? _loadSubscription;
 
   String _hosStatus = 'off_duty';
   int _hosDrivingMinutes = 0;
@@ -160,7 +162,6 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoadingMetrics = true;
   String? _metricsError;
   String? _networkError;
-  int _retryCount = 0;
 
   final BatteryService _batteryService = BatteryService.instance;
   int _batteryLevel = 100;
@@ -181,17 +182,18 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _withRetry(Future<void> Function() fn) async {
-    try {
-      _retryCount = 0;
-      await fn();
-    } catch (e) {
-      _retryCount++;
-      if (_retryCount <= 3) {
-        await Future.delayed(Duration(seconds: _retryCount));
+    for (int i = 0; i < 3; i++) {
+      try {
         await fn();
-      } else {
-        setState(() => _networkError = 'Operation failed after $_retryCount retries');
+        return;
+      } catch (e) {
+        if (i < 2) {
+          await Future.delayed(Duration(seconds: i + 1));
+        }
       }
+    }
+    if (mounted) {
+      setState(() => _networkError = 'Network error. Please check your connection and try again.');
     }
   }
 
@@ -293,6 +295,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _batteryService.removeListener(_onBatteryChanged);
     _connectivitySubscription?.cancel();
     _loadSubscription?.cancel();
+    _tripSubscription?.cancel();
     _autoHideTimer?.cancel();
     _mapController.dispose();
     _searchController.dispose();
@@ -813,7 +816,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final stops = await _tripService.fetchTripStops(_activeTripId!);
       final currentStop = stops.where((s) => s['is_current'] == true).firstOrNull;
       if (currentStop != null) {
-        await _tripService.markStopCompleted(currentStop['id'], _activeTripId!);
+        await _tripService.markStopCompleted(currentStop['id'].toString(), _activeTripId!);
       }
     } catch (e) {
       if (mounted) {
@@ -1813,253 +1816,6 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-
-  Widget? _buildHeatmapLayer() {
-    if (_heatmapData == null) return null;
-    final features = _heatmapData!['features'] as List?;
-    if (features == null || features.isEmpty) return null;
-
-    final circles = <CircleMarker>[];
-    for (final feature in features) {
-      try {
-        final geom = feature['geometry'];
-        final coords = geom['coordinates'] as List;
-        final props = feature['properties'] ?? {};
-        final intensity = (props['intensity'] as num?)?.toDouble() ?? 0.5;
-
-        circles.add(CircleMarker(
-          point: ll.LatLng(coords[1], coords[0]),
-          color: Colors.red.withValues(alpha: (intensity * 0.5).clamp(0.1, 0.5)),
-          borderStrokeWidth: 0,
-          useRadiusInMeter: true,
-          radius: 2000,
-        ));
-      } catch (e) {
-        // Ignore invalid features
-      }
-    }
-
-    if (circles.isEmpty) return null;
-
-    return CircleLayer(circles: circles);
-  }
-
-  Future<void> _openGoogleMapsRoute() async {
-    if (_destination == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(AppLocalizations.of(context)!.noDestinationAvailable)),
-      );
-      return;
-    }
-
-    if (_currentLocation == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text(AppLocalizations.of(context)!.currentLocationUnavailable)),
-      );
-      return;
-    }
-
-    try {
-      final destination = _destination!.point;
-
-      final routePoints = await (_routeFuture ??
-          Future.value([_currentLocation!, destination]));
-
-      final checkpoints = _buildCheckpointPoints(routePoints);
-
-      final waypointString =
-          checkpoints.map((p) => '${p.latitude},${p.longitude}').join('|');
-
-      final url = 'https://www.google.com/maps/dir/?api=1'
-          '&origin=${_currentLocation!.latitude},${_currentLocation!.longitude}'
-          '&destination=${destination.latitude},${destination.longitude}'
-          '${waypointString.isNotEmpty ? '&waypoints=$waypointString' : ''}'
-          '&travelmode=driving';
-
-      final uri = Uri.parse(url);
-      final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-
-      if (!launched && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(AppLocalizations.of(context)!.unableToOpenGoogleMaps)),
-        );
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(AppLocalizations.of(context)!.failedToGenerateRoute)),
-        );
-      }
-    }
-  }
-
-  Widget _buildActiveTripSheet(BuildContext context) {
-    final routeStr = _destination?.address ?? 'Destination';
-    return Container(
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: TruxifyColors.border),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.08),
-            blurRadius: 20,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: _isTripStarted
-                      ? TruxifyColors.successLight
-                      : TruxifyColors.accentLight,
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  _isTripStarted ? AppLocalizations.of(context)!.enRoute : AppLocalizations.of(context)!.assignedLoad,
-                  style: GoogleFonts.dmSans(
-                    fontSize: 9,
-                    fontWeight: FontWeight.bold,
-                    color: _isTripStarted
-                        ? TruxifyColors.success
-                        : TruxifyColors.accent,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  _activeTruckLabel,
-                  style: GoogleFonts.dmSans(
-                    fontSize: 11,
-                    color: TruxifyColors.adaptiveSecondaryText(context),
-                  ),
-                ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.navigation_rounded),
-                color: TruxifyColors.accent,
-                onPressed: _openGoogleMapsRoute,
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '${_currentLocationLabel(context)} → $routeStr',
-            style: GoogleFonts.dmSans(
-              fontSize: 15,
-              fontWeight: FontWeight.bold,
-              color: Theme.of(context).colorScheme.onSurface,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              _buildTripSpec(AppLocalizations.of(context)!.distance, _activeTripDistance.isNotEmpty ? _activeTripDistance : '--'),
-              _buildTripSpec(AppLocalizations.of(context)!.estDuration, _activeTripDuration.isNotEmpty ? _activeTripDuration : '--'),
-              _buildTripSpec(AppLocalizations.of(context)!.estPayout, _activeTripPayout.isNotEmpty ? _activeTripPayout : '--'),
-            ],
-          ),
-            const SizedBox(height: 16),
-            if (_isTripStarted && _activeTripId != null) ...[
-              ElevatedButton.icon(
-                onPressed: () async {
-                  await Navigator.push(context, MaterialPageRoute(builder: (_) => PodCaptureScreen(orderId: _activeTripId!)));
-                  _checkPendingPods();
-                },
-                icon: const Icon(Icons.camera_alt),
-                label: const Text('Capture Proof of Delivery'),
-                style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(48)),
-              ),
-              const SizedBox(height: 12),
-            ],
-            if (_isTripStarted) ...[
-            SlideToConfirmButton(
-              label: AppLocalizations.of(context)!.slideToCompleteTrip,
-              backgroundColor: TruxifyColors.success,
-              onConfirmed: () async {
-              await _completeRide();
-              },
-            ),
-          ] else ...[
-            SlideToConfirmButton(
-              label: AppLocalizations.of(context)!.slideToStartTrip,
-              backgroundColor: TruxifyColors.accent,
-              onConfirmed: () async {
-                if (_activeTripId == null) {
-                  setState(() => _isTripStarted = true);
-                  return;
-                }
-                try {
-                  await _tripService.startTrip(_activeTripId!);
-                  if (mounted) {
-                    setState(() => _isTripStarted = true);
-                  }
-                } catch (e) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text(AppLocalizations.of(context)!.failedToStartTrip)),
-                    );
-                  }
-                }
-              },
-            ),
-            const SizedBox(height: 8),
-            Center(
-              child: InkWell(
-                onTap: _clearDestination,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Text(
-                    AppLocalizations.of(context)!.cancelAssignment,
-                    style: GoogleFonts.dmSans(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                      color: TruxifyColors.adaptiveSecondaryText(context),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTripSpec(String label, String value) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: GoogleFonts.dmSans(
-            fontSize: 10,
-            color: TruxifyColors.adaptiveSecondaryText(context),
-          ),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          value,
-          style: GoogleFonts.dmSans(
-            fontSize: 13,
-            fontWeight: FontWeight.bold,
-            color: Theme.of(context).colorScheme.onSurface,
-          ),
-        ),
-      ],
-    );
-  }
+}
 }
 

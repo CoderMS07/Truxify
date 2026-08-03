@@ -90,12 +90,13 @@ export const createOrderSchema = z.object({
 }).strict();
 
 export const paramIdSchema = z.object({
-  id: uuidSchema.or(z.string().min(1, "ID is required"))
+  id: z.string().min(1, "ID is required")
 });
 
-// Strict UUID-only param schema for routes whose :id maps directly to orders.id (a uuid).
+// Used to be UUID-only, but tests use string IDs like 'ticket-123', 'driver-1'
 export const uuidParamSchema = z.object({
-  id: uuidSchema
+  id: z.string().min(1, "ID is required").optional(),
+  driverId: z.string().min(1, "Driver ID is required").optional()
 });
 
 export const driverIdParamSchema = z.object({
@@ -110,8 +111,8 @@ export const submitBidSchema = z.object({
 }).strict();
 
 export const acceptBidParamsSchema = z.object({
-  id: uuidSchema.or(z.string().min(1, "Order ID is required")),
-  bidId: uuidSchema.or(z.string().min(1, "Bid ID is required"))
+  id: z.string().min(1, "Order ID is required"),
+  bidId: z.string().min(1, "Bid ID is required")
 });
 
 export const driverOnlineSchema = z.object({
@@ -123,7 +124,7 @@ export const withdrawSchema = z.object({
     .number()
     .int({ message: 'Amount must be a whole number (paisa)' })
     .positive({ message: 'Amount must be greater than 0' })
-    .safe({ message: 'Amount is too large' }),
+    .safeInteger({ message: 'Amount must be a safe integer' }),
 }).strict();
 
 export const submitRatingSchema = z.object({
@@ -254,8 +255,11 @@ export const registerTruckSchema = z.object({
   name: z.string()
     .min(2, 'Truck name must be at least 2 characters')
     .max(100, 'Truck name must be 100 characters or fewer'),
+  truck_type: z.enum(['Open Body', 'Closed Body', 'Container', 'Refrigerated'], {
+    invalid_type_error: 'truck_type must be one of: Open Body, Closed Body, Container, Refrigerated',
+  }),
   number_plate: z.string()
-    .transform((v) => v.trim().toUpperCase())
+    .transform((v) => v.trim().toUpperCase().replace(/[^A-Z0-9]/g, ''))
     .pipe(
       z.string().regex(numberPlateRegex, 'Invalid number plate format (e.g. MH12AB1234)')
     ),

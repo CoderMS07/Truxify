@@ -324,6 +324,7 @@ class _OrdersScreenState extends State<OrdersScreen>
           ),
           callback: (payload) {
             debugPrint('Realtime customer orders list update: ${payload.newRecord}');
+            if (!mounted) return;
             _loadOrders();
           },
         )
@@ -488,7 +489,7 @@ class _OrdersScreenState extends State<OrdersScreen>
                               child: Row(
                                 children: [
                                   Text(
-                                    AppLocalizations.of(context)!.filterStatus,
+                                    'Status',
                                     style: Theme.of(context)
                                         .textTheme
                                         .bodySmall
@@ -557,9 +558,7 @@ class _OrdersScreenState extends State<OrdersScreen>
                                               ? AppLocalizations.of(
                                                       context)!
                                                   .noHistoryOrders
-                                              : AppLocalizations.of(
-                                                      context)!
-                                                  .noMatchingTrips,
+                                              : 'No matching trips',
                                           textAlign: TextAlign.center,
                                           style: Theme.of(context)
                                               .textTheme

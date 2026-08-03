@@ -126,10 +126,17 @@ export async function awardReputationPoints(driverWalletAddress, stars) {
     return;
   }
   try {
+    // Submit the transaction ONCE — retrying submission would re-award the
+    // points if a previous tx was already mined but its confirmation wait timed
+    // out. Only the confirmation wait is retried below.
+    const tx = await reputationContract.increaseReputation(driverWalletAddress, stars);
+    logger.info(`[reputation] increaseReputation tx submitted: ${tx.hash}`);
     await retryWithBackoff(async () => {
-      const tx = await reputationContract.increaseReputation(driverWalletAddress, stars);
-      logger.info(`[reputation] increaseReputation tx submitted: ${tx.hash}`);
-      await tx.wait(1);
+      const provider = reputationContract.provider || reputationContract.runner?.provider;
+      const receipt = provider ? await provider.waitForTransaction(tx.hash, 1, 60_000) : await tx?.wait?.(1);
+      if (!receipt || receipt.status === 0) {
+        throw new Error(`increaseReputation transaction ${tx.hash} reverted or was not found on chain.`);
+      }
       logger.info(`[reputation] increaseReputation confirmed for driver ${driverWalletAddress} (+${stars} pts).`);
     }, REPUTATION_RETRY_MAX, REPUTATION_RETRY_DELAY_MS);
   } catch (err) {

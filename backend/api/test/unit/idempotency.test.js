@@ -27,6 +27,7 @@ function makeRes(overrides = {}) {
     statusCode: 200,
     status: vi.fn(function(code) { this.statusCode = code; return this; }),
     json: vi.fn(function(body) { return this; }),
+    once: vi.fn(),
     ...overrides,
   };
 }
@@ -44,12 +45,16 @@ beforeEach(() => {
 
 describe('requireIdempotency middleware', () => {
   it('returns 400 when X-Idempotency-Key header is missing', async () => {
+    const originalEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
     const middleware = requireIdempotency();
     const req = makeReq({ headers: {} });
     const res = makeRes();
     const next = makeNext();
 
     await middleware(req, res, next);
+    
+    process.env.NODE_ENV = originalEnv;
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith({
@@ -65,6 +70,7 @@ describe('requireIdempotency middleware', () => {
     const next = makeNext();
 
     mockRedisRef.mock.get.mockResolvedValue(null);
+    mockRedisRef.mock.set.mockResolvedValue('OK');
 
     await middleware(req, res, next);
 
@@ -107,7 +113,7 @@ describe('requireIdempotency middleware', () => {
     res.json(responseBody);
 
     expect(mockRedisRef.mock.set).toHaveBeenCalled();
-    const [cacheKey, cacheData] = mockRedisRef.mock.set.mock.calls[0];
+    const [cacheKey, cacheData] = mockRedisRef.mock.set.mock.calls[1];
     expect(cacheKey).toBe('idempotency:user-1:key-def');
     const parsed = JSON.parse(cacheData);
     expect(parsed.statusCode).toBe(200);
@@ -148,16 +154,15 @@ describe('requireIdempotency middleware', () => {
   ])('does NOT cache %i responses', async (statusCode) => {
     const middleware = requireIdempotency();
     mockRedisRef.mock.get.mockResolvedValue(null);
-
+    mockRedisRef.mock.set.mockResolvedValue('OK');
     const req = makeReq({ headers: { 'x-idempotency-key': 'non-cacheable-key' } });
     const res = makeRes({ statusCode });
     const next = makeNext();
-
     await middleware(req, res, next);
     res.json({ error: 'some error' });
-
-    expect(mockRedisRef.mock.set).not.toHaveBeenCalled();
-  });
+    const cacheWriteCalls = mockRedisRef.mock.set.mock.calls.filter(([key]) => !key.endsWith(':lock'));
+    expect(cacheWriteCalls).toHaveLength(0);
+});
 
   it('fails open when Redis get throws an error', async () => {
     const middleware = requireIdempotency();
@@ -202,7 +207,7 @@ describe('requireIdempotency middleware', () => {
     await middleware(req, res, next);
     res.json({ result: 'done' });
 
-    const [cacheKey] = mockRedisRef.mock.set.mock.calls[0];
+    const [cacheKey] = mockRedisRef.mock.set.mock.calls[1];
     expect(cacheKey).toBe('idempotency:driver-42:my-unique-key-123');
   });
 
@@ -221,7 +226,7 @@ describe('requireIdempotency middleware', () => {
     await middleware(req, res, next);
     res.json({ result: 'done' });
 
-    const [cacheKey] = mockRedisRef.mock.set.mock.calls[0];
+    const [cacheKey] = mockRedisRef.mock.set.mock.calls[1];
     expect(cacheKey).toBe('idempotency:anonymous:anon-key');
   });
 

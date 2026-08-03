@@ -284,12 +284,15 @@ describe('Driver Routes', () => {
       wallet_confirmed: 10000,
     });
 
+    process.env.WITHDRAWAL_PAYOUT_PROVIDER = 'test';
     const app = buildApp();
 
     const res = await request(app)
       .post('/api/drivers/wallet/withdraw')
       .set(DRIVER_HEADERS)
       .send({ amount: 1000 });
+
+    delete process.env.WITHDRAWAL_PAYOUT_PROVIDER;
 
     expect(res.status).toBe(200);
 
@@ -298,6 +301,32 @@ describe('Driver Routes', () => {
     );
 
     expect(rpcCall).toBeTruthy();
+  });
+
+  it('POST /wallet/withdraw fails closed when no payout provider is configured', async () => {
+    delete process.env.WITHDRAWAL_PAYOUT_PROVIDER;
+    delete process.env.WITHDRAWAL_PAYOUT_WEBHOOK_URL;
+
+    m.store.driver_details.push({
+      user_id: 'driver-1',
+      wallet_confirmed: 10000,
+    });
+
+    const app = buildApp();
+
+    const res = await request(app)
+      .post('/api/drivers/wallet/withdraw')
+      .set(DRIVER_HEADERS)
+      .send({ amount: 1000 });
+
+    expect(res.status).toBe(503);
+    expect(res.body.error).toContain('no payout provider');
+
+    const rpcCall = m.calls.find(
+      c => c.rpc === 'withdraw_funds_tx'
+    );
+
+    expect(rpcCall).toBeFalsy();
   });
 
   it('PUT /online updates driver status successfully', async () => {

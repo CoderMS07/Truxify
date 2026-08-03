@@ -134,6 +134,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter, createStore } from '../middleware/rateLimiter.js';
 import { checkBypassEligibility } from '../services/weighStationService.js';
+import { isPayoutProviderConfigured } from '../services/wallet/payoutProvider.js';
 
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { driverOnlineSchema, withdrawSchema, uuidParamSchema, paramIdSchema, predictDriverProfitSchema, uuidSchema, driverIdParamSchema, driverStatementSchema } from '../validation/requestSchemas.js';
@@ -165,7 +166,7 @@ function parseIntegerQuery(value) {
 }
 
 function parseCoordinate(value) {
-  if (typeof value !== 'string' || value.trim() === '') {
+  if (typeof value !== 'string' || value.trim().length === 0) {
     return null;
   }
 
@@ -383,13 +384,13 @@ router.get('/wallet/history', authenticate, userLimiter, requirePolicy('driver:v
     const limit = parseIntegerQuery(req.query.limit) ?? 20;
 
     // Validation
-    if (isNaN(page) || page < 1) {
+    if (Number.isNaN(page) || page < 1) {
       return res.status(400).json({
         error: 'page must be greater than or equal to 1'
       });
     }
 
-    if (isNaN(limit) || limit < 1 || limit > 100) {
+    if (Number.isNaN(limit) || limit < 1 || limit > 100) {
       return res.status(400).json({
         error: 'limit must be between 1 and 100'
       });
@@ -941,6 +942,12 @@ router.post('/wallet/withdraw', authenticate, userLimiter, requirePolicy('driver
   const { amount } = req.body; // in paisa
 
   try {
+    if (!isPayoutProviderConfigured()) {
+      return res.status(503).json({
+        error: 'Withdrawal is temporarily unavailable: no payout provider is configured.',
+      });
+    }
+
     // 5.1 Fetch driver confirmed balance
     const { data: details, error: detailsErr } = await supabase
       .from('driver_details')
@@ -948,7 +955,10 @@ router.post('/wallet/withdraw', authenticate, userLimiter, requirePolicy('driver
       .eq('user_id', req.user.id)
       .maybeSingle();
 
-    if (detailsErr || !details) {
+    if (detailsErr) {
+      return res.status(500).json({ error: 'Failed to fetch driver details.', details: detailsErr.message });
+    }
+    if (!details) {
       return res.status(404).json({ error: 'Driver profile details not found.' });
     }
 
@@ -961,7 +971,7 @@ router.post('/wallet/withdraw', authenticate, userLimiter, requirePolicy('driver
     }
 
     // 5.2 Execute atomically via Supabase RPC
-    const userClient = req.token ? createUserClient(req.token) : supabase;
+    const userClient = createUserClient(req.token);
     const { error: rpcErr } = await userClient.rpc('withdraw_funds_tx', {
       p_driver_id: req.user.id,
       p_amount:    amount
@@ -1392,7 +1402,7 @@ router.get('/ltl/optimize-route', authenticate, userLimiter, requireDriverRole, 
     const lat = parseFloat(req.query.lat);
     const lng = parseFloat(req.query.lng);
 
-    if (isNaN(lat) || isNaN(lng)) {
+    if (Number.isNaN(lat) || Number.isNaN(lng)) {
       return res.status(400).json({ error: 'Valid lat and lng query parameters are required.' });
     }
 
@@ -1437,6 +1447,147 @@ router.get('/ltl/optimize-route', authenticate, userLimiter, requireDriverRole, 
     res.json({ optimized_route: optimizedTasks });
   } catch (err) {
     logger.error(`[LTL Route] Error optimizing route for driver ${req.user.id}: ${err.message}`);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
+// GET DRIVER ANALYTICS & EARNINGS
+// ============================================================================
+router.get('/:id/earnings', authenticate, userLimiter, requirePolicy('driver:view-earnings'), validateParams(paramIdSchema), async (req, res) => {
+  const { id } = req.params;
+  const period = req.query.period || 'week';
+
+  if (req.user.role !== 'admin' && req.user.id !== id) {
+    return res.status(403).json({ error: 'Access denied. You can only view your own earnings.' });
+  }
+
+  try {
+    let cutoff = new Date();
+    if (period === 'day') {
+      cutoff.setHours(0, 0, 0, 0);
+    } else if (period === 'week') {
+      cutoff.setDate(cutoff.getDate() - 7);
+    } else if (period === 'month') {
+      cutoff.setDate(cutoff.getDate() - 30);
+    } else {
+      return res.status(400).json({ error: 'Invalid period. Must be day, week, or month.' });
+    }
+
+    const { data: trips, error: tripsError } = await supabase
+      .from('trips')
+      .select('*')
+      .eq('driver_id', id)
+      .eq('status', 'completed')
+      .gte('trip_date', cutoff.toISOString().split('T')[0])
+      .order('trip_date', { ascending: false });
+
+    if (tripsError) {
+      return res.status(500).json({ error: 'Failed to fetch trips.', details: tripsError.message });
+    }
+
+    const { count: lifetimeTrips, error: countError } = await supabase
+      .from('trips')
+      .select('*', { count: 'exact', head: true })
+      .eq('driver_id', id)
+      .eq('status', 'completed');
+
+    if (countError) {
+      logger.warn('Failed to fetch lifetime trips count:', countError.message);
+    }
+
+    // Weekly Chart Aggregation (always shows past 7 days)
+    const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const weeklyChartMap = {};
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dayLabel = daysOfWeek[d.getDay()];
+      weeklyChartMap[dayLabel] = 0;
+    }
+
+    trips.forEach(trip => {
+      const tripDate = new Date(trip.trip_date);
+      const dayLabel = daysOfWeek[tripDate.getDay()];
+      if (weeklyChartMap[dayLabel] !== undefined) {
+        weeklyChartMap[dayLabel] += trip.total_earnings;
+      }
+    });
+
+    const weeklyChart = Object.entries(weeklyChartMap).map(([day, earnings]) => ({
+      day,
+      earnings
+    }));
+
+    let totalKm = 0;
+    trips.forEach(trip => {
+      if (trip.distance) {
+        const distanceNum = parseInt(String(trip.distance).replace(/[^0-9]/g, '')) || 0;
+        totalKm += distanceNum;
+      }
+    });
+
+    // Deadhead Trips Saved logic
+    const { data: allCompletedTrips, error: allTripsError } = await supabase
+      .from('trips')
+      .select('route_label, trip_date')
+      .eq('driver_id', id)
+      .eq('status', 'completed')
+      .order('trip_date', { ascending: true });
+
+    let deadheadTripsSaved = 0;
+    if (allCompletedTrips && allCompletedTrips.length > 1) {
+      for (let i = 1; i < allCompletedTrips.length; i++) {
+        const prevTrip = allCompletedTrips[i - 1];
+        const currTrip = allCompletedTrips[i];
+        
+        const prevRoute = (prevTrip.route_label || '').split(' → ');
+        const currRoute = (currTrip.route_label || '').split(' → ');
+        
+        if (prevRoute.length === 2 && currRoute.length === 2) {
+          const prevDrop = prevRoute[1].trim().toLowerCase();
+          const currPickup = currRoute[0].trim().toLowerCase();
+          
+          if (prevDrop === currPickup) {
+            const prevDate = new Date(prevTrip.trip_date);
+            const currDate = new Date(currTrip.trip_date);
+            const diffDays = Math.abs(currDate - prevDate) / (1000 * 60 * 60 * 24);
+            if (diffDays <= 3) {
+              deadheadTripsSaved++;
+            }
+          }
+        }
+      }
+    }
+
+    const totalNetEarnings = trips.reduce((sum, t) => sum + t.net_earnings, 0);
+
+    res.json({
+      period,
+      gross_earnings: trips.reduce((sum, t) => sum + t.total_earnings, 0),
+      net_earnings: totalNetEarnings,
+      trips_completed: trips.length,
+      weekly_chart: weeklyChart,
+      trips: trips.map(t => ({
+        trip_display_id: t.trip_display_id,
+        route_label: t.route_label,
+        gross_earnings: t.total_earnings,
+        estimated_fuel_cost: t.fuel_deducted,
+        net_earnings: t.net_earnings,
+        blockchain_hash: t.blockchain_hash,
+        receipt_link: t.blockchain_hash ? `https://polygonscan.com/tx/${t.blockchain_hash}` : null,
+        trip_date: t.trip_date
+      })),
+      cumulative_stats: {
+        total_km: totalKm,
+        avg_earning_per_km: totalKm > 0 ? (totalNetEarnings / 100.0) / totalKm : 0,
+        lifetime_trips: lifetimeTrips || 0
+      },
+      deadhead_trips_saved: deadheadTripsSaved
+    });
+
+  } catch (err) {
+    logger.error('Driver analytics fetch error:', err);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });

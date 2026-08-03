@@ -514,5 +514,22 @@ describe('profileCache utility', () => {
       expect(isValidCachedProfile('uid123', badFullName)).toBe(false);
       expect(isValidCachedProfile('uid123', badPhone)).toBe(false);
     });
+
+    it('handles simulated redis timeout errors gracefully', async () => {
+      const redisClientMock = {
+        get: vi.fn().mockImplementationOnce(() =>
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Redis timeout')), 100))
+        ),
+      };
+      vi.doMock('../../src/config/db.js', () => ({
+        redisClient: redisClientMock,
+      }));
+
+      const { getCachedProfile } = await import('../../src/lib/profileCache.js');
+      const profile = await getCachedProfile('timeout-uid');
+      expect(profile).toBeNull();
+      const logger = (await import('../../src/middleware/logger.js')).default;
+      expect(logger.error).toHaveBeenCalled();
+    });
   });
 });

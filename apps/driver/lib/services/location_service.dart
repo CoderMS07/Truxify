@@ -4,10 +4,12 @@ import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:http/http.dart' as http;
 
+import 'package:truxify_shared/truxify_shared.dart';
+
 import 'battery_service.dart';
+import 'secure_storage.dart';
 
 class LocationService {
   LocationService._privateConstructor();
@@ -26,17 +28,17 @@ class LocationService {
     }
   }
 
-  WebSocketChannel? _channel;
+  // Use ResilientWebSocket which handles reconnection, heartbeat, and
+  // exponential backoff automatically.
+  ResilientWebSocket? _resilientWs;
   StreamSubscription<Position>? _positionSubscription;
   StreamSubscription? _socketSubscription;
-  Timer? _reconnectTimer;
-  Timer? _heartbeatTimer;
   Timer? _maxIntervalTimer; // Fallback for max 30 seconds without ping
   bool _isTracking = false;
   String? _activeOrderId;
   String? _activeOrderDisplayId;
-  int _reconnectAttempts = 0;
   int? _lastCloseCode;
+  String? _authToken;
   Position? _lastSentPosition;
   DateTime? _lastSentTime;
   String? _lastTriggeredMilestone;
@@ -228,12 +230,13 @@ class LocationService {
         return false;
       }
 
-      // 2. Ensure WebSocket is connected
-      if (_channel == null) {
+      // 2. Ensure WebSocket is connected (ResilientWebSocket handles
+      //    reconnection and heartbeat automatically).
+      if (_resilientWs == null) {
         await _connectWebSocket();
       }
 
-      if (_channel != null) {
+      if (_resilientWs != null) {
         final batteryInfo = BatteryService.instance.currentInfo;
         final payload = {
           'event': 'location_ping',
@@ -254,7 +257,7 @@ class LocationService {
             'charging_status': batteryInfo.isCharging ? 'charging' : 'discharging',
           }
         };
-        _channel!.sink.add(jsonEncode(payload));
+        _resilientWs!.send(payload);
         debugPrint('[LocationService] Location ping sent: lat=${position.latitude}, lng=${position.longitude}');
         return true;
       }
@@ -322,11 +325,18 @@ class LocationService {
     }
   }
 
-  Future<void> _connectWebSocket() async {
-    if (_channel != null) return;
-
+  /// Builds the WebSocket URI for the tracking endpoint.
+  ///
+  /// Auth tokens are deliberately NOT included in the URL — they are sent via
+  /// a first-frame `auth` handshake after the socket connects (issue #5739) —
+  /// so they never leak into proxies, logs or web analytics.
+  Uri _buildWsUri() {
     final session = Supabase.instance.client.auth.currentSession;
-    final token = session?.accessToken ?? '';
+    final token = session?.accessToken;
+    if (token != null && token.isNotEmpty) {
+      _authToken = token;
+      unawaited(AuthTokenStore.persist(token));
+    }
     final driverId = Supabase.instance.client.auth.currentUser?.id ?? '';
 
     final baseUri = Uri.parse(defaultApiBaseUrl);
@@ -337,13 +347,12 @@ class LocationService {
     }
     wsPath = '$wsPath/ws/tracking';
 
-    final wsUri = Uri(
+    return Uri(
       scheme: wsScheme,
       host: baseUri.host,
       port: baseUri.hasPort ? baseUri.port : null,
       path: wsPath,
       queryParameters: {
-        if (token.isNotEmpty) 'token': token,
         'driver_id': driverId,
       },
     );
@@ -390,49 +399,65 @@ class LocationService {
     }
   }
 
-  void _scheduleReconnect() {
-    _closeWebSocket();
-    _channel = null;
-    final socketSubscription = _socketSubscription;
-    _socketSubscription = null;
-    if (socketSubscription != null) {
-      unawaited(socketSubscription.cancel());
+  /// Resolves the auth token used for the WS handshake, preferring the live
+  /// Supabase session and falling back to the token persisted in OS-backed
+  /// secure storage (issue #5739).
+  Future<String?> _resolveAuthToken() async {
+    final session = Supabase.instance.client.auth.currentSession;
+    final token = session?.accessToken;
+    if (token != null && token.isNotEmpty) {
+      await AuthTokenStore.persist(token);
+      return token;
     }
-    _heartbeatTimer?.cancel();
-    _reconnectTimer?.cancel();
-
-    if (!_isTracking) return;
+    return AuthTokenStore.read();
+  }
 
     _emitStatus(WsConnectionStatus.reconnecting);
     final delay = Duration(seconds: _reconnectAttempts == 0 ? 2 : 2 * _reconnectAttempts);
     final capped = delay > const Duration(seconds: 30) ? const Duration(seconds: 30) : delay;
     _reconnectAttempts++;
 
-    _reconnectTimer = Timer(capped, () async {
-      debugPrint('[LocationService] Attempting to reconnect WebSocket (attempt $_reconnectAttempts)...');
-      await _connectWebSocket();
-    });
-  }
+    _socketSubscription = _resilientWs!.stream.listen(
+      (message) {
+        if (message == 'pong') return;
+        debugPrint('[LocationService] Received WebSocket message: $message');
+        try {
+          final parsed = jsonDecode(message.toString());
+          if (parsed is Map && parsed['code'] != null) {
+            _lastCloseCode = parsed['code'] as int;
+            if (_lastCloseCode == 4001 || _lastCloseCode == 4003) {
+              debugPrint(
+                '[LocationService] Auth rejected (code $_lastCloseCode) — stopping tracking',
+              );
+              _resilientWs?.close();
+              _resilientWs = null;
+              stopTracking();
+              return;
+            }
+          }
+        } catch (_) {}
+      },
+      onDone: () {
+        // Reconnection is handled automatically by ResilientWebSocket.
+        debugPrint('[LocationService] WebSocket stream ended');
+      },
+      onError: (error) {
+        debugPrint('[LocationService] WebSocket error: $error');
+        // If the error is terminal (e.g. max reconnect attempts reached),
+        // clear the instance so the next _sendLocationPing will create
+        // a fresh ResilientWebSocket.
+        _resilientWs = null;
+      },
+    );
 
-  void _startHeartbeat() {
-    _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
-      if (_channel != null) {
-        _channel!.sink.add('ping');
-      }
-    });
+    await _resilientWs!.connect();
   }
 
   void _closeWebSocket() {
-    _heartbeatTimer?.cancel();
-    _reconnectTimer?.cancel();
-    final socketSubscription = _socketSubscription;
+    _socketSubscription?.cancel();
     _socketSubscription = null;
-    if (socketSubscription != null) {
-      unawaited(socketSubscription.cancel());
-    }
-    _channel?.sink.close();
-    _channel = null;
+    _resilientWs?.close();
+    _resilientWs = null;
   }
 
   /// Call once when the app is permanently shutting down to close the status

@@ -109,6 +109,7 @@ class SupabaseQueryBuilder {
       op = op.substring(4);
     }
     let isMatched;
+    let res;
     switch (op) {
       case 'eq':
       case 'is':
