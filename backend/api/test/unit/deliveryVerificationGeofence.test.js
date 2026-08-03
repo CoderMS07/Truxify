@@ -14,7 +14,7 @@ import { DomainError } from '../../src/services/order/domainError.js';
 import crypto from 'crypto';
 
 const h = vi.hoisted(() => ({
-  mockMongoDb: null,
+  mockMongoDb: null
 }));
 
 let mockTelemetryRecords = [];
@@ -25,11 +25,11 @@ vi.mock('../../src/config/db.js', () => ({
   redisClient: null,
   get mongoDb() {
     return h.mockMongoDb;
-  },
+  }
 }));
 
 vi.mock('../../src/middleware/logger.js', () => ({
-  default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 }));
 
 vi.mock('../../src/services/notificationService.js', () => ({
@@ -37,6 +37,7 @@ vi.mock('../../src/services/notificationService.js', () => ({
   storeDeliveryOtp: vi.fn(),
   getActiveDeliveryOtp: vi.fn(),
   verifyDeliveryOtp: vi.fn(),
+  verifyDeliveryOtpHash: vi.fn()
 }));
 
 const DROP_LAT = 28.6139;
@@ -49,11 +50,11 @@ function makeMongoMock() {
       find: () => ({
         sort: () => ({
           limit: () => ({
-            toArray: async () => mockTelemetryRecords,
-          }),
-        }),
-      }),
-    }),
+            toArray: async () => mockTelemetryRecords
+          })
+        })
+      })
+    })
   };
 }
 
@@ -68,7 +69,7 @@ function makeOrder(overrides = {}) {
     escrow_release_attempts: 0,
     drop_lat: DROP_LAT,
     drop_lng: DROP_LNG,
-    ...overrides,
+    ...overrides
   };
 }
 
@@ -79,7 +80,7 @@ function makeTelemetry(lat, lng, ageMs = 1000, overrides = {}) {
     lat,
     lng,
     server_received_at: new Date(Date.now() - ageMs),
-    ...overrides,
+    ...overrides
   };
 }
 
@@ -89,29 +90,41 @@ function makeOtpRecord() {
     order_id: 'order-geo-1',
     otp_hash: OTP_HASH,
     verified: false,
-    expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString()
   };
 }
 
 function makeService({ repoOverrides = {}, escrowReleaseFn } = {}) {
   const repo = {
-    findOrderById: vi.fn()
+    findOrderById: vi
+      .fn()
       .mockResolvedValueOnce({ data: makeOrder(), error: null })
-      .mockResolvedValueOnce({ data: { status: 'payment_released', escrow_status: 'released', escrow_release_attempts: 0 }, error: null }),
+      .mockResolvedValueOnce({
+        data: {
+          status: 'payment_released',
+          escrow_status: 'released',
+          escrow_release_attempts: 0
+        },
+        error: null
+      }),
     updateOrderGuardStatus: vi.fn().mockResolvedValue({ data: null, error: null }),
-    executeRpc: vi.fn().mockResolvedValue({ data: { driver_id: 'driver-1', order_display_id: 'ORD-GEO' }, error: null }),
+    executeRpc: vi.fn().mockResolvedValue({
+      data: { driver_id: 'driver-1', order_display_id: 'ORD-GEO' },
+      error: null
+    }),
     updateOrder: vi.fn().mockResolvedValue({ data: null, error: null }),
     updateWalletTransaction: vi.fn().mockResolvedValue({ data: null, error: null }),
-    ...repoOverrides,
+    ...repoOverrides
   };
   const notificationService = {
     getActiveDeliveryOtp: vi.fn().mockResolvedValue(makeOtpRecord()),
     verifyDeliveryOtp: vi.fn().mockResolvedValue(true),
+    verifyDeliveryOtpHash: vi.fn().mockReturnValue(true)
   };
   const service = new DeliveryVerificationService(repo, {
     notificationService,
     orderTimelineService: {},
-    escrowReleaseFn: escrowReleaseFn || vi.fn().mockResolvedValue({ txHash: '0xrelease' }),
+    escrowReleaseFn: escrowReleaseFn || vi.fn().mockResolvedValue({ txHash: '0xrelease' })
   });
   return { service, repo, notificationService };
 }
@@ -119,7 +132,7 @@ function makeService({ repoOverrides = {}, escrowReleaseFn } = {}) {
 function captureDomainError(promise) {
   return promise.then(
     () => null,
-    (err) => err
+    err => err
   );
 }
 
@@ -137,9 +150,7 @@ afterEach(() => {
 describe('DeliveryVerificationService.assertDriverAtDropoff', () => {
   it('rejects when the order is missing drop-off coordinates', async () => {
     const { service } = makeService();
-    const err = await captureDomainError(
-      service.assertDriverAtDropoff(makeOrder({ drop_lat: null, drop_lng: null }))
-    );
+    const err = await captureDomainError(service.assertDriverAtDropoff(makeOrder({ drop_lat: null, drop_lng: null })));
     expect(err).toBeInstanceOf(DomainError);
     expect(err.status).toBe(400);
     expect(err.payload.error).toMatch(/missing drop-off coordinates/i);
@@ -207,7 +218,11 @@ describe('DeliveryVerificationService.verifyDelivery geofence gating', () => {
     mockTelemetryRecords = [makeTelemetry(DROP_LAT, DROP_LNG)];
     const escrowReleaseFn = vi.fn().mockResolvedValue({ txHash: '0xrelease' });
     const { service, repo } = makeService({ escrowReleaseFn });
-    const result = await service.verifyDelivery({ orderId: 'order-geo-1', driverId: 'driver-1', otp: '123456' });
+    const result = await service.verifyDelivery({
+      orderId: 'order-geo-1',
+      driverId: 'driver-1',
+      otp: '123456'
+    });
     expect(escrowReleaseFn).toHaveBeenCalledWith('ORD-GEO');
     expect(repo.executeRpc).toHaveBeenCalled();
     expect(result.escrowUpdateFailed).toBe(false);
@@ -218,7 +233,11 @@ describe('DeliveryVerificationService.verifyDelivery geofence gating', () => {
     const escrowReleaseFn = vi.fn().mockResolvedValue({ txHash: '0xrelease' });
     const { service, repo } = makeService({ escrowReleaseFn });
     const err = await captureDomainError(
-      service.verifyDelivery({ orderId: 'order-geo-1', driverId: 'driver-1', otp: '123456' })
+      service.verifyDelivery({
+        orderId: 'order-geo-1',
+        driverId: 'driver-1',
+        otp: '123456'
+      })
     );
     expect(err).toBeInstanceOf(DomainError);
     expect(err.status).toBe(409);
@@ -233,12 +252,19 @@ describe('DeliveryVerificationService.verifyDelivery geofence gating', () => {
       escrowReleaseFn,
       repoOverrides: {
         findOrderById: vi.fn().mockResolvedValueOnce({
-          data: makeOrder({ status: 'payment_released', escrow_status: 'funded' }),
-          error: null,
-        }),
-      },
+          data: makeOrder({
+            status: 'payment_released',
+            escrow_status: 'funded'
+          }),
+          error: null
+        })
+      }
     });
-    const result = await service.verifyDelivery({ orderId: 'order-geo-1', driverId: 'driver-1', otp: '123456' });
+    const result = await service.verifyDelivery({
+      orderId: 'order-geo-1',
+      driverId: 'driver-1',
+      otp: '123456'
+    });
     expect(escrowReleaseFn).toHaveBeenCalledWith('ORD-GEO');
     expect(repo.executeRpc).not.toHaveBeenCalled();
     expect(repo.updateOrder).toHaveBeenCalled();
