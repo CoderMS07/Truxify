@@ -277,6 +277,39 @@ export const deviceLimiter = rateLimit({
   message: { error: 'Rate limit exceeded', retryAfter: 600 },
 });
 
+const POD_WINDOW_MS = Number(process.env.POD_RATE_LIMIT_WINDOW_MS) || 60 * 60 * 1000;
+const POD_MAX_REQUESTS = Number(process.env.POD_RATE_LIMIT_MAX_REQUESTS) || 10;
+
+// PoD uploads carry up to 20MB each (signature + photo) and run a malware scan
+// per file, so they are throttled per driver *and* per order: a single assigned
+// driver can no longer fire an unbounded stream of uploads for one order.
+export const podUploadLimiter = rateLimit({
+  windowMs: POD_WINDOW_MS,
+  max: POD_MAX_REQUESTS,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const userKey = userKeyGenerator(req);
+    const orderId = req.params?.id || 'unknown';
+    return `${userKey}:order:${orderId}`;
+  },
+  validate: { keyGeneratorIpFallback: false },
+  store: createStore('rl:pod:'),
+  handler: (req, res) => {
+    logger.warn(
+      {
+        requestId: req.requestId,
+        path: req.originalUrl,
+        method: req.method,
+        userAgent: req.get('user-agent'),
+      },
+      'PoD upload rate limit exceeded'
+    );
+    Sentry.captureMessage('Rate limit exceeded: podUploadLimiter', 'warning');
+    res.status(429).json({ error: 'Rate limit exceeded', retryAfter: Math.ceil(POD_WINDOW_MS / 1000) });
+  },
+});
+
 const adminWindowMs = Number(process.env.ADMIN_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000;
 const adminMaxRequests = Number(process.env.ADMIN_RATE_LIMIT_MAX_REQUESTS) || 50;
 
