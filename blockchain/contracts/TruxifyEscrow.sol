@@ -190,7 +190,9 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
             amount:    msg.value,
             status:    BookingStatus.Active,
             paid:      false,
-            createdAt: block.timestamp
+            started:   false,
+            createdAt: block.timestamp,
+            disputedAt: 0
         });
 
         bookingCount++;
