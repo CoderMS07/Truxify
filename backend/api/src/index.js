@@ -41,6 +41,7 @@ import orderRoutes from './routes/orderRoutes.js'
 import driverRoutes from './routes/driverRoutes.js'
 import supportRoutes from './routes/supportRoutes.js'
 import profileRoutes from './routes/profileRoutes.js'
+import shipmentRoutes from './routes/shipmentRoutes.js'
 import loadRoutes from './routes/loadRoutes.js'
 import deadheadRoutes from './routes/deadheadRoutes.js'
 import truckRoutes from './routes/truckRoutes.js'
@@ -446,6 +447,7 @@ app.use('/api/payments', paymentRoutes)
 app.use('/api/driver', deadheadRoutes)
 app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
+app.use('/api/v1/shipment', shipmentRoutes)
 app.use('/api/loads', loadRoutes)
 app.use('/api/support', supportRoutes)
 app.use('/api/profile', profileRoutes)
