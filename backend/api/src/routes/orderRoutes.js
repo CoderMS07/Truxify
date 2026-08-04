@@ -940,9 +940,15 @@ router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requirePolicy(
  *       429:
  *         description: Rate limited
  */
-router.put('/:id/milestones', authenticate, userLimiter, requirePolicy('milestone:update'), milestoneLimiter, validateParams(paramIdSchema), validateBody(updateMilestoneSchema), async (req, res) => {
+router.put('/:id/milestones', authenticate, userLimiter, requirePolicy('milestone:update'), milestoneLimiter, requireIdempotency(3600), validateParams(paramIdSchema), validateBody(updateMilestoneSchema), async (req, res) => {
   const orderId = req.params.id;
   const { milestone } = req.body;
+
+  const lockKey = `milestone_lock:${orderId}`;
+  const lockValue = await acquireLock(lockKey, 10000);
+  if (!lockValue) {
+    return res.status(409).json({ error: 'Another milestone update is in progress for this order. Please try again.' });
+  }
 
   try {
     if (milestone === 'Delivered') {
@@ -957,6 +963,8 @@ router.put('/:id/milestones', authenticate, userLimiter, requirePolicy('mileston
     }
     logger.error(err, "[orderRoutes] Milestone update error:");
     res.status(500).json({ error: 'Internal Server Error' });
+  } finally {
+    await releaseLock(lockKey, lockValue);
   }
 });
 
