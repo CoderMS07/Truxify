@@ -130,7 +130,7 @@ class AnomalyDetectionService {
 
   detectUnusualTime(transaction) {
     const txTime = new Date(transaction.timestamp);
-    const hour = txTime.getHours();
+    const hour = txTime.getUTCHours();
 
     if (hour >= ANOMALY_THRESHOLDS.UNUSUAL_TIME.startHour &&
         hour < ANOMALY_THRESHOLDS.UNUSUAL_TIME.endHour) {
