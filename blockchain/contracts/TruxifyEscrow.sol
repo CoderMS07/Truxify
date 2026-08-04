@@ -226,22 +226,21 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
     {
         Booking storage booking = bookings[bookingId];
 
-        require(
-            booking.status == BookingStatus.Active,
-            "TruxifyEscrow: Booking not active"
-        );
-        require(!booking.paid, "TruxifyEscrow: Already paid");
-        require(booking.amount > 0, "TruxifyEscrow: Nothing to release");
+        // CHECKS
+        require(booking.delivered, "Delivery not confirmed");
+        require(!booking.paid, "Already paid");
+        require(!booking.cancelled, "Booking cancelled");
+        require(booking.amount > 0, "No funds in escrow");
 
-        // ── CHECKS done above ─────────────────────────────────────────────
-
-        // ── EFFECTS: Update state BEFORE external call (CEI pattern) ──────
-        uint256 paymentAmount   = booking.amount;
-        address payable driver  = booking.driver;
+        uint256 amount = booking.amount;
+        address payable driver = booking.driver;
 
         booking.paid    = true;                      // ← committed first
         booking.amount  = 0;                         // ← zero out
         booking.status  = BookingStatus.Delivered;   // ← status updated
+
+        (bool success, ) = driver.call{value: amount}("");
+        require(success, "Transfer failed");
 
         // ── INTERACTIONS: Add to pending withdrawal instead of direct transfer ──
         pendingWithdrawals[driver] += paymentAmount;
@@ -299,13 +298,10 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
     {
         Booking storage booking = bookings[bookingId];
 
-        require(
-            booking.customer != address(0) && booking.status == BookingStatus.Active,
-            "TruxifyEscrow: Cannot cancel - booking not active"
-        );
-        require(!booking.paid, "TruxifyEscrow: Already paid");
-        require(!booking.started, "TruxifyEscrow: Trip already started");
-        require(booking.amount > 0, "TruxifyEscrow: Nothing to refund");
+        require(!booking.delivered, "Already delivered");
+        require(!booking.paid, "Already paid");
+        require(!booking.cancelled, "Already cancelled");
+        require(booking.amount > 0, "No funds to refund");
 
         // ── EFFECTS ───────────────────────────────────────────────────────
         uint256 refundAmount    = booking.amount;
@@ -314,6 +310,10 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
         booking.amount  = 0;
         booking.paid    = true;
         booking.status  = BookingStatus.Cancelled;
+
+        // INTERACTIONS
+        (bool success, ) = customer.call{value: amount}("");
+        require(success, "Refund failed");
 
         // ── INTERACTIONS: Add to pending withdrawal instead of direct transfer ──
         pendingWithdrawals[customer] += refundAmount;
