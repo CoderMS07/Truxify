@@ -23,11 +23,14 @@ export const dlqService = {
 
       if (insertErr) {
         logger.error(`[DLQ] Failed to enqueue webhook failure: ${insertErr.message}`);
-      } else {
-        logger.info(`[DLQ] Webhook failure enqueued successfully for ${provider} - ${eventType}`);
+        return false;
       }
+
+      logger.info(`[DLQ] Webhook failure enqueued successfully for ${provider} - ${eventType}`);
+      return true;
     } catch (err) {
       logger.error(`[DLQ] Critical error enqueueing webhook failure: ${err.message}`);
+      return false;
     }
   },
 
