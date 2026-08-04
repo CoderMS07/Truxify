@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from app.models.eta_prediction import eta_predictor
+from fastapi import HTTPException
 
 from app.models.demand_forecast import (
     predict_demand,
@@ -700,20 +701,50 @@ async def predict_maintenance_endpoint(input: PredictiveMaintenanceInput, _auth=
 # ---------------------------------------------------------------------------
 # KYC Document OCR Verification
 # ---------------------------------------------------------------------------
-
-class KYCVerificationOutput(BaseModel):
-    verified: bool
-    document_type: str
-    extracted_number: Optional[str] = None
-    raw_text: str
-
 @app.post("/verify/kyc", response_model=KYCVerificationOutput)
-async def verify_kyc_endpoint(file: UploadFile = File(...), _auth=Depends(verify_api_key)):
+async def verify_kyc_endpoint(
+    file: UploadFile = File(...),
+    _auth=Depends(verify_api_key)
+):
     try:
+        allowed_types = {
+            "image/jpeg",
+            "image/png",
+            "image/jpg",
+            "image/webp",
+            "application/pdf",
+        }
+
+        if file.content_type not in allowed_types:
+            raise HTTPException(
+                status_code=400,
+                detail="Only image and PDF files are allowed."
+            )
+
         image_bytes = await file.read()
+
+        MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
+
+        if len(image_bytes) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail="File size exceeds the 5 MB limit."
+            )
+
         text = ocr_verifier.extract_text(image_bytes)
         result = ocr_verifier.verify_license(text)
+
         return KYCVerificationOutput(**result)
+
+    except HTTPException:
+        raise
+
     except Exception as e:
         logger.error("KYC OCR verification failed: %s", e)
-        raise HTTPException(status_code=500, detail="KYC OCR verification failed")
+
+        return KYCVerificationOutput(
+            verified=False,
+            document_type="Unknown",
+            extracted_number=None,
+            raw_text=""
+        )
