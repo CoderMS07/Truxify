@@ -1081,6 +1081,22 @@ router.post(
         return res.status(400).json({ error: 'driver_lat and driver_lng must be valid numbers.' });
       }
 
+      // Verify the order exists and the requesting driver is assigned to it
+      const order = await orderValidationService.findOrderByIdOrDisplayId(
+        req.params.id,
+        'id, driver_id, customer_id'
+      );
+      orderValidationService.assertOrderFound(order);
+      orderValidationService.assertDriverAssignment(order, req.user.id);
+
+      logger.info({
+        event: 'GEOFENCE_CONFIRM_ATTEMPT',
+        orderId: req.params.id,
+        driverId: req.user.id,
+        lat,
+        lng,
+      }, 'Driver geofence confirm attempt');
+
       const result = await orderLifecycleService.deliveryVerification.geofenceAutoConfirm({
         orderId: req.params.id,
         driverId: req.user.id,
@@ -1123,6 +1139,19 @@ router.post(
   validateBody(verifyDeliverySchema),
   async (req, res) => {
     try {
+      const order = await orderValidationService.findOrderByIdOrDisplayId(
+        req.params.id,
+        'id, driver_id, customer_id'
+      );
+      orderValidationService.assertOrderFound(order);
+      orderValidationService.assertDriverAssignment(order, req.user.id);
+
+      logger.info({
+        event: 'CONFIRM_OTP_ATTEMPT',
+        orderId: req.params.id,
+        driverId: req.user.id,
+      }, 'Driver OTP confirm attempt');
+
       const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(
         req.params.id,
         req.user.id,
