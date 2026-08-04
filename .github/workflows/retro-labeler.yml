@@ -7,7 +7,7 @@ on:
         description: 'Dry Run (only log modifications, do not apply changes)'
         type: boolean
         required: false
-        default: true
+        default: false
       pr_state:
         description: 'PR state to process (open, closed, or all)'
         type: choice
@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run retrospective PR labeler
         uses: actions/github-script@v7
