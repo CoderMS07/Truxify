@@ -136,6 +136,10 @@ import {
   stopDlqWorker,
 } from './workers/dlqWorker.js'
 import { startStaleOrderWorker } from './workers/staleOrderWorker.js'
+import {
+  startWithdrawalSettlementWorker,
+  stopWithdrawalSettlementWorker
+} from './workers/withdrawalSettlementWorker.js'
 import './subscribers/reputationSubscriber.js'
 
 // Configuration load from root folder is handled in db.js
@@ -648,6 +652,7 @@ server.listen(PORT, () => {
   startDlqWorker()
   startStaleOrderWorker()
   startDocumentExpiryWorker()
+  startWithdrawalSettlementWorker()
 
   // Register worker states for health aggregation
   globalThis.__truxify_workers = {
@@ -658,6 +663,7 @@ server.listen(PORT, () => {
     dlqWorker: true,
     staleOrderWorker: true,
     documentExpiryWorker: true,
+    withdrawalSettlementWorker: true,
   }
 })
 
@@ -687,6 +693,7 @@ async function shutdown (signal) {
   stopReputationReconciliation()
   stopDlqWorker()
   stopDocumentExpiryWorker()
+  stopWithdrawalSettlementWorker()
   fraudDetection.destroy()
   CacheManager.shutdown()
 
