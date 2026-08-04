@@ -647,6 +647,14 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
 
     const responseResults = filteredResults.map(({ capacityTons, truckType, ...rest }) => rest);
 
+    if (redisClient) {
+      try {
+        await redisClient.set(cacheKey, JSON.stringify(responseResults), 'EX', 300);
+      } catch (cacheErr) {
+        logger.warn({ err: cacheErr.message }, 'Redis cache write error during search');
+      }
+    }
+
     res.json(responseResults);
   } catch (err) {
     logger.error('Truck search error:', err.message);
