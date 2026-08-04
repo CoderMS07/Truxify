@@ -129,7 +129,12 @@ export function requireIdempotency(ttlSeconds = 3600) {
         const releaseLock = () => {
           if (lockReleased) return;
           lockReleased = true;
-          redisClient.del(lockKey).catch(() => { });
+          redisClient.del(lockKey).catch((err) => {
+            logger.error(
+              { err, lockKey },
+              '[Idempotency] Failed to release Redis lock.'
+            );
+          });
         };
 
         // Ensure lock is reliably released when response terminates
