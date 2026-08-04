@@ -312,13 +312,15 @@ router.post(
       return res.status(500).json({ error: 'Internal Server Error' });
 
     } finally {
-      try {
-        await releaseLock(lockKey, lockValue);
-      } catch (releaseErr) {
-        logger.error(
-          { err: releaseErr, lockKey },
-          'Failed to release payment lock'
-        );
+      if (lockValue) {
+        try {
+          await releaseLock(lockKey, lockValue);
+        } catch (releaseErr) {
+          logger.error(
+            { err: releaseErr, lockKey },
+            'Failed to release payment lock'
+          );
+        }
       }
     }
   }
