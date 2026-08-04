@@ -47,6 +47,7 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
   String? _createdOrderDisplayId;
   String? _upiDeepLink;
   String? _amountInr;
+  String? _upiIntentError;
 
   late final AnimationController _controller;
   late final OrderService _orderService;
@@ -192,8 +193,25 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
       }
     } catch (e) {
       debugPrint('UPI intent failed: $e');
-      // Fallback: show success even without escrow
-      _showSuccessPanel();
+      if (!mounted) return;
+      setState(() {
+        _upiIntentError = e.toString().replaceAll('Exception: ', '');
+        _isAwaitingUpi = false;
+      });
+    }
+  }
+
+  // ── Step 2 retry: Re-invoke the UPI intent flow after a failure ───────────
+  Future<void> _retryUpiIntent() async {
+    final orderId = _createdOrderId;
+    if (orderId == null || _isSubmitting) return;
+    setState(() {
+      _upiIntentError = null;
+      _isSubmitting = true;
+    });
+    await _fetchUpiIntent(orderId);
+    if (mounted) {
+      setState(() => _isSubmitting = false);
     }
   }
 
@@ -219,34 +237,25 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
   }
 
   // ── Step 4: Lock payment after UPI success ────────────────────────────────
+  // POST /api/payments/lock requires the real on-chain tx_hash that the wallet
+  // SDK returns once `createBooking` is mined; recordDepositTx() verifies it
+  // against Polygon. No wallet SDK is integrated in this app, so there is no
+  // real hash to submit. Fabricating one would post a hash the backend can
+  // never verify — the escrow would never lock and the booking would stay
+  // stuck in `funding`. Fail closed instead: never send a fake hash and never
+  // report the payment as locked.
   Future<void> _confirmPaymentLocked() async {
     if (_createdOrderId == null) return;
-    setState(() => _isSubmitting = true);
 
-    try {
-      // In mock UPI mode, generate a placeholder tx_hash
-      // In production, the wallet SDK would provide the real on-chain hash
-      final mockTxHash =
-          '0x${_createdOrderId!.replaceAll('-', '').padRight(64, '0').substring(0, 64)}';
-
-      await _apiClient.post(
-        '/api/payments/lock',
-        body: {
-          'order_id': _createdOrderId,
-          'tx_hash': mockTxHash,
-        },
-      );
-
-      _showSuccessPanel();
-    } catch (e) {
-      debugPrint('Payment lock failed: $e');
-      // Even if lock fails, show booking success — reconciliation will handle it
-      _showSuccessPanel();
-    } finally {
-      if (mounted) {
-        setState(() => _isSubmitting = false);
-      }
-    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+            'On-chain escrow confirmation is unavailable on this device. '
+            'Your booking is created, but the escrow could not be locked. '
+            'Please contact support to complete the payment.'),
+      ),
+    );
   }
 
   void _showSuccessPanel() {
@@ -486,21 +495,29 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
                           orderId: _createdOrderDisplayId ?? _createdOrderId ?? '',
                           amountInr: _amountInr,
                         )
-                      : _isAwaitingUpi
-                          ? _UpiPaymentSheet(
-                              amountInr: _amountInr ?? widget.truck.price,
-                              isSubmitting: _isSubmitting,
-                              onLaunchUpi: _launchUpi,
-                              onConfirmPaid: _confirmPaymentLocked,
+                      : _upiIntentError != null
+                          ? _UpiIntentErrorSheet(
+                              message: _upiIntentError!,
+                              isRetrying: _isSubmitting,
+                              onRetry: _retryUpiIntent,
                             )
-                          : PrimaryButton(
-                              label: _isSubmitting
-                                  ? 'Creating booking...'
-                                  : (_isLoading ? 'Loading...' : 'Pay & Confirm'),
-                              onPressed: _isLoading || _isSubmitting
-                                  ? null
-                                  : _createOrderAndInitiatePayment,
-                            ),
+                          : _isAwaitingUpi
+                              ? _UpiPaymentSheet(
+                                  amountInr: _amountInr ?? widget.truck.price,
+                                  isSubmitting: _isSubmitting,
+                                  onLaunchUpi: _launchUpi,
+                                  onConfirmPaid: _confirmPaymentLocked,
+                                )
+                              : PrimaryButton(
+                                  label: _isSubmitting
+                                      ? 'Creating booking...'
+                                      : (_isLoading
+                                          ? 'Loading...'
+                                          : 'Pay & Confirm'),
+                                  onPressed: _isLoading || _isSubmitting
+                                      ? null
+                                      : _createOrderAndInitiatePayment,
+                                ),
                 ),
               ],
             ),
@@ -809,6 +826,98 @@ class _SuccessPanel extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+// ── UPI Intent Error Sheet ────────────────────────────────────────────────────
+
+class _UpiIntentErrorSheet extends StatelessWidget {
+  const _UpiIntentErrorSheet({
+    required this.message,
+    required this.isRetrying,
+    required this.onRetry,
+  });
+
+  final String message;
+  final bool isRetrying;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: TruxifyColors.errorRed.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+            color: TruxifyColors.errorRed.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: TruxifyColors.errorRed.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.error_outline_rounded,
+                    color: TruxifyColors.errorRed, size: 22),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Payment setup failed',
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleSmall
+                            ?.copyWith(fontWeight: FontWeight.w800)),
+                    Text(
+                        'Your booking was created, but the payment could not '
+                        'be secured. Please retry.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: TruxifyColors.adaptiveSecondaryText(
+                                context))),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(message,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: TruxifyColors.errorRed)),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              id: 'btn_retry_payment',
+              onPressed: isRetrying ? null : onRetry,
+              icon: isRetrying
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.refresh_rounded, size: 18),
+              label: Text(isRetrying ? 'Retrying...' : 'Retry payment'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: TruxifyColors.accentDark,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
