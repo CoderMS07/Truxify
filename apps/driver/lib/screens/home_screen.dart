@@ -149,6 +149,9 @@ class _HomeScreenState extends State<HomeScreen> {
   String _activeTruckLabel = '';
   String _activeTripDistance = '';
   String _activeTripDuration = '';
+  String _activeTripEta = '';
+  double _activeTripProgress = 0.0;
+  String _activeTripStatus = '';
   String _activeTripPayout = '';
   /// Number of stops not yet completed on the active trip.
   int _activeTripStopsRemaining = 0;
