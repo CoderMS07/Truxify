@@ -699,50 +699,51 @@ async def predict_maintenance_endpoint(input: PredictiveMaintenanceInput, _auth=
 # ---------------------------------------------------------------------------
 # KYC Document OCR Verification
 # ---------------------------------------------------------------------------
+
+class KYCVerificationOutput(BaseModel):
+    verified: bool
+    document_type: str
+    extracted_number: Optional[str] = None
+    raw_text: str
+
 @app.post("/verify/kyc", response_model=KYCVerificationOutput)
-async def verify_kyc_endpoint(
-    file: UploadFile = File(...),
-    _auth=Depends(verify_api_key)
-):
+async def verify_kyc_endpoint(file: UploadFile = File(...), _auth=Depends(verify_api_key)):
+    allowed_content_types = {"image/jpeg", "image/png", "image/webp"}
+    max_file_size_bytes = 5 * 1024 * 1024  # 5 MB
+
+    if file.content_type not in allowed_content_types:
+        raise HTTPException(
+            status_code=422,
+            detail="Unsupported file type. Upload a JPEG, PNG, or WebP image.",
+        )
+
+    if file.size is not None and file.size > max_file_size_bytes:
+        raise HTTPException(status_code=422, detail="File too large. Maximum size is 5 MB.")
+
     try:
-        allowed_types = {
-            "image/jpeg",
-            "image/png",
-            "image/jpg",
-            "image/webp",
-            "application/pdf",
-        }
-
-        if file.content_type not in allowed_types:
-            raise HTTPException(
-                status_code=400,
-                detail="Only image and PDF files are allowed."
-            )
-
         image_bytes = await file.read()
 
-        MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
+        if len(image_bytes) == 0:
+            raise HTTPException(status_code=422, detail="Uploaded file is empty.")
 
-        if len(image_bytes) > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=400,
-                detail="File size exceeds the 5 MB limit."
-            )
+        if len(image_bytes) > max_file_size_bytes:
+            raise HTTPException(status_code=422, detail="File too large. Maximum size is 5 MB.")
 
         text = ocr_verifier.extract_text(image_bytes)
+        if text is None:
+            # OCR failed (undecodable image, Tesseract unavailable, ...).
+            # Never fall back to a simulated licence: report unverified.
+            return KYCVerificationOutput(
+                verified=False,
+                document_type="Unknown",
+                extracted_number=None,
+                raw_text="",
+            )
+
         result = ocr_verifier.verify_license(text)
-
         return KYCVerificationOutput(**result)
-
     except HTTPException:
         raise
-
     except Exception as e:
         logger.error("KYC OCR verification failed: %s", e)
-
-        return KYCVerificationOutput(
-            verified=False,
-            document_type="Unknown",
-            extracted_number=None,
-            raw_text=""
-        )
+        raise HTTPException(status_code=500, detail="KYC OCR verification failed")
