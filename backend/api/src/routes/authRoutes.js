@@ -43,10 +43,7 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
 import { authenticate } from "../middleware/auth.js";
-import {
-  userLimiter,
-  otpVerificationLimiter,
-} from "../middleware/rateLimiter.js";
+import { userLimiter } from "../middleware/rateLimiter.js";
 import {
   invalidateCachedProfile,
   invalidateCachedSupabaseProfile,
@@ -162,28 +159,6 @@ router.post("/logout", authenticate, async (req, res) => {
 router.get("/session", authenticate, userLimiter, (req, res) => {
   return res.json({
     user: req.user,
-  });
-});
-
-/**
- * @openapi
- * /api/auth/verify-otp:
- *   post:
- *     tags: [Authentication]
- *     summary: Verify OTP
- *     description: Endpoint for verifying OTPs. Protected by strict rate limiting to prevent brute-forcing.
- *     responses:
- *       501:
- *         description: Not Implemented
- */
-router.post("/verify-otp", otpVerificationLimiter, async (req, res) => {
-  // To be implemented: backend OTP verification logic.
-  // This endpoint serves as a rate-limited proxy/placeholder to satisfy
-  // security requirements preventing OTP brute forcing.
-  return res.status(501).json({
-    success: false,
-    error: "Not Implemented",
-    message: "OTP verification logic should be executed here.",
   });
 });
 
