@@ -61,11 +61,14 @@ BEGIN
   END IF;
 
   -- Enforce the per-driver per-day withdrawal cap.
+  -- Only count withdrawals that actually left the wallet (completed/processing).
+  -- Failed withdrawals are excluded so they do not consume daily-cap capacity.
   SELECT COALESCE(SUM(amount), 0)
     INTO v_day_total
     FROM wallet_transactions
    WHERE driver_id  = p_driver_id
      AND txn_type   = 'withdrawal'
+     AND status IN ('completed', 'processing')
      AND created_at >= date_trunc('day', now());
 
   IF v_day_total + p_amount > v_daily_cap THEN
