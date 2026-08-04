@@ -827,19 +827,19 @@ router.get('/:id/bids', authenticate, userLimiter, requirePolicy('order:view-bid
     ]);
 
     const profiles = profilesRes.data || [];
-    const details  = detailsRes.data || [];
+    const details = detailsRes.data || [];
     const truckIds = details.map(d => d.truck_id).filter(Boolean);
     const trucksRes = truckIds.length > 0 ? await orderRepository.findTrucksByIds(truckIds) : { data: [] };
     const trucks = trucksRes.data || [];
 
     const profileMap = Object.fromEntries(profiles.map(p => [p.id, p]));
-    const detailMap  = Object.fromEntries(details.map(d => [d.user_id, d]));
-    const truckMap   = Object.fromEntries(trucks.map(t => [t.id, t]));
+    const detailMap = Object.fromEntries(details.map(d => [d.user_id, d]));
+    const truckMap = Object.fromEntries(trucks.map(t => [t.id, t]));
 
     const enrichedBids = bids.map(bid => {
       const profile = profileMap[bid.driver_id] || {};
-      const detail  = detailMap[bid.driver_id]  || {};
-      const truck   = detail.truck_id ? truckMap[detail.truck_id] : null;
+      const detail = detailMap[bid.driver_id] || {};
+      const truck = detail.truck_id ? truckMap[detail.truck_id] : null;
 
       return {
         id: bid.id, bid_amount: bid.bid_amount, created_at: bid.created_at,
@@ -1073,6 +1073,22 @@ router.post(
         return res.status(400).json({ error: 'driver_lat and driver_lng must be valid numbers.' });
       }
 
+      // Verify the order exists and the requesting driver is assigned to it
+      const order = await orderValidationService.findOrderByIdOrDisplayId(
+        req.params.id,
+        'id, driver_id, customer_id'
+      );
+      orderValidationService.assertOrderFound(order);
+      orderValidationService.assertDriverAssignment(order, req.user.id);
+
+      logger.info({
+        event: 'GEOFENCE_CONFIRM_ATTEMPT',
+        orderId: req.params.id,
+        driverId: req.user.id,
+        lat,
+        lng,
+      }, 'Driver geofence confirm attempt');
+
       const result = await orderLifecycleService.deliveryVerification.geofenceAutoConfirm({
         orderId: req.params.id,
         driverId: req.user.id,
@@ -1115,6 +1131,19 @@ router.post(
   validateBody(verifyDeliverySchema),
   async (req, res) => {
     try {
+      const order = await orderValidationService.findOrderByIdOrDisplayId(
+        req.params.id,
+        'id, driver_id, customer_id'
+      );
+      orderValidationService.assertOrderFound(order);
+      orderValidationService.assertDriverAssignment(order, req.user.id);
+
+      logger.info({
+        event: 'CONFIRM_OTP_ATTEMPT',
+        orderId: req.params.id,
+        driverId: req.user.id,
+      }, 'Driver OTP confirm attempt');
+
       const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(
         req.params.id,
         req.user.id,
@@ -1255,13 +1284,13 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       });
 
       pricing = computeOrderPricing({
-        pickupLat:  Number(order.pickup_lat),
-        pickupLng:  Number(order.pickup_lng),
-        dropLat:    Number(drop_lat),
-        dropLng:    Number(drop_lng),
+        pickupLat: Number(order.pickup_lat),
+        pickupLng: Number(order.pickup_lng),
+        dropLat: Number(drop_lat),
+        dropLng: Number(drop_lng),
         weightTonnes: Number(order.weight_tonnes),
         roadDistanceKm: routeEstimate?.distanceKm,
-        isFragile:   Boolean(order.is_fragile),
+        isFragile: Boolean(order.is_fragile),
         isStackable: Boolean(order.is_stackable),
       });
     } catch (pricingErr) {
@@ -1683,7 +1712,7 @@ router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePol
       const destLng = Number(order.drop_lng);
 
       if (!Number.isFinite(originLat) || !Number.isFinite(originLng) ||
-          !Number.isFinite(destLat) || !Number.isFinite(destLng)) {
+        !Number.isFinite(destLat) || !Number.isFinite(destLng)) {
         return res.status(500).json({ error: 'Order has invalid coordinates.' });
       }
 
