@@ -191,10 +191,22 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
         });
       }
     } catch (e) {
-      debugPrint('UPI intent failed: $e');
-      // Fallback: show success even without escrow
-      _showSuccessPanel();
-    }
+  debugPrint('UPI intent failed: $e');
+  if (!mounted) return;
+  setState(() {
+    _isAwaitingUpi = false;
+  });
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Payment setup failed: $e'),
+      action: SnackBarAction(
+        label: 'Retry',
+        onPressed: () => _fetchUpiIntent(_createdOrderId!),
+      ),
+      duration: const Duration(seconds: 8),
+    ),
+  );
+}
   }
 
   // ── Step 3: Open UPI deep-link ────────────────────────────────────────────
