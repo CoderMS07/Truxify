@@ -81,11 +81,11 @@ import webrtcRoutes from './routes/webrtcRoutes.js'
 // ============================================================================
 // 🆕 ROOT SUBSYSTEM ROUTES (eBPF, WASI, WASM, Snyk, Liquibase)
 // ============================================================================
-import ebpfRoutes from '../../ebpf/routes.js'
-import wasiRoutes from '../../wasi/routes.js'
-import wasmRoutes from '../../wasm/routes.js'
-import snykRoutes from '../../snyk/routes.js'
-import liquibaseRoutes from '../../database/liquibase/routes.js'
+import ebpfRoutes from '../../../ebpf/routes.js'
+import wasiRoutes from '../../../wasi/routes.js'
+import wasmRoutes from '../../../wasm/routes.js'
+import snykRoutes from '../../../snyk/routes.js'
+import liquibaseRoutes from '../../../database/liquibase/routes.js'
 import earningsRouter from '../routes/earnings.js'
 import { initWebRTCSignaling, closeWebRTCSignaling } from './sockets/webrtc.js'
 
