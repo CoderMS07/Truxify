@@ -45,7 +45,9 @@ function isCacheable(statusCode) {
 
 function cacheKey(req, idempotencyKey) {
   const identity = req.user?.id || 'anonymous';
-  return `idempotency:${identity}:${idempotencyKey}`;
+  // Scope by method + originalUrl so two endpoints (or verbs) sharing a user
+  // and key cannot collide (fixes #2915).
+  return `idempotency:${identity}:${req.method}:${req.originalUrl}:${idempotencyKey}`;
 }
 
 function readAndParse(str) {
