@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 
 import '../config/app_config.dart';
 import 'http_client_factory.dart';
+import 'retry_policy.dart';
 
 /// Exception thrown when an API request fails after token refresh.
 class ApiAuthException implements Exception {
@@ -48,6 +49,9 @@ class MultipartFileInfo {
 ///   - Injects `Authorization: Bearer <accessToken>` into every request.
 ///   - On HTTP 401, attempts `supabase.auth.refreshSession()` once and retries.
 ///   - If the retry still returns 401, throws [ApiAuthException].
+///   - On HTTP 429, honours the `Retry-After` header (via [RetryPolicy]),
+///     waits the specified duration (capped), retries once, and throws
+///     [RateLimitException] if the retry also returns 429.
 ///   - Automatically injects a stable `X-Idempotency-Key` (UUID v4) on every
 ///     POST, PUT, and PATCH request so the backend `requireIdempotency`
 ///     middleware never rejects customer mutations with HTTP 400.
@@ -66,11 +70,13 @@ class ApiClient {
     http.Client? httpClient,
     String? baseUrl,
     Duration? timeout,
+    RetryPolicy retryPolicy = RetryPolicy.defaultPolicy,
   })  : _providedSupabase = supabaseClient,
         _isClientOwned = httpClient == null,
         _http = httpClient ?? createHttpClient(),
         _baseUrl = _normalise(_getBaseUrl(baseUrl)),
-        _timeout = timeout ?? AppConfig.apiTimeout;
+        _timeout = timeout ?? AppConfig.apiTimeout,
+        _retryPolicy = retryPolicy;
 
   final SupabaseClient? _providedSupabase;
   SupabaseClient get _supabase => _providedSupabase ?? Supabase.instance.client;
@@ -78,6 +84,7 @@ class ApiClient {
   final bool _isClientOwned;
   final String _baseUrl;
   final Duration _timeout;
+  final RetryPolicy _retryPolicy;
 
   /// Shared UUID generator — const so it is instantiated once per isolate.
   static const _uuid = Uuid();
@@ -105,7 +112,10 @@ class ApiClient {
     const envUrl = String.fromEnvironment('TRUXIFY_API_BASE_URL');
     if (envUrl.isNotEmpty) return envUrl;
     if (kReleaseMode) throw StateError('TRUXIFY_API_BASE_URL must be set in release mode');
-    return 'http://localhost:5000';
+
+    if (kIsWeb) return 'http://localhost:8080';
+    if (defaultTargetPlatform == TargetPlatform.android) return 'http://10.0.2.2:8080';
+    return 'http://localhost:8080';
   }
 
   static String _normalise(String url) =>
@@ -192,6 +202,7 @@ class ApiClient {
     }
     final response = await fn(_headers(additionalHeaders: additionalHeaders)).timeout(_timeout);
 
+    // ── 401 Unauthorised — attempt token refresh and retry once ──────
     if (response.statusCode == 401 && !isRetry) {
       if (kDebugMode) {
         developer.log(
@@ -207,10 +218,57 @@ class ApiClient {
         );
       }
 
-      final retryResponse = await fn(_headers(token: newToken, additionalHeaders: additionalHeaders)).timeout(_timeout);
+      final retryResponse = await fn(
+        _headers(token: newToken, additionalHeaders: additionalHeaders),
+      ).timeout(_timeout);
+
       if (retryResponse.statusCode == 401) {
         throw const ApiAuthException(
           'Authentication failed after token refresh. Please log in again.',
+        );
+      }
+      return retryResponse;
+    }
+
+    // ── 429 Too Many Requests — honour Retry-After and retry once ────
+    //
+    // The backend sets `Retry-After: <seconds>` on rate-limited responses
+    // (e.g. POST /zkp/verify allows 5 attempts/hour). We wait the specified
+    // duration (capped by RetryPolicy.maxRetryAfterSeconds), then retry.
+    // If the retry is also rate-limited, we throw [RateLimitException] so
+    // the UI can surface a meaningful "Try again in X minutes" message
+    // rather than a generic error.
+    if (response.statusCode == 429 && !isRetry && _retryPolicy.retryOnRateLimit) {
+      final waitSeconds = _retryPolicy.parseRetryAfter(response.headers);
+      final clampedWait = waitSeconds.clamp(0, _retryPolicy.maxRetryAfterSeconds);
+
+      if (kDebugMode) {
+        developer.log(
+          '[ApiClient] 429 received — waiting ${clampedWait}s then retrying',
+          name: 'ApiClient',
+        );
+      }
+
+      if (clampedWait > 0) {
+        await Future<void>.delayed(Duration(seconds: clampedWait));
+      }
+
+      final retryResponse = await fn(
+        _headers(additionalHeaders: additionalHeaders),
+      ).timeout(_timeout);
+
+      if (retryResponse.statusCode == 429) {
+        final retryAfter = _retryPolicy.parseRetryAfter(retryResponse.headers);
+        String? userMessage;
+        try {
+          final decoded = jsonDecode(retryResponse.body);
+          if (decoded is Map<String, dynamic>) {
+            userMessage = (decoded['error'] ?? decoded['message'])?.toString();
+          }
+        } catch (_) {}
+        throw RateLimitException(
+          retryAfterSeconds: retryAfter,
+          message: userMessage,
         );
       }
       return retryResponse;
