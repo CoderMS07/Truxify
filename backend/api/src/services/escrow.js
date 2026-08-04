@@ -206,6 +206,36 @@ export function getEscrowBookingId (orderDisplayId) {
 }
 
 /**
+ * Fetch an escrow booking record from the on-chain contract.
+ *
+ * Used by escrowFundingReconciliation to check whether a customer's
+ * deposit has landed on-chain (booking.paid === true) before deciding
+ * to heal the acceptance or revert the order.
+ *
+ * Returns null if the contract is not initialised or the call fails,
+ * so callers must guard with `if (booking && booking.paid)`.
+ *
+ * @param {string|bigint} escrowBookingId — bytes32 booking ID (from getEscrowBookingId)
+ * @returns {Promise<{customer: string, driver: string, amount: bigint, status: number, paid: boolean, started: boolean, createdAt: bigint} | null>}
+ */
+export async function getEscrowBooking (escrowBookingId) {
+  return measureExecution('EscrowService.getEscrowBooking', async () => {
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — cannot fetch booking.');
+      return null;
+    }
+
+    try {
+      const booking = await escrowContract.bookings(escrowBookingId);
+      return booking;
+    } catch (err) {
+      logger.error(`[escrow] Failed to fetch booking ${escrowBookingId}: ${err.message}`);
+      return null;
+    }
+  });
+}
+
+/**
  * Build an unsigned deposit transaction for the customer's wallet to sign.
  * Called when a bid is accepted and the order moves to in_progress.
  *
@@ -222,6 +252,7 @@ export function getEscrowBookingId (orderDisplayId) {
 export async function buildDepositTx (orderDisplayId, driverWalletAddress, amountWei) {
   return measureExecution('EscrowService.buildDepositTx', async () => {
   const bookingId = getEscrowBookingId(orderDisplayId)
+
   if (!escrowContract) {
     return { txData: null, bookingId }
   }
