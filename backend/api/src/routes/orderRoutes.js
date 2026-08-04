@@ -1160,11 +1160,11 @@ router.post(
       );
 
       // Fetch the released amount to include in the response
-      const { data: order } = await orderRepository.findOrderByIdOrDisplayId(
+      const orderForAmount = await orderValidationService.findOrderByIdOrDisplayId(
         req.params.id,
         'total_amount, order_display_id'
       );
-      const amountInr = order?.total_amount
+      const amountInr = orderForAmount?.total_amount
         ? (order.total_amount / 100).toFixed(0)
         : null;
 
