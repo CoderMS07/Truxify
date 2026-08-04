@@ -418,12 +418,9 @@ export class DeliveryVerificationService {
       });
     }
 
-    const distanceM = haversineKm(
-      lat,
-      lng,
-      Number(order.drop_lat),
-      Number(order.drop_lng),
-    ) * 1000;
+    const distanceM =
+      haversineKm(lat, lng, Number(order.drop_lat), Number(order.drop_lng)) *
+      1000;
     if (distanceM > DELIVERY_GEOFENCE_RADIUS_KM * 1000) {
       throw new DomainError(409, {
         error: `Driver is ${(distanceM / 1000).toFixed(2)}km from the drop-off location. Must be within ${DELIVERY_GEOFENCE_RADIUS_KM * 1000}m to confirm delivery.`,
