@@ -587,7 +587,7 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
     const driverIds = drivers.map(d => d.user_id);
 
     const [trucksRes, profilesRes] = await Promise.all([
-      supabase.from('trucks').select('id, name, number_plate, max_capacity_tons').in('id', truckIds),
+      supabase.from('trucks').select('id, name, truck_type, number_plate, max_capacity_tons').in('id', truckIds),
       supabase.from('profiles').select('id, full_name, avatar_url, is_digilocker_verified').in('id', driverIds),
     ]);
 
