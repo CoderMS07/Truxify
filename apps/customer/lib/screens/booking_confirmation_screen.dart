@@ -219,34 +219,25 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
   }
 
   // ── Step 4: Lock payment after UPI success ────────────────────────────────
+  // POST /api/payments/lock requires the real on-chain tx_hash that the wallet
+  // SDK returns once `createBooking` is mined; recordDepositTx() verifies it
+  // against Polygon. No wallet SDK is integrated in this app, so there is no
+  // real hash to submit. Fabricating one would post a hash the backend can
+  // never verify — the escrow would never lock and the booking would stay
+  // stuck in `funding`. Fail closed instead: never send a fake hash and never
+  // report the payment as locked.
   Future<void> _confirmPaymentLocked() async {
     if (_createdOrderId == null) return;
-    setState(() => _isSubmitting = true);
 
-    try {
-      // In mock UPI mode, generate a placeholder tx_hash
-      // In production, the wallet SDK would provide the real on-chain hash
-      final mockTxHash =
-          '0x${_createdOrderId!.replaceAll('-', '').padRight(64, '0').substring(0, 64)}';
-
-      await _apiClient.post(
-        '/api/payments/lock',
-        body: {
-          'order_id': _createdOrderId,
-          'tx_hash': mockTxHash,
-        },
-      );
-
-      _showSuccessPanel();
-    } catch (e) {
-      debugPrint('Payment lock failed: $e');
-      // Even if lock fails, show booking success — reconciliation will handle it
-      _showSuccessPanel();
-    } finally {
-      if (mounted) {
-        setState(() => _isSubmitting = false);
-      }
-    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+            'On-chain escrow confirmation is unavailable on this device. '
+            'Your booking is created, but the escrow could not be locked. '
+            'Please contact support to complete the payment.'),
+      ),
+    );
   }
 
   void _showSuccessPanel() {
