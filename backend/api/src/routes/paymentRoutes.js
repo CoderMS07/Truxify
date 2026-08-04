@@ -312,7 +312,7 @@ router.post(
       return res.status(500).json({ error: 'Internal Server Error' });
 
     } finally {
-      if (lockAcquired) {
+      if (lockValue !== null) {
         try {
           await releaseLock(lockKey);
         } catch (releaseErr) {
