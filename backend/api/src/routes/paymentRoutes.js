@@ -314,7 +314,7 @@ router.post(
     } finally {
       if (lockValue !== null) {
         try {
-          await releaseLock(lockKey);
+          await releaseLock(lockKey, lockValue);
         } catch (releaseErr) {
           logger.error(
             { err: releaseErr, lockKey },
