@@ -72,8 +72,8 @@ class SyncEngine {
 
     debugPrint('[SyncEngine] Queued $eventType for trip $tripId.');
     
-    final connectivityResult = await Connectivity().checkConnectivity();
-    if (connectivityResult != ConnectivityResult.none) {
+    final connectivityResults = await Connectivity().checkConnectivity();
+    if (!connectivityResults.contains(ConnectivityResult.none)) {
       await attemptSync();
     }
   }
@@ -81,8 +81,8 @@ class SyncEngine {
   /// Flushes the queue to the backend.
   static Future<void> attemptSync() async {
     if (_isSyncing) return;
-    final connectivityResult = await Connectivity().checkConnectivity();
-    if (connectivityResult == ConnectivityResult.none) return;
+    final connectivityResults = await Connectivity().checkConnectivity();
+    if (connectivityResults.contains(ConnectivityResult.none)) return;
 
     final db = await database;
     final events = await db.query('sync_queue', orderBy: 'occurred_at ASC');
