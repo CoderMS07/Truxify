@@ -517,7 +517,6 @@ async def recommend_loads_endpoint(input: RecommendLoadsInput, _auth=Depends(ver
         result = collaborative_filter.recommend_loads(
             user_id=input.user_id,
             booking_history=input.booking_history,
-            rated_drivers=input.rated_drivers,
             top_n=input.top_n,
         )
         return RecommendOutput(**result)
@@ -536,7 +535,6 @@ async def recommend_trucks_endpoint(input: RecommendTrucksInput, _auth=Depends(v
         result = collaborative_filter.recommend_trucks(
             user_id=input.user_id,
             booking_history=input.booking_history,
-            rated_loads=input.rated_loads,
             top_n=input.top_n,
         )
         return RecommendOutput(**result)
