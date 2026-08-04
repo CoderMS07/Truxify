@@ -25,7 +25,7 @@ function cacheAudio(id, buffer) {
   trimCache();
 }
 
-async function getBookingContext(bookingId) {
+async function getBookingContext(bookingId, userId) {
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const isUuid = uuidRegex.test(bookingId);
 
@@ -37,6 +37,11 @@ async function getBookingContext(bookingId) {
     } else {
       orderQuery = orderQuery.eq('order_display_id', bookingId);
     }
+    
+    if (userId) {
+      orderQuery = orderQuery.or(`customer_id.eq.${userId},driver_id.eq.${userId}`);
+    }
+
     const { data: order } = await orderQuery.maybeSingle();
     return order;
   } catch (err) {
@@ -46,7 +51,7 @@ async function getBookingContext(bookingId) {
 }
 
 export async function processVoiceQuery(userId, bookingId, audioBuffer, filename) {
-  const bookingData = await getBookingContext(bookingId);
+  const bookingData = await getBookingContext(bookingId, userId);
   
   if (!process.env.OPENAI_API_KEY || !process.env.ELEVENLABS_API_KEY) {
     logger.warn('Missing OpenAI or ElevenLabs API keys. Using mock Voice AI pipeline.');
