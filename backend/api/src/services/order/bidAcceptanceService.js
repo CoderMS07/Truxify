@@ -18,7 +18,7 @@ export class BidAcceptanceService {
 
   async acceptBid({ orderId, bidId, customerId }) {
     return measureExecution('BidAcceptanceService.acceptBid', async () => {
-      const lockKey = `bid_accept_lock:${orderId}`;
+      const lockKey = `escrow_lock:${orderId}`;
       const lockValue = await acquireLock(lockKey, 10000);
       if (!lockValue) {
         throw new DomainError(409, { error: 'Another bid acceptance is in progress for this order. Please try again.' });
