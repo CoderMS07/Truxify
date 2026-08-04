@@ -257,10 +257,19 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
 
       _showSuccessPanel();
     } catch (e) {
-      debugPrint('Payment lock failed: $e');
-      // Even if lock fails, show booking success — reconciliation will handle it
-      _showSuccessPanel();
-    } finally {
+  debugPrint('Payment lock failed: $e');
+  if (!mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Payment lock failed: $e'),
+      action: SnackBarAction(
+        label: 'Retry',
+        onPressed: _confirmPaymentLocked,
+      ),
+      duration: const Duration(seconds: 8),
+    ),
+  );
+}finally {
       if (mounted) {
         setState(() => _isSubmitting = false);
       }
