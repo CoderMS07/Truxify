@@ -1,5 +1,6 @@
 import kafka, { TOPICS, CONSUMER_GROUPS } from '../config/kafka.config.js';
 import processedEventRepository from '../repositories/processedEvent.repository.js';
+import deadLetterRepository from '../repositories/deadLetter.repository.js';
 import logger from '../api/src/middleware/logger.js';
 
 class OrderConsumer {
@@ -104,6 +105,7 @@ class OrderConsumer {
             await handler(message, rawMessage);
           } catch (error) {
             logger.error(`Handler error for ${topic}:`, error);
+            await this.storeDeadLetter(topic, rawMessage, error);
           }
         }
       }
@@ -137,14 +139,58 @@ class OrderConsumer {
   }
 
   async storeDeadLetter(topic, message, error) {
+    const rawValue = message?.value;
+    const serialized = Buffer.isBuffer(rawValue)
+      ? rawValue.toString()
+      : rawValue != null
+        ? String(rawValue)
+        : null;
+
     const dlqEntry = {
       topic,
-      message: message.value.toString(),
+      message: serialized,
       error: error.message,
       timestamp: new Date().toISOString(),
       retryCount: 0,
     };
-    logger.info(`📦 Dead letter stored for ${topic}`, dlqEntry);
+
+    const stored = await deadLetterRepository.store({
+      topic,
+      message: dlqEntry,
+      error: error.message,
+      retryCount: 0,
+    });
+
+    if (stored) {
+      logger.info(`📦 Dead letter persisted for ${topic} (id: ${stored.id})`);
+    } else {
+      logger.error(`📦 Dead letter for ${topic} could NOT be persisted — message dropped`, dlqEntry);
+    }
+  }
+
+  async replayDeadLetters({ topic = null, limit = 50 } = {}) {
+    const pending = await deadLetterRepository.listPending({ topic, limit });
+    const results = { attempted: pending.length, succeeded: 0, failed: 0 };
+
+    for (const entry of pending) {
+      const topicHandlers = this.handlers.get(entry.topic) || [];
+      const parsedMessage = entry.message;
+
+      try {
+        for (const handler of topicHandlers) {
+          await handler(parsedMessage, { value: parsedMessage?.message });
+        }
+        await deadLetterRepository.markStatus(entry.id, 'replayed');
+        results.succeeded += 1;
+      } catch (error) {
+        logger.error(`Replay failed for dead letter ${entry.id} (${entry.topic}):`, error);
+        await deadLetterRepository.markStatus(entry.id, 'pending', { incrementRetry: true });
+        results.failed += 1;
+      }
+    }
+
+    logger.info(`♻️ Dead letter replay complete`, results);
+    return results;
   }
 
   async startAllConsumers() {
