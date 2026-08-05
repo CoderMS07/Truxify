@@ -106,7 +106,7 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
   // Production Whisper call
   let transcript;
   try {
-    const boundary = '----VoiceAIBoundary' + Math.random().toString(16).substring(2);
+    const boundary = '----VoiceAIBoundary' + crypto.randomBytes(16).toString('hex');
     const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename || 'audio.wav'}"\r\nContent-Type: audio/wav\r\n\r\n`;
     const footer = `\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n--${boundary}--`;
     const body = Buffer.concat([
