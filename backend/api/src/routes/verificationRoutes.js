@@ -10,6 +10,8 @@ import logger from '../middleware/logger.js';
 import { verifyOrderParamsSchema, documentCheckSchema } from '../validation/requestSchemas.js';
 import { PolicyError, policy } from '../security/policyEngine.js';
 import digilockerService from '../services/verification/DigilockerService.js';
+import { validateDocumentBuffer, DocumentValidationError } from '../lib/documentValidation.js';
+import { scanDocument, MalwareScanError } from '../lib/malwareScanner.js';
 
 const router = express.Router();
 const orderVerificationLimiter = rateLimit({
@@ -42,6 +44,17 @@ const digilockerLimiter = rateLimit({
   keyGenerator: safeIpKeyGenerator,
   validate: { keyGeneratorIpFallback: false },
   store: createStore('rl:digilocker:'),
+  message: { error: 'Rate limit exceeded', retryAfter: 900 },
+});
+
+const kycUploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: safeIpKeyGenerator,
+  validate: { keyGeneratorIpFallback: false },
+  store: createStore('rl:kyc-upload:'),
   message: { error: 'Rate limit exceeded', retryAfter: 900 },
 });
 
@@ -157,13 +170,44 @@ router.post('/digilocker/verify', digilockerLimiter, authenticate, async (req, r
   }
 });
 
-const upload = multer({ storage: multer.memoryStorage() });
+const KYC_ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png'];
+const KYC_MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
-router.post('/kyc/upload', upload.single('image'), authenticate, async (req, res) => {
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: KYC_MAX_FILE_SIZE },
+  fileFilter: (_req, file, cb) => {
+    if (KYC_ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(null, false);
+    }
+  },
+});
+
+router.post('/kyc/upload', kycUploadLimiter, upload.single('image'), authenticate, async (req, res) => {
   try {
     const userId = req.user.id;
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No image uploaded' });
+    }
+
+    // Validate magic bytes and malware-scan before the buffer is forwarded to
+    // the ML endpoint (same hardening as the PoD upload at orderRoutes).
+    try {
+      validateDocumentBuffer(req.file.buffer, req.file.mimetype);
+      const scanResult = await scanDocument(req.file.buffer, req.file.originalname);
+      if (!scanResult.clean) {
+        return res.status(422).json({ success: false, error: 'Uploaded image failed malware scanning.' });
+      }
+    } catch (error) {
+      if (error instanceof DocumentValidationError) {
+        return res.status(422).json({ success: false, error: error.message });
+      }
+      if (error instanceof MalwareScanError) {
+        return res.status(422).json({ success: false, error: error.message });
+      }
+      throw error;
     }
 
     // Set status to pending
