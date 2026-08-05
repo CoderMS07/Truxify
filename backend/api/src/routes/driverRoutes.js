@@ -1476,7 +1476,22 @@ router.get('/ltl/optimize-route', authenticate, userLimiter, requireDriverRole, 
 
     const tasks = [];
     for (const order of activeOrders || []) {
-      if (['truck_assigned', 'en_route_pickup', 'arrived_pickup'].includes(order.status)) {
+      const needsPickup = ['truck_assigned', 'en_route_pickup', 'arrived_pickup'].includes(order.status);
+      
+      const hasPickupCoords = hasValidCoordinates(order.pickup_lat, order.pickup_lng);
+      const hasDropCoords = hasValidCoordinates(order.drop_lat, order.drop_lng);
+
+      if (needsPickup && (!hasPickupCoords || !hasDropCoords)) {
+        logger.warn(`[LTL Route] Excluding active order ${order.id} due to missing/invalid coordinates (requires both pickup and dropoff).`);
+        continue;
+      }
+      
+      if (!needsPickup && !hasDropCoords) {
+        logger.warn(`[LTL Route] Excluding active order ${order.id} due to missing/invalid dropoff coordinates.`);
+        continue;
+      }
+
+      if (needsPickup) {
         tasks.push({
           id: `pickup_${order.id}`,
           orderId: order.id,
