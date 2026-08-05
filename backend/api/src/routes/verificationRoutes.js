@@ -101,6 +101,22 @@ router.get('/order/:orderId', orderVerificationLimiter, authenticate, validatePa
 router.post('/documents/check', documentCheckLimiter, authenticate, validateBody(documentCheckSchema), async (req, res) => {
   try {
     const { driverId } = req.body;
+
+    // IDOR guard: a caller may only inspect their own document/KYC status
+    // unless they hold an admin role (mirrors the ownership check used on the
+    // order-scoped verification routes).
+    try {
+      policy.authorize(req.user, 'document:view', { driverId });
+    } catch (error) {
+      if (error instanceof PolicyError) {
+        return res.status(error.status).json({
+          success: false,
+          error: error.message,
+        });
+      }
+      throw error;
+    }
+
     const result = await verificationService.checkDocumentIntegrity(driverId);
 
     res.status(200).json({
