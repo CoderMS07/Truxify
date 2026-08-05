@@ -290,7 +290,7 @@ validateEscrowSetup().then((valid) => {
   if (!valid) {
     logger.warn('⚠️ Escrow setup validation failed. On-chain escrow features may not work correctly.')
   }
-}).catch(err => console.error(err))
+}).catch(err => logger.error({ err }, 'Escrow setup validation failed'))
 
 const app = express()
 const server = http.createServer(app)
