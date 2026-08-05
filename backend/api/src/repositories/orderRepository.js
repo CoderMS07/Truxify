@@ -81,6 +81,10 @@ export class OrderRepository {
     return this.findOrderByDisplayId(id, columns);
   }
 
+  async findOrderByIdOrDisplayId(id, columns = '*') {
+    return this.findOrderByAnyId(id, columns);
+  }
+
   async findOrdersByCustomer(customerId, columns, statuses, orderColumn, ascending, pagination) {
     return this._retryableQuery(() => {
       let query = this.supabase
