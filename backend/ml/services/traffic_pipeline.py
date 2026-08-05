@@ -199,7 +199,7 @@ class TrafficPipeline:
                     return {
                         'duration': duration,
                         'speed': route.get('distance', {}).get('value', 0) / duration if duration > 0 else 50,
-                        'congestion': 1 - (duration / normal_duration) if normal_duration > 0 else 0
+                        'congestion': (1 - normal_duration / duration) if duration > 0 else 0
                     }
         return {}
     
