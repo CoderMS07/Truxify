@@ -32,7 +32,7 @@ export class BidAcceptanceService {
 
   async acceptBid({ orderId, bidId, customerId }) {
     return measureExecution('BidAcceptanceService.acceptBid', async () => {
-      const lockKey = `bid_accept_lock:${orderId}`;
+      const lockKey = `escrow_lock:${orderId}`;
       const lockValue = await acquireLock(lockKey, 10000);
       if (!lockValue) {
         throw new DomainError(409, { error: 'Another bid acceptance is in progress for this order. Please try again.' });
@@ -40,13 +40,25 @@ export class BidAcceptanceService {
 
       try {
         const { data: order, error: orderErr } = await this.orderRepository.findOrderById(
-          orderId, 'order_display_id, customer_id, version, escrow_status, pending_bid_acceptance'
+          orderId, 'order_display_id, customer_id, version, status, escrow_status, pending_bid_acceptance'
         );
         if (orderErr) {
           throw new DomainError(500, { error: 'Failed to retrieve order.', details: orderErr.message });
         }
         if (!order || order.customer_id !== customerId) {
           throw new DomainError(403, { error: 'Access Denied: You do not own this order.' });
+        }
+
+        if (['completed', 'cancelled'].includes(order.status)) {
+          throw new DomainError(409, {
+            error: `Cannot accept bid: order is already ${order.status}.`
+          });
+        }
+
+        if (['funded', 'released', 'refunded'].includes(order.escrow_status)) {
+          throw new DomainError(409, {
+            error: `Cannot accept bid: escrow is already ${order.escrow_status}.`
+          });
         }
 
         // Two-phase guard: if funding for another bid is already in flight, block
