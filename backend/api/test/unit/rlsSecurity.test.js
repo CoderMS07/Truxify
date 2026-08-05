@@ -360,3 +360,54 @@ describe('Service-level RPC calls carry an authenticated client (issue #5737)', 
     expect(driverRoutesContent).not.toMatch(/createUserClient\(req\.token\) \? [^;]* : supabase/);
   });
 });
+
+describe('complete_trip_tx — authorization is not NULL-bypassable and is service-role-only (issue #6332)', () => {
+  let content;
+
+  beforeAll(async () => {
+    const p = path.resolve(__dirname, '../../../../supabase/migrations/20260805120000_secure_complete_trip_tx_auth.sql');
+    content = await fs.readFile(p, 'utf8');
+  });
+
+  it('does not use the NULL-bypassable guard (auth.uid() is not null and get_profile_id() <>)', () => {
+    expect(/auth\.uid\(\)\s+is not null\s+and\s+get_profile_id\(\)\s+<>/.test(content)).toBe(false);
+  });
+
+  it('fails closed: non-service_role callers must resolve to the assigned driver (auth.role() + IS DISTINCT FROM)', () => {
+    expect(/coalesce\(auth\.role\(\),\s*''\)\s+<> 'service_role'/.test(content)).toBe(true);
+    expect(/get_profile_id\(\)\s+is distinct from\s+v_order\.driver_id/.test(content)).toBe(true);
+    expect(/raise exception 'Unauthorized: you can only complete trips you are assigned to'/.test(content)).toBe(true);
+  });
+
+  it('revokes EXECUTE from PUBLIC, anon and authenticated so PostgREST clients cannot invoke it directly', () => {
+    expect(/revoke execute on function complete_trip_tx\(uuid,\s*uuid,\s*text\)\s+from public,\s*anon,\s*authenticated/i.test(content)).toBe(true);
+  });
+
+  it('grants EXECUTE to service_role only', () => {
+    expect(/grant execute on function complete_trip_tx\(uuid,\s*uuid,\s*text\)\s+to service_role/i.test(content)).toBe(true);
+  });
+});
+
+describe('Secure Fraud Tables RLS (20260805174232_secure_fraud_tables_rls.sql)', () => {
+  let content;
+
+  beforeAll(async () => {
+    const p = path.resolve(__dirname, '../../../../supabase/migrations/20260805174232_secure_fraud_tables_rls.sql');
+    content = await fs.readFile(p, 'utf8');
+  });
+
+  it('drops existing overly permissive authenticated policies', () => {
+    expect(/DROP POLICY IF EXISTS behavioral_profiles_authenticated_all ON public.behavioral_profiles/i.test(content)).toBe(true);
+    expect(/DROP POLICY IF EXISTS fraud_risk_scores_authenticated_all ON public.fraud_risk_scores/i.test(content)).toBe(true);
+    expect(/DROP POLICY IF EXISTS fraud_review_queue_authenticated_all ON public.fraud_review_queue/i.test(content)).toBe(true);
+  });
+
+  it('creates admin read-only policies for fraud tables', () => {
+    expect(/CREATE POLICY "Admins can read behavioral_profiles"/i.test(content)).toBe(true);
+    expect(/CREATE POLICY "Admins can read fraud_risk_scores"/i.test(content)).toBe(true);
+    expect(/CREATE POLICY "Admins can read fraud_review_queue"/i.test(content)).toBe(true);
+    
+    // Ensure they restrict to admin role
+    expect(/profiles\.role = 'admin'/i.test(content)).toBe(true);
+  });
+});
