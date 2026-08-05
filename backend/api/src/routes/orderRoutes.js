@@ -1481,11 +1481,38 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
       }, req.token ? createUserClient(req.token) : undefined);
       if (acceptErr) {
         logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
+        // The refund is authoritative: only claim the deposit was refunded once
+        // the on-chain refund was actually submitted. escrowRefund resolves to
+        // { txHash, bookingId, waitForConfirmation } on success or
+        // { txHash: null, bookingId, error } when the submit fails.
+        let refundResult;
         try {
-          await escrowRefund(order.order_display_id);
+          refundResult = await escrowRefund(order.order_display_id);
         } catch (refundErr) {
           logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
+          refundResult = { error: refundErr.message };
         }
+        const refundConfirmed = !!(refundResult && !refundResult.error && refundResult.txHash);
+
+        if (!refundConfirmed) {
+          // The deposit is still locked on-chain. Keep escrow_booking_id and
+          // pending_bid_acceptance intact and return the order to the 'funding'
+          // state so escrowFundingReconciliation reclaims the deposit; report a
+          // retryable error instead of a false "refunded" success.
+          const refundError = refundResult?.error || 'escrow refund was not submitted';
+          await orderRepository.updateOrder(orderId, {
+            escrow_status: 'funding',
+            escrow_funding_error: `escrow refund pending: ${refundError}`,
+          }).catch((stateErr) => {
+            logger.error('[confirm-deposit] Failed to mark escrow refund pending:', stateErr.message);
+          });
+          throw new DomainError(503, {
+            error: 'Deposit confirmed but the driver assignment could not be finalized. The escrow refund is pending and will be completed automatically. Please try again shortly.',
+            details: `${acceptErr.message}; escrow refund: ${refundError}`,
+          });
+        }
+
+        // Refund confirmed — safe to release the escrow booking reference.
         await orderRepository.revertEscrowStatus(orderId).catch((revertErr) => {
           logger.error('[confirm-deposit] Failed to revert escrow status:', revertErr.message);
         });
