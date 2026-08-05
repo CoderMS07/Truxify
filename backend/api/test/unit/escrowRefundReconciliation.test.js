@@ -115,7 +115,7 @@ describe('reconcilePendingEscrowRefunds', () => {
     configureBuilder([{
       id: 'oB',
       order_display_id: 'OB',
-      escrow_refund_retry_count: 2,
+      escrow_refund_attempts: 2,
       updated_at: recentUpdate
     }]);
 
