@@ -733,6 +733,30 @@ describe('Bid Routes', () => {
       expect(res.body.error).toBe('Order is not in funding state');
     });
 
+    it('POST /:id/confirm-deposit returns 409 for an order cancelled in funding state', async () => {
+      m.store.orders.push({
+        id: 'order-1',
+        customer_id: 'customer-1',
+        order_display_id: 'OD1',
+        status: 'cancelled',
+        escrow_booking_id: 'escrow:OD1',
+        escrow_status: 'funding',
+      });
+
+      const app = buildApp();
+      const res = await request(app)
+        .post('/api/orders/order-1/confirm-deposit')
+        .set(CUSTOMER)
+        .send({ txHash: '0x' + '1'.repeat(64) });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('Order is already cancelled. Cannot confirm deposit.');
+
+      const order = m.store.orders.find(o => o.id === 'order-1');
+      expect(order.escrow_status).toBe('funding');
+      expect(mockRecordDepositTx).not.toHaveBeenCalled();
+    });
+
     it('POST /:id/confirm-deposit returns 422 if recordDepositTx fails', async () => {
       m.store.orders.push({
         id: 'order-1',
