@@ -76,6 +76,7 @@ type rateEntry struct {
 type jwtClaims struct {
 	Sub  string `json:"sub"`
 	Role string `json:"role"`
+	Exp  int64  `json:"exp"`
 }
 
 // operatorRoles are roles allowed to query a driver's location. Drivers may
@@ -148,6 +149,12 @@ func parseDriverToken(token string) (jwtClaims, error) {
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return claims, fmt.Errorf("malformed token")
+	}
+
+	// Reject expired tokens. JWT `exp` is a NumericDate (seconds since the
+	// epoch); a token without an expiry is left to the signature check.
+	if claims.Exp != 0 && time.Now().Unix() >= claims.Exp {
+		return claims, fmt.Errorf("token expired")
 	}
 
 	return claims, nil
