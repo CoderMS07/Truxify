@@ -25,7 +25,43 @@ function normalizeLabel(value) {
   return String(value || '').trim().toLowerCase();
 }
 
-function checkRetroChanges(pr) {
+function evaluateRulesForPR({ pr, changedFiles = [], rules = {} }) {
+  const currentLabels = (pr.labels || []).map(l => typeof l === 'string' ? l : l.name);
+  const currentLabelsLower = currentLabels.map(l => l.toLowerCase());
+  const suggested = new Set();
+
+  // Evaluate title rules
+  for (const rule of (rules.titleRules || [])) {
+    const pattern = new RegExp(rule.pattern, 'i');
+    if (pattern.test(pr.title || '')) {
+      for (const label of (rule.labels || [])) {
+        suggested.add(label);
+      }
+    }
+  }
+
+  // Evaluate path rules
+  for (const file of changedFiles) {
+    for (const rule of (rules.pathRules || [])) {
+      const pattern = new RegExp(rule.pattern, 'i');
+      if (pattern.test(file)) {
+        for (const label of (rule.labels || [])) {
+          suggested.add(label);
+        }
+      }
+    }
+  }
+
+  const toAdd = [];
+  for (const label of suggested) {
+    if (!currentLabelsLower.includes(label.toLowerCase())) {
+      toAdd.push(label);
+    }
+  }
+  return toAdd;
+}
+
+function checkRetroChanges(pr, changedFiles = [], rules = {}) {
   const currentLabels = (pr.labels || []).map(l => typeof l === 'string' ? l : l.name);
   const currentLabelsLower = currentLabels.map(l => l.toLowerCase());
   const toAdd = [];
@@ -83,6 +119,14 @@ function checkRetroChanges(pr) {
       if (currentLabelsLower.includes('gssoc:approved')) {
         const originalLabel = currentLabels.find(l => l.toLowerCase() === 'gssoc:approved');
         toRemove.push(originalLabel || 'gssoc:approved');
+      }
+    }
+
+    // Add path & title rule suggested labels if missing
+    const ruleSuggested = evaluateRulesForPR({ pr, changedFiles, rules });
+    for (const label of ruleSuggested) {
+      if (!toAdd.includes(label)) {
+        toAdd.push(label);
       }
     }
   }
@@ -298,7 +342,24 @@ async function run({ github, context, core, dryRun = false, prState = 'closed', 
   let updatedCount = 0;
   for (const pr of pullRequests) {
     try {
-      const { toAdd, toRemove } = checkRetroChanges(pr);
+      let changedFiles = [];
+      try {
+        const files = await github.paginate(github.rest.pulls.listFiles, {
+          owner,
+          repo,
+          pull_number: pr.number,
+          per_page: 100
+        });
+        changedFiles = files.map(f => f.filename);
+      } catch (error) {
+        if (isRateLimitError(error)) {
+          core.warning(`API rate limit exceeded while fetching files for PR #${pr.number}: ${error.message}. Stopping further PR processing.`);
+          break;
+        }
+        core.warning(`Failed to fetch files for PR #${pr.number}: ${error.message}`);
+      }
+
+      const { toAdd, toRemove } = checkRetroChanges(pr, changedFiles, rules);
 
       // Type label deduplication
       const currentLabelNames = (pr.labels || []).map(l => typeof l === 'string' ? l : l.name);
@@ -310,23 +371,6 @@ async function run({ github, context, core, dryRun = false, prState = 'closed', 
       );
 
       if (contestedOnPR.length > 1) {
-        let changedFiles = [];
-        try {
-          const files = await github.paginate(github.rest.pulls.listFiles, {
-            owner,
-            repo,
-            pull_number: pr.number,
-            per_page: 100
-          });
-          changedFiles = files.map(f => f.filename);
-        } catch (error) {
-          if (isRateLimitError(error)) {
-            core.warning(`API rate limit exceeded while fetching files for PR #${pr.number}: ${error.message}. Stopping further PR processing.`);
-            break;
-          }
-          core.warning(`Failed to fetch files for PR #${pr.number}: ${error.message}`);
-        }
-
         const dedup = deduplicateTypeLabels({
           currentLabels: projectedLabels.map(l => ({ name: l })),
           changedFiles,
