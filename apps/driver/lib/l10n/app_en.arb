@@ -861,7 +861,7 @@
   "dark": "Dark",
   "@dark": {
     "description": "Dark theme option label"
-  }
+  },
 
   "otpResent": "OTP resent successfully",
   "@otpResent": {
