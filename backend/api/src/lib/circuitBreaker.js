@@ -46,9 +46,10 @@ export class CircuitBreaker {
       throw new Error(`CircuitBreaker:${this.name} is OPEN`);
     }
 
+    let timer;
     try {
       const timeoutPromise = new Promise((_, reject) => {
-        const timer = setTimeout(() => {
+        timer = setTimeout(() => {
           reject(new Error(`[CircuitBreaker:${this.name}] Request timed out after ${this.requestTimeoutMs}ms`));
         }, this.requestTimeoutMs);
         timer.unref?.();
@@ -59,6 +60,10 @@ export class CircuitBreaker {
       return result;
     } catch (err) {
       return this.onFailure(err, args);
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
     }
   }
 
