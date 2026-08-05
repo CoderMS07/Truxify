@@ -1165,7 +1165,7 @@ router.post(
         'total_amount, order_display_id'
       );
       const amountInr = orderForAmount?.total_amount
-        ? (order.total_amount / 100).toFixed(0)
+        ? (orderForAmount.total_amount / 100).toFixed(0)
         : null;
 
       if (escrowUpdateFailed) {
@@ -1184,7 +1184,7 @@ router.post(
         payment_released: true,
         escrow_status: 'released',
         amount_inr: amountInr,
-        order_display_id: order?.order_display_id,
+        order_display_id: orderForAmount?.order_display_id,
       });
     } catch (err) {
       if (err instanceof DomainError) {
