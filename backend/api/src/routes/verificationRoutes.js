@@ -6,6 +6,7 @@ import { supabase } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { safeIpKeyGenerator, createStore } from '../middleware/rateLimiter.js';
 import { validateParams, validateBody } from '../middleware/validate.js';
+import logger from '../middleware/logger.js';
 import { verifyOrderParamsSchema, documentCheckSchema } from '../validation/requestSchemas.js';
 import { PolicyError, policy } from '../security/policyEngine.js';
 import digilockerService from '../services/verification/DigilockerService.js';
@@ -100,6 +101,22 @@ router.get('/order/:orderId', orderVerificationLimiter, authenticate, validatePa
 router.post('/documents/check', documentCheckLimiter, authenticate, validateBody(documentCheckSchema), async (req, res) => {
   try {
     const { driverId } = req.body;
+
+    // IDOR guard: a caller may only inspect their own document/KYC status
+    // unless they hold an admin role (mirrors the ownership check used on the
+    // order-scoped verification routes).
+    try {
+      policy.authorize(req.user, 'document:view', { driverId });
+    } catch (error) {
+      if (error instanceof PolicyError) {
+        return res.status(error.status).json({
+          success: false,
+          error: error.message,
+        });
+      }
+      throw error;
+    }
+
     const result = await verificationService.checkDocumentIntegrity(driverId);
 
     res.status(200).json({
@@ -172,7 +189,7 @@ router.post('/kyc/upload', upload.single('image'), authenticate, async (req, res
       .eq('driver_id', userId);
 
     if (updateError) {
-      console.warn("Failed to set pending status, but continuing with OCR", updateError);
+      logger.warn({ updateError }, 'Failed to set pending status, but continuing with OCR');
     }
 
     const formData = new FormData();

@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { supabase, redisClient, mongoDb } from "../../config/db.js";
+import { supabase, supabaseAdmin, redisClient, mongoDb } from "../../config/db.js";
 import { DomainError } from "./domainError.js";
 import { measureExecution } from "../../core/performanceMetrics.js";
 import { haversineKm } from "../../lib/pricing.js";
@@ -294,9 +294,11 @@ export class DeliveryVerificationService {
    * @param {string} params.driverId   - Driver's Supabase user ID
    * @param {number} params.driverLat  - Driver's claimed latitude (audit only)
    * @param {number} params.driverLng  - Driver's claimed longitude (audit only)
+   * @param {number} [params.geofenceRadiusM] - Per-request geofence radius in
+   *   meters, overriding the env default when provided.
    * @returns {Promise<{autoConfirmed: boolean, message: string}>}
    */
-  async geofenceAutoConfirm({ orderId, driverId, driverLat, driverLng }) {
+  async geofenceAutoConfirm({ orderId, driverId, driverLat, driverLng, geofenceRadiusM }) {
     return measureExecution(
       "DeliveryVerificationService.geofenceAutoConfirm",
       async () => {
@@ -327,7 +329,10 @@ export class DeliveryVerificationService {
         // The release gate must never be satisfied by self-reported coordinates.
         // assertDriverAtDropoff() proves physical presence using only telemetry
         // that was authenticated at ingestion and bound to this driver/order.
-        await this.assertDriverAtDropoff(order);
+        await this.assertDriverAtDropoff(
+          order,
+          geofenceRadiusM ?? DELIVERY_GEOFENCE_RADIUS_KM * 1000,
+        );
 
         // Record the geofence confirmation and the (non-authoritative) claimed
         // position for audit. This is a flag only — escrow is not released here.
@@ -366,10 +371,12 @@ export class DeliveryVerificationService {
    * callers from substituting another driver's (or a fabricated) location.
    *
    * @param {object} order - Order row with id/driver_id/drop_lat/drop_lng.
+   * @param {number} [radiusM] - Optional geofence radius in meters; falls back
+   *   to the env default (DELIVERY_GEOFENCE_RADIUS_KM) when not provided.
    * @throws {DomainError} 400 missing drop coords, 503 store unavailable,
    *                       409 no/invalid/stale/out-of-range telemetry.
    */
-  async assertDriverAtDropoff(order) {
+  async assertDriverAtDropoff(order, radiusM) {
     if (!order.drop_lat || !order.drop_lng) {
       throw new DomainError(400, {
         error: "Order is missing drop-off coordinates.",
@@ -421,9 +428,10 @@ export class DeliveryVerificationService {
     const distanceM =
       haversineKm(lat, lng, Number(order.drop_lat), Number(order.drop_lng)) *
       1000;
-    if (distanceM > DELIVERY_GEOFENCE_RADIUS_KM * 1000) {
+    const effectiveRadiusM = radiusM ?? DELIVERY_GEOFENCE_RADIUS_KM * 1000;
+    if (distanceM > effectiveRadiusM) {
       throw new DomainError(409, {
-        error: `Driver is ${(distanceM / 1000).toFixed(2)}km from the drop-off location. Must be within ${DELIVERY_GEOFENCE_RADIUS_KM * 1000}m to confirm delivery.`,
+        error: `Driver is ${(distanceM / 1000).toFixed(2)}km from the drop-off location. Must be within ${effectiveRadiusM}m to confirm delivery.`,
       });
     }
 
@@ -543,7 +551,7 @@ export class DeliveryVerificationService {
               p_otp_id: otpRecord.id,
               p_release_tx_hash: releaseTxHash,
             },
-            userClient,
+            supabaseAdmin,
           );
           tripData = rpcResult.data;
 

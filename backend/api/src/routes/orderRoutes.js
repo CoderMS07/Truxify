@@ -146,7 +146,7 @@ import rateLimit from 'express-rate-limit';
 
 import { bidLimiter, userLimiter, userKeyGenerator, podUploadLimiter, createStore } from '../middleware/rateLimiter.js';
 import { mongoDb, supabase, redisClient, createUserClient } from '../config/db.js';
-import { authenticate, requireRole } from '../middleware/auth.js';
+import { authenticate } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { validateDocumentBuffer } from '../lib/documentValidation.js';
 import { scanDocument } from '../lib/malwareScanner.js';
@@ -1160,11 +1160,11 @@ router.post(
       );
 
       // Fetch the released amount to include in the response
-      const { data: order } = await orderRepository.findOrderByIdOrDisplayId(
+      const orderForAmount = await orderValidationService.findOrderByIdOrDisplayId(
         req.params.id,
         'total_amount, order_display_id'
       );
-      const amountInr = order?.total_amount
+      const amountInr = orderForAmount?.total_amount
         ? (order.total_amount / 100).toFixed(0)
         : null;
 
@@ -1343,11 +1343,8 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       return res.status(500).json({ error: 'Failed to update order atomically.', details: updateErr.message });
     }
 
-    try {
-      await orderRepository.insertTimelineEntry({ order_display_id: order.order_display_id, milestone: 'Drop Changed', milestone_time: new Date().toISOString(), completed: true, sort_order: 25 });
-    } catch (timelineErr) {
-      logger.warn('Failed to update timeline for change-drop:', timelineErr.message);
-    }
+    // Single canonical writer for the drop-change event. OrderTimelineService
+    // is the only path that inserts into order_timeline for this milestone.
     await orderTimelineService.insertDropChangedEvent(order.order_display_id);
 
     await expireDeliveryOtps(order.id);
@@ -1403,7 +1400,12 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
  */
 router.post('/:id/cancel', authenticate, userLimiter, requirePolicy('order:cancel'), auditLog({ action: 'order:cancel', resourceType: 'order' }), requireIdempotency(86400), validateParams(paramIdSchema), validateBody(cancelOrderSchema), async (req, res) => {
   try {
-    const result = await orderLifecycleService.cancelOrder(req.params.id, req.user.id, req.body.reason);
+    const result = await orderLifecycleService.cancelOrder(
+      req.params.id,
+      req.user.id,
+      req.body.reason,
+      req.token ? createUserClient(req.token) : undefined
+    );
     return res.status(result.status).json(result.body);
   } catch (err) {
     if (err instanceof DomainError) {
@@ -1449,7 +1451,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
   }
 
   try {
-    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet, pending_bid_acceptance');
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, status, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet, pending_bid_acceptance');
     orderValidationService.assertOrderFound(order);
     orderValidationService.assertCustomerOwnership(order, req.user.id);
     orderValidationService.assertEscrowState(order, ['funding'], 'Order is not in funding state');
@@ -1481,11 +1483,38 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
       }, req.token ? createUserClient(req.token) : undefined);
       if (acceptErr) {
         logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
+        // The refund is authoritative: only claim the deposit was refunded once
+        // the on-chain refund was actually submitted. escrowRefund resolves to
+        // { txHash, bookingId, waitForConfirmation } on success or
+        // { txHash: null, bookingId, error } when the submit fails.
+        let refundResult;
         try {
-          await escrowRefund(order.order_display_id);
+          refundResult = await escrowRefund(order.order_display_id);
         } catch (refundErr) {
           logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
+          refundResult = { error: refundErr.message };
         }
+        const refundConfirmed = !!(refundResult && !refundResult.error && refundResult.txHash);
+
+        if (!refundConfirmed) {
+          // The deposit is still locked on-chain. Keep escrow_booking_id and
+          // pending_bid_acceptance intact and return the order to the 'funding'
+          // state so escrowFundingReconciliation reclaims the deposit; report a
+          // retryable error instead of a false "refunded" success.
+          const refundError = refundResult?.error || 'escrow refund was not submitted';
+          await orderRepository.updateOrder(orderId, {
+            escrow_status: 'funding',
+            escrow_funding_error: `escrow refund pending: ${refundError}`,
+          }).catch((stateErr) => {
+            logger.error('[confirm-deposit] Failed to mark escrow refund pending:', stateErr.message);
+          });
+          throw new DomainError(503, {
+            error: 'Deposit confirmed but the driver assignment could not be finalized. The escrow refund is pending and will be completed automatically. Please try again shortly.',
+            details: `${acceptErr.message}; escrow refund: ${refundError}`,
+          });
+        }
+
+        // Refund confirmed — safe to release the escrow booking reference.
         await orderRepository.revertEscrowStatus(orderId).catch((revertErr) => {
           logger.error('[confirm-deposit] Failed to revert escrow status:', revertErr.message);
         });
@@ -1627,13 +1656,6 @@ router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, 
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, customer_id, driver_id, status');
     orderValidationService.assertOrderFound(order);
 
-    if (req.user.role === 'customer' && order.customer_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
-    }
-    if (req.user.role === 'driver' && order.driver_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You are not assigned to this order.' });
-    }
-
     if (!order.driver_id) {
       return res.status(404).json({ error: 'No driver assigned to this order.' });
     }
@@ -1703,13 +1725,6 @@ router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePol
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, customer_id, driver_id, status, pickup_lat, pickup_lng, drop_lat, drop_lng');
     orderValidationService.assertOrderFound(order);
-
-    if (req.user.role === 'customer' && order.customer_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You do not own this order.' });
-    }
-    if (req.user.role === 'driver' && order.driver_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access Denied: You are not assigned to this order.' });
-    }
 
     if (order.drop_lat == null || order.drop_lng == null) {
       return res.status(500).json({ error: 'Order is missing destination coordinates.' });
