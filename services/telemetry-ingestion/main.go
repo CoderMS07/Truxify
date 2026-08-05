@@ -367,7 +367,7 @@ func storePing(driverID string, ping TelemetryPing) bool {
 }
 
 // sweepDrivers removes drivers whose last ping is older than the TTL and drops
-// empty rate-limit entries.
+// stale rate-limit entries.
 func sweepDrivers() {
 	now := time.Now()
 
@@ -381,9 +381,15 @@ func sweepDrivers() {
 	pingRateLimit.Range(func(key, value interface{}) bool {
 		e := value.(*rateEntry)
 		e.mu.Lock()
-		empty := len(e.stamps) == 0
+		// Stamps are appended in order and pruned oldest-first, so the last
+		// stamp is the driver's most recent activity. Entries are aged out
+		// once they go quiet for a full driverTTL, not only when empty.
+		stale := true
+		if len(e.stamps) > 0 {
+			stale = now.Sub(e.stamps[len(e.stamps)-1]) > driverTTL
+		}
 		e.mu.Unlock()
-		if empty {
+		if stale {
 			pingRateLimit.Delete(key)
 		}
 		return true
