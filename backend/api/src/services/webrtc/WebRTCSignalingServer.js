@@ -1,4 +1,5 @@
 import { WebSocketServer } from 'ws';
+import crypto from 'crypto';
 import { verifyAuthToken } from '../../middleware/auth.js';
 import logger from '../../middleware/logger.js';
 import { supabase, redisClient } from '../../config/db.js';
@@ -307,13 +308,13 @@ class WebRTCSignalingServer {
   }
 
   getOrCreateMesh() {
-    const meshId = `mesh_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    const meshId = `mesh_${crypto.randomBytes(8).toString('hex')}`;
     this.meshes.set(meshId, new Set());
     return meshId;
   }
 
   generatePeerId() {
-    return `peer_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    return `peer_${crypto.randomBytes(8).toString('hex')}`;
   }
 
   startDiscovery() {
