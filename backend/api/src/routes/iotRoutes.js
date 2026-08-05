@@ -86,7 +86,7 @@ router.post('/telemetry/:id', telemetryHistoryLimiter, authenticate, validatePar
       // For MVP, we'll insert a notification immediately if it's not already spammed.
       // We can use the existing notifications table or system if one exists, but for now we'll just log.
       
-      await supabase.from('notifications').insert({
+      await (supabaseAdmin ?? supabase).from('notifications').insert({
         user_id: load.customer_id,
         title: 'Temperature Alert',
         body: `Your cargo (Load ${loadId}) is out of the safe temperature range. Current temp: ${temperature}°C.`,
