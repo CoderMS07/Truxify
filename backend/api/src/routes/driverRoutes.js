@@ -130,6 +130,7 @@ import express from 'express';
 import { supabase, redisClient, createUserClient } from '../config/db.js';
 import { getDriverReputation } from '../services/reputation.js';
 import { predictDriverProfit } from '../services/ml.js';
+import { calculateEarningsAggregation } from '../services/driverEarningsService.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter, createStore } from '../middleware/rateLimiter.js';
@@ -717,10 +718,17 @@ router.get('/trips/:tripDisplayId/items', authenticate, userLimiter, requirePoli
   const { tripDisplayId } = req.params;
 
   try {
-    const { data: trip } = await supabase.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle();
+    const [ { data: trip, error: tripError }, { data: items, error } ] = await Promise.all([
+      supabase.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle(),
+      supabase.from('trip_items').select('*').eq('trip_display_id', tripDisplayId)
+    ]);
+    
+    if (tripError) {
+      logger.error('Error fetching trip for ownership check:', tripError.message);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    
     if (!trip) return res.status(403).json({ error: 'Access Denied: Trip does not belong to you.' });
-
-    const { data: items, error } = await supabase.from('trip_items').select('*').eq('trip_display_id', tripDisplayId);
 
     if (error) return res.status(500).json({ error: 'Failed to fetch trip items.', details: error.message });
     res.json(items || []);
@@ -759,10 +767,17 @@ router.get('/trips/:tripDisplayId/stops', authenticate, userLimiter, requirePoli
   const { tripDisplayId } = req.params;
 
   try {
-    const { data: trip } = await supabase.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle();
+    const [ { data: trip, error: tripError }, { data: stops, error } ] = await Promise.all([
+      supabase.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle(),
+      supabase.from('trip_stops').select('*').eq('trip_display_id', tripDisplayId).order('sort_order', { ascending: true })
+    ]);
+    
+    if (tripError) {
+      logger.error('Error fetching trip for ownership check:', tripError.message);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    
     if (!trip) return res.status(403).json({ error: 'Access Denied: Trip does not belong to you.' });
-
-    const { data: stops, error } = await supabase.from('trip_stops').select('*').eq('trip_display_id', tripDisplayId).order('sort_order', { ascending: true });
 
     if (error) return res.status(500).json({ error: 'Failed to fetch trip stops.', details: error.message });
     res.json(stops || []);
@@ -801,10 +816,17 @@ router.get('/trips/:tripDisplayId/route-points', authenticate, userLimiter, requ
   const { tripDisplayId } = req.params;
 
   try {
-    const { data: trip } = await supabase.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle();
+    const [ { data: trip, error: tripError }, { data: points, error } ] = await Promise.all([
+      supabase.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle(),
+      supabase.from('route_map_points').select('*').eq('trip_display_id', tripDisplayId).order('sort_order', { ascending: true })
+    ]);
+    
+    if (tripError) {
+      logger.error('Error fetching trip for ownership check:', tripError.message);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    
     if (!trip) return res.status(403).json({ error: 'Access Denied: Trip does not belong to you.' });
-
-    const { data: points, error } = await supabase.from('route_map_points').select('*').eq('trip_display_id', tripDisplayId).order('sort_order', { ascending: true });
 
     if (error) return res.status(500).json({ error: 'Failed to fetch route points.', details: error.message });
     res.json(points || []);
@@ -1510,101 +1532,56 @@ router.get('/:id/earnings', authenticate, userLimiter, requirePolicy('driver:vie
       return res.status(400).json({ error: 'Invalid period. Must be day, week, or month.' });
     }
 
-    const { data: trips, error: tripsError } = await supabase
-      .from('trips')
-      .select('*')
-      .eq('driver_id', id)
-      .eq('status', 'completed')
-      .gte('trip_date', cutoff.toISOString().split('T')[0])
-      .order('trip_date', { ascending: false });
+    const deadheadCutoff = new Date(cutoff);
+    deadheadCutoff.setDate(deadheadCutoff.getDate() - 3);
+
+    const [
+      { data: trips, error: tripsError },
+      { count: lifetimeTrips, error: countError },
+      { data: allCompletedTrips, error: allTripsError }
+    ] = await Promise.all([
+      supabase
+        .from('trips')
+        .select('trip_display_id, route_label, total_earnings, fuel_deducted, net_earnings, blockchain_hash, trip_date, distance')
+        .eq('driver_id', id)
+        .eq('status', 'completed')
+        .gte('trip_date', cutoff.toISOString().split('T')[0])
+        .order('trip_date', { ascending: false }),
+      supabase
+        .from('trips')
+        .select('*', { count: 'exact', head: true })
+        .eq('driver_id', id)
+        .eq('status', 'completed'),
+      supabase
+        .from('trips')
+        .select('route_label, trip_date')
+        .eq('driver_id', id)
+        .eq('status', 'completed')
+        .gte('trip_date', deadheadCutoff.toISOString().split('T')[0])
+        .order('trip_date', { ascending: false })
+        .limit(300)
+    ]);
 
     if (tripsError) {
       return res.status(500).json({ error: 'Failed to fetch trips.', details: tripsError.message });
     }
-
-    const { count: lifetimeTrips, error: countError } = await supabase
-      .from('trips')
-      .select('*', { count: 'exact', head: true })
-      .eq('driver_id', id)
-      .eq('status', 'completed');
-
+    
+    let safeLifetimeTrips = lifetimeTrips;
     if (countError) {
       logger.warn('Failed to fetch lifetime trips count:', countError.message);
+      safeLifetimeTrips = null;
+    }
+    
+    if (allTripsError) {
+      logger.warn('Failed to fetch all completed trips for deadhead calculation:', allTripsError.message);
     }
 
-    // Weekly Chart Aggregation (always shows past 7 days)
-    const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const weeklyChartMap = {};
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const dayLabel = daysOfWeek[d.getDay()];
-      weeklyChartMap[dayLabel] = 0;
-    }
-
-    trips.forEach(trip => {
-      const tripDate = new Date(trip.trip_date);
-      const dayLabel = daysOfWeek[tripDate.getDay()];
-      if (weeklyChartMap[dayLabel] !== undefined) {
-        weeklyChartMap[dayLabel] += trip.total_earnings;
-      }
-    });
-
-    const weeklyChart = Object.entries(weeklyChartMap).map(([day, earnings]) => ({
-      day,
-      earnings
-    }));
-
-    let totalKm = 0;
-    trips.forEach(trip => {
-      if (trip.distance) {
-        const distanceNum = parseInt(String(trip.distance, 10).replace(/[^0-9]/g, '')) || 0;
-        totalKm += distanceNum;
-      }
-    });
-
-    // Deadhead Trips Saved logic
-    const { data: allCompletedTrips, error: allTripsError } = await supabase
-      .from('trips')
-      .select('route_label, trip_date')
-      .eq('driver_id', id)
-      .eq('status', 'completed')
-      .order('trip_date', { ascending: true });
-
-    let deadheadTripsSaved = 0;
-    if (allCompletedTrips && allCompletedTrips.length > 1) {
-      for (let i = 1; i < allCompletedTrips.length; i++) {
-        const prevTrip = allCompletedTrips[i - 1];
-        const currTrip = allCompletedTrips[i];
-        
-        const prevRoute = (prevTrip.route_label || '').split(' → ');
-        const currRoute = (currTrip.route_label || '').split(' → ');
-        
-        if (prevRoute.length === 2 && currRoute.length === 2) {
-          const prevDrop = prevRoute[1].trim().toLowerCase();
-          const currPickup = currRoute[0].trim().toLowerCase();
-          
-          if (prevDrop === currPickup) {
-            const prevDate = new Date(prevTrip.trip_date);
-            const currDate = new Date(currTrip.trip_date);
-            const diffDays = Math.abs(currDate - prevDate) / (1000 * 60 * 60 * 24);
-            if (diffDays <= 3) {
-              deadheadTripsSaved++;
-            }
-          }
-        }
-      }
-    }
-
-    const totalNetEarnings = trips.reduce((sum, t) => sum + t.net_earnings, 0);
+    const aggregated = calculateEarningsAggregation(trips, allCompletedTrips, safeLifetimeTrips);
 
     res.json({
       period,
-      gross_earnings: trips.reduce((sum, t) => sum + t.total_earnings, 0),
-      net_earnings: totalNetEarnings,
-      trips_completed: trips.length,
-      weekly_chart: weeklyChart,
-      trips: trips.map(t => ({
+      ...aggregated,
+      trips: (trips || []).map(t => ({
         trip_display_id: t.trip_display_id,
         route_label: t.route_label,
         gross_earnings: t.total_earnings,
@@ -1613,13 +1590,7 @@ router.get('/:id/earnings', authenticate, userLimiter, requirePolicy('driver:vie
         blockchain_hash: t.blockchain_hash,
         receipt_link: t.blockchain_hash ? `https://polygonscan.com/tx/${t.blockchain_hash}` : null,
         trip_date: t.trip_date
-      })),
-      cumulative_stats: {
-        total_km: totalKm,
-        avg_earning_per_km: totalKm > 0 ? (totalNetEarnings / 100.0) / totalKm : 0,
-        lifetime_trips: lifetimeTrips || 0
-      },
-      deadhead_trips_saved: deadheadTripsSaved
+      }))
     });
 
   } catch (err) {
