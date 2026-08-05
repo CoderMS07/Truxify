@@ -364,8 +364,6 @@ if (process.env.NODE_ENV === 'production') {
   })
 }
 
-app.use('/api/earnings', earningsRouter);
-
 // Payload parsers
 const jsonBodyLimit =
   process.env.JSON_BODY_LIMIT || '1mb';
@@ -451,6 +449,11 @@ app.use('/api/payments', paymentRoutes)
 app.use('/api/driver', deadheadRoutes)
 app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
+// Mounted here, with the other REST routes, so it sits behind the full
+// middleware chain — body parsers, correlation/request IDs, HPP protection,
+// content-type enforcement, fraud detection and the /api rate limiter.
+// Registering it earlier silently bypasses every one of them.
+app.use('/api/earnings', earningsRouter)
 app.use('/api/v1/shipment', shipmentRoutes)
 app.use('/api/loads', loadRoutes)
 app.use('/api/support', supportRoutes)
