@@ -95,7 +95,9 @@ class LocationService {
   Future<String> resolveAddress(LatLng point) async {
     final cacheKey = '${point.latitude.toStringAsFixed(6)},${point.longitude.toStringAsFixed(6)}';
     if (_reverseCache.containsKey(cacheKey)) {
-      return _reverseCache[cacheKey]!;
+      final cachedValue = _reverseCache.remove(cacheKey)!;
+      _reverseCache[cacheKey] = cachedValue;
+      return cachedValue;
     }
     final uri = Uri.https(
       _host,
