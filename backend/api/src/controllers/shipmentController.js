@@ -19,10 +19,9 @@ export const getShipmentDetails = async (req, res) => {
       return res.status(404).json({ error: 'Shipment not found' });
     }
 
-    // Authorization check: Verify if the authenticated user is the owner (customer) or driver
-    // The issue states: "matches the ownerId of the requested shipment"
-    // In our context, customer_id represents the owner.
-    if (shipment.customer_id !== req.user.id) {
+    // Authorization check: Verify if the authenticated user is the owner
+    // (customer) or the assigned driver of the shipment.
+    if (shipment.customer_id !== req.user.id && shipment.driver_id !== req.user.id) {
       logger.warn({ userId: req.user.id, shipmentId }, 'Unauthorized access attempt to shipment details');
       return res.status(403).json({ error: 'Forbidden: You do not have access to this shipment.' });
     }
