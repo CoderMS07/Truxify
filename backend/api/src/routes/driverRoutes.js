@@ -127,7 +127,7 @@
  */
 
 import express from 'express';
-import { supabase, redisClient, createUserClient } from '../config/db.js';
+import { supabase, supabaseAdmin, redisClient, createUserClient } from '../config/db.js';
 import { getDriverReputation } from '../services/reputation.js';
 import { predictDriverProfit } from '../services/ml.js';
 import { calculateEarningsAggregation } from '../services/driverEarningsService.js';
@@ -597,7 +597,7 @@ router.get('/trips', authenticate, userLimiter, requirePolicy('driver:view-trips
     const tripDisplayIds = (trips || []).map(t => t.trip_display_id).filter(Boolean);
     let escrowMap = {};
     if (tripDisplayIds.length > 0) {
-      const { data: orders } = await supabase
+      const { data: orders } = await supabaseAdmin
         .from('orders')
         .select('order_display_id, escrow_status')
         .in('order_display_id', tripDisplayIds);
@@ -707,17 +707,15 @@ router.get('/trips/:tripDisplayId/items', authenticate, userLimiter, requirePoli
   const { tripDisplayId } = req.params;
 
   try {
-    const [ { data: trip, error: tripError }, { data: items, error } ] = await Promise.all([
-      supabase.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle(),
-      supabase.from('trip_items').select('*').eq('trip_display_id', tripDisplayId)
-    ]);
-    
+    const { data: trip, error: tripError } = await supabaseAdmin.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle();
     if (tripError) {
       logger.error('Error fetching trip for ownership check:', tripError.message);
       return res.status(500).json({ error: 'Internal Server Error' });
     }
-    
+
     if (!trip) return res.status(403).json({ error: 'Access Denied: Trip does not belong to you.' });
+
+    const { data: items, error } = await supabaseAdmin.from('trip_items').select('*').eq('trip_display_id', tripDisplayId);
 
     if (error) return res.status(500).json({ error: 'Failed to fetch trip items.', details: error.message });
     res.json(items || []);
@@ -756,17 +754,15 @@ router.get('/trips/:tripDisplayId/stops', authenticate, userLimiter, requirePoli
   const { tripDisplayId } = req.params;
 
   try {
-    const [ { data: trip, error: tripError }, { data: stops, error } ] = await Promise.all([
-      supabase.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle(),
-      supabase.from('trip_stops').select('*').eq('trip_display_id', tripDisplayId).order('sort_order', { ascending: true })
-    ]);
-    
+    const { data: trip, error: tripError } = await supabaseAdmin.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle();
     if (tripError) {
       logger.error('Error fetching trip for ownership check:', tripError.message);
       return res.status(500).json({ error: 'Internal Server Error' });
     }
-    
+
     if (!trip) return res.status(403).json({ error: 'Access Denied: Trip does not belong to you.' });
+
+    const { data: stops, error } = await supabaseAdmin.from('trip_stops').select('*').eq('trip_display_id', tripDisplayId).order('sort_order', { ascending: true });
 
     if (error) return res.status(500).json({ error: 'Failed to fetch trip stops.', details: error.message });
     res.json(stops || []);
@@ -805,17 +801,15 @@ router.get('/trips/:tripDisplayId/route-points', authenticate, userLimiter, requ
   const { tripDisplayId } = req.params;
 
   try {
-    const [ { data: trip, error: tripError }, { data: points, error } ] = await Promise.all([
-      supabase.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle(),
-      supabase.from('route_map_points').select('*').eq('trip_display_id', tripDisplayId).order('sort_order', { ascending: true })
-    ]);
-    
+    const { data: trip, error: tripError } = await supabaseAdmin.from('trips').select('id').eq('trip_display_id', tripDisplayId).eq('driver_id', req.user.id).maybeSingle();
     if (tripError) {
       logger.error('Error fetching trip for ownership check:', tripError.message);
       return res.status(500).json({ error: 'Internal Server Error' });
     }
-    
+
     if (!trip) return res.status(403).json({ error: 'Access Denied: Trip does not belong to you.' });
+
+    const { data: points, error } = await supabaseAdmin.from('route_map_points').select('*').eq('trip_display_id', tripDisplayId).order('sort_order', { ascending: true });
 
     if (error) return res.status(500).json({ error: 'Failed to fetch route points.', details: error.message });
     res.json(points || []);
