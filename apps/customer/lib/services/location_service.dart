@@ -25,11 +25,11 @@ class LocationService {
     _searchCache[query.toLowerCase().trim()] = results;
   }
 
-  static void _cacheReverse(String key, String address) {
+  static void _cacheReverse(String cacheKey, String address) {
     if (_reverseCache.length >= _maxCacheSize) {
       _reverseCache.remove(_reverseCache.keys.first);
     }
-    _reverseCache[key] = address;
+    _reverseCache[cacheKey] = address;
   }
 
   Future<List<LocationSuggestion>> searchPlaces(String query) async {
@@ -95,7 +95,9 @@ class LocationService {
   Future<String> resolveAddress(LatLng point) async {
     final cacheKey = '${point.latitude.toStringAsFixed(6)},${point.longitude.toStringAsFixed(6)}';
     if (_reverseCache.containsKey(cacheKey)) {
-      return _reverseCache[cacheKey]!;
+      final cachedValue = _reverseCache.remove(cacheKey)!;
+      _reverseCache[cacheKey] = cachedValue;
+      return cachedValue;
     }
     final uri = Uri.https(
       _host,
