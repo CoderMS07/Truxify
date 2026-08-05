@@ -1,4 +1,4 @@
-import { supabase, firebaseAdmin } from '../config/db.js';
+import { supabase, supabaseAdmin, firebaseAdmin } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import crypto from 'crypto';
 import { measureExecution } from '../core/performanceMetrics.js';
@@ -166,10 +166,14 @@ export function verifyDeliveryOtpHash(otp, otpRecord) {
 
 export async function storeDeliveryOtp(orderId, otp, ttlMinutes = 15) {
   return measureExecution('NotificationService.storeDeliveryOtp', async () => {
+    if (!supabaseAdmin) {
+      logger.error('[NotificationService] Service-role client not configured — cannot store OTP.');
+      return null;
+    }
     const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
     const { hash: otpHash, salt: otpSalt } = hashDeliveryOtp(otp);
 
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('delivery_otps')
       .insert({
         order_id: orderId,
@@ -193,7 +197,11 @@ export async function storeDeliveryOtp(orderId, otp, ttlMinutes = 15) {
 
 export async function getActiveDeliveryOtp(orderId) {
   return measureExecution('NotificationService.getActiveDeliveryOtp', async () => {
-    const { data, error } = await supabase
+    if (!supabaseAdmin) {
+      logger.error('[NotificationService] Service-role client not configured — cannot read OTP.');
+      return null;
+    }
+    const { data, error } = await supabaseAdmin
       .from('delivery_otps')
       .select('id, otp_hash, otp_salt, expires_at')
       .eq('order_id', orderId)
@@ -218,7 +226,11 @@ export async function verifyDeliveryOtp(otpId) {
     // unverified OTPs for an order. This ensures only the matched OTP
     // (which was validated by the caller via timing-safe hash comparison)
     // is consumed, preventing any future caller from bypassing verification.
-    const { data, error } = await supabase
+    if (!supabaseAdmin) {
+      logger.error('[NotificationService] Service-role client not configured — cannot verify OTP.');
+      return false;
+    }
+    const { data, error } = await supabaseAdmin
       .from('delivery_otps')
       .update({
         verified: true,
@@ -245,7 +257,11 @@ export async function verifyDeliveryOtp(otpId) {
 
 export async function expireDeliveryOtps(orderId) {
   return measureExecution('NotificationService.expireDeliveryOtps', async () => {
-    const { error } = await supabase
+    if (!supabaseAdmin) {
+      logger.error('[NotificationService] Service-role client not configured — cannot expire OTPs.');
+      return;
+    }
+    const { error } = await supabaseAdmin
       .from('delivery_otps')
       .update({ expires_at: new Date().toISOString() })
       .eq('order_id', orderId)
