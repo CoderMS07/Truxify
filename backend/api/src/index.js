@@ -1,5 +1,6 @@
 import express from 'express'
 import { corsMiddleware } from './middleware/cors.js'
+import { compressionMiddleware } from './config/compression.js'
 import helmet from 'helmet' // 🔒 ADDED HELMET IMPORT FOR ISSUES #361 & #944
 import http from 'http'
 import dotenv from 'dotenv'
@@ -351,6 +352,14 @@ app.use(helmet({
 }))
 
 app.use(corsMiddleware)
+
+// ============================================================================
+// RESPONSE COMPRESSION
+// Registered after the security headers and before the routes that generate
+// large bodies. Clients that do not advertise Accept-Encoding: gzip continue
+// to receive identical uncompressed responses.
+// ============================================================================
+app.use(compressionMiddleware)
 
 // ── Production header sanitization (defense in depth) ────────────────
 // Even if a proxy or misconfiguration lets dev auth headers through,
