@@ -47,8 +47,9 @@ vi.mock('../../src/middleware/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock('./escrow.js', () => ({
+vi.mock('../../src/services/escrow.js', () => ({
   confirmEscrowRefund: vi.fn(),
+  submitEscrowRefund: vi.fn(),
 }));
 
 import { OrderRepository } from '../../src/repositories/orderRepository.js';
@@ -114,7 +115,7 @@ describe('reconcilePendingEscrowRefunds', () => {
     configureBuilder([{
       id: 'oB',
       order_display_id: 'OB',
-      escrow_refund_retry_count: 2,
+      escrow_refund_attempts: 2,
       updated_at: recentUpdate
     }]);
 
