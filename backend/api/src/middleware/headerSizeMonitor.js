@@ -7,7 +7,8 @@ export default function headerSizeMonitor(req, res, next) {
     return next();
   }
 
-  const limit = Number(process.env.HEADER_SIZE_LIMIT || DEFAULT_LIMIT);
+  const configuredLimit = Number(process.env.HEADER_SIZE_LIMIT);
+  const limit = Number.isFinite(configuredLimit) && configuredLimit > 0 ? configuredLimit : DEFAULT_LIMIT;
 
   let totalSize = 0;
 
