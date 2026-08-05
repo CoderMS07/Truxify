@@ -3,7 +3,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:truxify_shared/truxify_shared.dart';
 import '../models/app_models.dart';
 import '../theme/app_theme.dart';
-import '../services/supabase_service.dart';
 
 class ChatScreen extends StatefulWidget {
   final Trip trip;

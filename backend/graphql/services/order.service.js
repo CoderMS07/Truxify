@@ -31,6 +31,21 @@ function mapOrder(row) {
     };
 }
 
+const ORDER_STATUS_TO_DB = {
+    PENDING: 'pending',
+    CONFIRMED: 'truck_assigned',
+    ASSIGNED: 'truck_assigned',
+    IN_TRANSIT: 'in_transit',
+    COMPLETED: 'delivered',
+    CANCELLED: 'cancelled',
+    DISPUTED: 'cancelled',
+};
+
+function toDbStatus(status) {
+    if (!status) return status;
+    return ORDER_STATUS_TO_DB[status] || status.toLowerCase();
+}
+
 const typeDefs = gql`
     extend type Query {
         order(id: ID!): Order
@@ -151,7 +166,7 @@ const resolvers = {
             }
             
             if (status) {
-                query = query.eq('status', status);
+                query = query.eq('status', toDbStatus(status));
             }
             
             const { data, error } = await query;
@@ -187,7 +202,7 @@ const resolvers = {
                     distance: input.distance,
                     cargo_type: input.cargoType,
                     amount: input.amount,
-                    status: 'PENDING',
+                    status: toDbStatus(input.status) || 'pending',
                     created_at: new Date().toISOString()
                 }])
                 .select()
@@ -199,7 +214,7 @@ const resolvers = {
         updateOrder: async (_, { id, input }, { user }) => {
             const currentUser = requireUser(user);
             const updates = {
-                status: input.status,
+                status: toDbStatus(input.status),
                 pickup: input.pickup || undefined,
                 dropoff: input.dropoff || undefined,
                 updated_at: new Date().toISOString()
@@ -228,7 +243,7 @@ const resolvers = {
             let query = supabase
                 .from('orders')
                 .update({
-                    status: 'CANCELLED',
+                    status: 'cancelled',
                     cancellation_reason: reason,
                     updated_at: new Date().toISOString()
                 })

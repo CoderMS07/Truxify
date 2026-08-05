@@ -15,13 +15,8 @@ export const fraudDetectionMiddleware = async (req, res, next) => {
     const isCritical = criticalEndpoints.some(endpoint => req.path.startsWith(endpoint));
 
     if (!userId) {
-      if (isCritical) {
-        logger.warn('[Fraud] Blocking unauthenticated request to critical endpoint');
-        return res.status(401).json({
-          error: 'Authentication required for this endpoint',
-        });
-      }
-      logger.warn('[Fraud] Skipping fraud check — no userId on request');
+      // Authentication has not run yet or this is a public endpoint.
+      // Never block — just skip fraud checks and let authenticate() handle authz.
       return next();
     }
 
