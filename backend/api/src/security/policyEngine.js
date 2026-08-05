@@ -104,6 +104,8 @@ const POLICIES = {
 
   'liquibase:migrate':         { roles: [ROLES.ADMIN] },
   'liquibase:rollback':        { roles: [ROLES.ADMIN] },
+
+  'ebpf:manage':               { roles: [ROLES.ADMIN] },
 };
 
 export class PolicyEngine {
