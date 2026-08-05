@@ -127,6 +127,8 @@ const POLICIES = {
   'demand:view-heatmap':       { roles: [ROLES.DRIVER, ROLES.ADMIN] },
   'liquibase:migrate':         { roles: [ROLES.ADMIN] },
   'liquibase:rollback':        { roles: [ROLES.ADMIN] },
+
+  'ebpf:manage':               { roles: [ROLES.ADMIN] },
 };
 
 export class PolicyEngine {
