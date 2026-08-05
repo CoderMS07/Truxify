@@ -289,6 +289,42 @@ describe('complete_trip_tx — order-linked trip finalization (issue #5756)', ()
   });
 });
 
+describe('SECURITY DEFINER RPC ownership checks resolve the caller to profiles.id (issue #6275)', () => {
+  let fixContent;
+
+  beforeAll(async () => {
+    const fixPath = path.resolve(__dirname, '../../../../supabase/migrations/20260805120000_fix_rpc_ownership_checks.sql');
+    fixContent = await fs.readFile(fixPath, 'utf8');
+  });
+
+  it('redefines all three affected RPC functions in the fix migration', () => {
+    expect(/CREATE OR REPLACE FUNCTION withdraw_funds_tx\(/i.test(fixContent)).toBe(true);
+    expect(/CREATE OR REPLACE FUNCTION submit_rating_tx\(/i.test(fixContent)).toBe(true);
+    expect(/CREATE OR REPLACE FUNCTION accept_bid_tx\(/i.test(fixContent)).toBe(true);
+  });
+
+  it('withdraw_funds_tx guards ownership via get_profile_id(), not auth.uid()', () => {
+    expect(
+      /IF auth\.uid\(\) IS NOT NULL AND get_profile_id\(\) <> p_driver_id THEN\s+RAISE EXCEPTION 'Unauthorized: you can only withdraw your own funds'/i.test(fixContent)
+    ).toBe(true);
+    expect(/IF auth\.uid\(\) <> p_driver_id THEN/i.test(fixContent)).toBe(false);
+  });
+
+  it('submit_rating_tx guards ownership via get_profile_id(), not auth.uid()', () => {
+    expect(
+      /IF auth\.uid\(\) IS NOT NULL AND get_profile_id\(\) <> p_customer_id THEN\s+RAISE EXCEPTION 'Unauthorized: you can only submit ratings for yourself'/i.test(fixContent)
+    ).toBe(true);
+    expect(/IF auth\.uid\(\) <> p_customer_id THEN/i.test(fixContent)).toBe(false);
+  });
+
+  it('accept_bid_tx guards ownership via get_profile_id() while preserving the service_role bypass', () => {
+    expect(
+      /IF auth\.role\(\) <> 'service_role'\s+AND \(auth\.uid\(\) IS NULL OR get_profile_id\(\) <> v_customer_id\) THEN\s+RAISE EXCEPTION 'Unauthorized: you can only accept bids on your own orders'/i.test(fixContent)
+    ).toBe(true);
+    expect(/auth\.uid\(\) <> v_customer_id/i.test(fixContent)).toBe(false);
+  });
+});
+
 describe('Service-level RPC calls carry an authenticated client (issue #5737)', () => {
   const base = path.resolve(__dirname, '../../src');
   const readSource = (rel) => readFileSync(path.resolve(base, rel), 'utf8');
