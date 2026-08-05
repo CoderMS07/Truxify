@@ -4,13 +4,13 @@ import request from 'supertest';
 
 const warnMock = vi.fn();
 
-vi.mock('../../src/middleware/logger.js', () => ({
+vi.mock('../src/middleware/logger.js', () => ({
   default: {
     warn: warnMock,
   },
 }));
 
-import headerSizeMonitor from '../../src/middleware/headerSizeMonitor.js';
+import headerSizeMonitor from '../src/middleware/headerSizeMonitor.js';
 
 function createApp(headers = {}) {
   const app = express();

@@ -4,13 +4,13 @@ import request from 'supertest';
 
 const warnMock = vi.fn();
 
-vi.mock('../../src/middleware/logger.js', () => ({
+vi.mock('../src/middleware/logger.js', () => ({
   default: {
     warn: warnMock,
   },
 }));
 
-import cookieSecurityValidator from '../../src/middleware/cookieSecurityValidator.js';
+import cookieSecurityValidator from '../src/middleware/cookieSecurityValidator.js';
 
 function createApp(setCookieValue) {
   const app = express();

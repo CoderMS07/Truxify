@@ -4,13 +4,13 @@ import request from 'supertest';
 
 const warnMock = vi.fn();
 
-vi.mock('../../src/middleware/logger.js', () => ({
+vi.mock('../src/middleware/logger.js', () => ({
   default: {
     warn: warnMock,
   },
 }));
 
-import cacheControlVerifier from '../../src/middleware/cacheControlVerifier.js';
+import cacheControlVerifier from '../src/middleware/cacheControlVerifier.js';
 
 function createApp(headers = {}) {
   const app = express();

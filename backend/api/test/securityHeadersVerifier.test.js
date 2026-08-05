@@ -4,13 +4,13 @@ import request from 'supertest';
 
 const warnMock = vi.fn();
 
-vi.mock('../../src/middleware/logger.js', () => ({
+vi.mock('../src/middleware/logger.js', () => ({
   default: {
     warn: warnMock,
   },
 }));
 
-import securityHeadersVerifier from '../../src/middleware/securityHeadersVerifier.js';
+import securityHeadersVerifier from '../src/middleware/securityHeadersVerifier.js';
 
 function createApp(setHeaders = true) {
   const app = express();
