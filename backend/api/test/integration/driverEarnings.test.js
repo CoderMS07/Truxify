@@ -48,6 +48,7 @@ describe('GET /api/driver/:id/earnings', () => {
     vi.clearAllMocks();
   });
 
+  it('computes weekly earnings with deadhead savings', async () => {
     let deadheadChain = null;
     
     // Track which 'from' was called
