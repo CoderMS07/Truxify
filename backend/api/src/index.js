@@ -1,5 +1,6 @@
 import express from 'express'
 import { corsMiddleware } from './middleware/cors.js'
+import { compressionMiddleware } from './config/compression.js'
 import helmet from 'helmet' // 🔒 ADDED HELMET IMPORT FOR ISSUES #361 & #944
 import http from 'http'
 import dotenv from 'dotenv'
@@ -18,6 +19,7 @@ import tripRoutes from './routes/tripRoutes.js'
 import deviceRoutes from './routes/deviceRoutes.js'
 import documentRoutes from './routes/documentRoutes.js'
 import securityHeaderDuplicates from './middleware/securityHeaderDuplicates.js';
+import cookieSecurityValidator from './middleware/cookieSecurityValidator.js';
 import maintenancePhotoRoutes from './routes/maintenancePhotoRoutes.js'
 
 import { closeDbConnections, waitForMongoDb, validateConfig, redisClient } from './config/db.js'
@@ -289,7 +291,7 @@ validateEscrowSetup().then((valid) => {
   if (!valid) {
     logger.warn('⚠️ Escrow setup validation failed. On-chain escrow features may not work correctly.')
   }
-}).catch(err => console.error(err))
+}).catch(err => logger.error({ err }, 'Escrow setup validation failed'))
 
 const app = express()
 const server = http.createServer(app)
@@ -307,6 +309,7 @@ app.set('trust proxy', trustProxy)
 // Resolves missing security headers from Issues #361 and #944
 // ============================================================================
 app.use(securityHeaderDuplicates);
+app.use(cookieSecurityValidator);
 app.use(helmet({
   // Content Security Policy (CSP) - Prevents XSS and data injection
   contentSecurityPolicy: {
@@ -352,6 +355,14 @@ app.use(helmet({
 
 app.use(corsMiddleware)
 
+// ============================================================================
+// RESPONSE COMPRESSION
+// Registered after the security headers and before the routes that generate
+// large bodies. Clients that do not advertise Accept-Encoding: gzip continue
+// to receive identical uncompressed responses.
+// ============================================================================
+app.use(compressionMiddleware)
+
 // ── Production header sanitization (defense in depth) ────────────────
 // Even if a proxy or misconfiguration lets dev auth headers through,
 // strip them before they reach any route handler in production.
@@ -363,8 +374,6 @@ if (process.env.NODE_ENV === 'production') {
     next()
   })
 }
-
-app.use('/api/earnings', earningsRouter);
 
 // Payload parsers
 const jsonBodyLimit =
@@ -421,11 +430,9 @@ app.use(suspiciousRequests)
 // allowed types match the parsers registered above.
 app.use(requireJsonContent)
 
-// ============================================================================
-// 🆕 FRAUD DETECTION MIDDLEWARE (Global)
-// ============================================================================
-app.use(fraudDetectionMiddleware)
-app.use(networkAnalysisMiddleware)
+/// Fraud middleware is NOT registered globally here.
+// It is applied per-route after authenticate() so req.user is always set.
+// See individual route mounts below.
 
 // ============================================================================
 // RATE LIMITING
@@ -435,8 +442,8 @@ app.use('/api/health', healthRoutes)
 app.use('/api/v1/health', healthLimiter)
 app.use('/api/v1/health', healthRoutes)
 app.use('/api/', globalLimiter)
-app.use('/api/v1/trips', tripRoutes)
-
+app.use('/api/v1/trips', fraudDetectionMiddleware, networkAnalysisMiddleware, tripRoutes)
+app.use('/api/trips', tripRoutes)
 // ============================================================================
 // REQUEST-SCOPED CACHE — created per-request, destroyed after response.
 // Registers before all routes so every request handler benefits.
@@ -446,11 +453,16 @@ app.use('/api', requestCacheMiddleware)
 // ============================================================================
 // REST API ROUTING
 // ============================================================================
-app.use('/api/orders', orderRoutes)
-app.use('/api/payments', paymentRoutes)
+app.use('/api/orders', fraudDetectionMiddleware, networkAnalysisMiddleware, orderRoutes)
+app.use('/api/payments', fraudDetectionMiddleware, networkAnalysisMiddleware, paymentRoutes)
 app.use('/api/driver', deadheadRoutes)
 app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
+// Mounted here, with the other REST routes, so it sits behind the full
+// middleware chain — body parsers, correlation/request IDs, HPP protection,
+// content-type enforcement, fraud detection and the /api rate limiter.
+// Registering it earlier silently bypasses every one of them.
+app.use('/api/earnings', earningsRouter)
 app.use('/api/v1/shipment', shipmentRoutes)
 app.use('/api/loads', loadRoutes)
 app.use('/api/support', supportRoutes)

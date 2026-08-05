@@ -53,7 +53,8 @@ function cacheKey(req, idempotencyKey) {
 function readAndParse(str) {
   try {
     return JSON.parse(str);
-  } catch {
+  } catch (err) {
+    logger.warn({ err }, 'Malformed idempotency cached payload');
     return null;
   }
 }
