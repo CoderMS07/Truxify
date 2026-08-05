@@ -492,9 +492,6 @@ export function requireRole(allowedRoles) {
       return res.status(403).json({
         error: 'Forbidden: Insufficient privileges.',
         details: `Your account role '${req.user.role}' is not authorized to access this resource.`
-      return res.status(403).json({
-        error: "Forbidden: Insufficient privileges.",
-        details: `Your account role '${req.user.role}' is not authorized to access this resource.`,
       });
     }
 
