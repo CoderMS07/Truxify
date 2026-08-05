@@ -1,6 +1,7 @@
 import { supabase, firebaseAdmin } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import crypto from 'crypto';
+import { hashOtp, verifyOtpHash } from '../lib/otpHashing.js';
 import { measureExecution } from '../core/performanceMetrics.js';
 
 const TRANSIENT_ERROR_CODES = new Set([
@@ -133,9 +134,7 @@ export async function sendFcmNotification(userId, notification, data = {}) {
  *   and hex-encoded salt.
  */
 export function hashDeliveryOtp(otp, saltHex) {
-  const salt = saltHex || crypto.randomBytes(16).toString('hex');
-  const key = crypto.scryptSync(String(otp), salt, 64);
-  return { hash: key.toString('hex'), salt };
+  return hashOtp(otp, saltHex);
 }
 
 /**
@@ -145,23 +144,16 @@ export function hashDeliveryOtp(otp, saltHex) {
  * are compared with scrypt. Pre-migration rows (no salt) are compared with
  * SHA-256 so in-flight OTPs keep working for their remaining TTL window.
  *
+ * Delegates to the shared implementation in lib/otpHashing.js, which the
+ * phone login path uses too — the two previously diverged, with login left
+ * on bare unsalted SHA-256.
+ *
  * @param {string|number} otp
  * @param {{otp_hash?: string, otp_salt?: string}|null} otpRecord
  * @returns {boolean}
  */
 export function verifyDeliveryOtpHash(otp, otpRecord) {
-  if (!otpRecord) return false;
-  if (otpRecord.otp_salt) {
-    const { hash: submittedHash } = hashDeliveryOtp(otp, otpRecord.otp_salt);
-    const expected = String(otpRecord.otp_hash || '');
-    if (!/^[a-f0-9]{128}$/.test(expected)) return false;
-    return crypto.timingSafeEqual(Buffer.from(submittedHash, 'hex'), Buffer.from(expected, 'hex'));
-  }
-  if (otpRecord.otp_hash && /^[a-f0-9]{64}$/.test(otpRecord.otp_hash)) {
-    const submittedHash = crypto.createHash('sha256').update(String(otp)).digest('hex');
-    return crypto.timingSafeEqual(Buffer.from(submittedHash, 'hex'), Buffer.from(otpRecord.otp_hash, 'hex'));
-  }
-  return false;
+  return verifyOtpHash(otp, otpRecord);
 }
 
 export async function storeDeliveryOtp(orderId, otp, ttlMinutes = 15) {

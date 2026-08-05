@@ -167,6 +167,7 @@ router.get("/session", authenticate, userLimiter, (req, res) => {
 
 import crypto from "crypto";
 import { supabase } from "../config/db.js";
+import { isLegacyOtpRecord, verifyOtpHash } from "../lib/otpHashing.js";
 import { otpSendSchema } from "../validation/requestSchemas.js";
 import { z } from "zod";
 
@@ -206,7 +207,7 @@ router.post("/verify-otp", otpVerificationLimiter, async (req, res) => {
     // Look up the latest unused, unexpired OTP for this phone number
     const { data: otpRecord, error: fetchErr } = await supabase
       .from("phone_otps")
-      .select("id, otp_hash, expires_at, verified")
+      .select("id, otp_hash, otp_salt, expires_at, verified")
       .eq("phone", phone)
       .eq("verified", false)
       .gt("expires_at", new Date().toISOString())
@@ -223,19 +224,18 @@ router.post("/verify-otp", otpVerificationLimiter, async (req, res) => {
       return res.status(400).json({ success: false, error: "OTP not found or has expired." });
     }
 
-    // Timing-safe comparison to prevent timing attacks
-    const submittedHash = crypto.createHash("sha256").update(String(otp)).digest("hex");
-    const storedHash = otpRecord.otp_hash;
-
-    const isMatch =
-      submittedHash.length === storedHash.length &&
-      crypto.timingSafeEqual(
-        Buffer.from(submittedHash, "hex"),
-        Buffer.from(storedHash, "hex"),
-      );
-
-    if (!isMatch) {
+    // Salted scrypt comparison, timing-safe. Falls back to the legacy
+    // unsalted digest for rows written before the salt migration so codes
+    // already in flight are not invalidated mid-window.
+    if (!verifyOtpHash(otp, otpRecord)) {
       return res.status(400).json({ success: false, error: "Invalid OTP." });
+    }
+
+    if (isLegacyOtpRecord(otpRecord)) {
+      logger.warn(
+        { otpId: otpRecord.id },
+        "[auth/verify-otp] Verified a pre-migration unsalted OTP record"
+      );
     }
 
     // Consume the OTP so it cannot be reused
