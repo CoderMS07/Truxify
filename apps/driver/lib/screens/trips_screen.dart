@@ -245,15 +245,26 @@ class _TripsScreenState extends State<TripsScreen> {
 
     if (currentStop.isEmpty) return;
 
+    // The trips API returns the order this trip serves via the trip's
+    // `order_id` column. Resolve it so the captured PoD is uploaded with a
+    // real order id instead of being silently skipped by SyncService.
+    final tripRow = _trips.firstWhere(
+      (t) => t['trip_display_id']?.toString() == tripId,
+      orElse: () => <String, dynamic>{},
+    );
+    final orderId = tripRow['order_id']?.toString();
+
     if (!mounted) return;
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (context) => ProofOfDeliveryScreen(
         tripDisplayId: currentStop['trip_display_id'].toString(),
         stopId: currentStop['id'].toString(),
+        orderId: orderId,
         onComplete: (photoPath, signPath) async {
           await SyncService.instance.queueOrSyncPoD(
             tripDisplayId: currentStop['trip_display_id'].toString(),
             stopId: currentStop['id'].toString(),
+            orderId: orderId,
             photoPath: photoPath,
             signaturePath: signPath,
           );
