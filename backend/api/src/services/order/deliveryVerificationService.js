@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { supabase, redisClient, mongoDb } from "../../config/db.js";
+import { supabase, supabaseAdmin, redisClient, mongoDb } from "../../config/db.js";
 import { DomainError } from "./domainError.js";
 import { measureExecution } from "../../core/performanceMetrics.js";
 import { haversineKm } from "../../lib/pricing.js";
@@ -543,7 +543,7 @@ export class DeliveryVerificationService {
               p_otp_id: otpRecord.id,
               p_release_tx_hash: releaseTxHash,
             },
-            userClient,
+            supabaseAdmin,
           );
           tripData = rpcResult.data;
 

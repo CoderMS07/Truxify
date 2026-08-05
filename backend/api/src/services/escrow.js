@@ -229,30 +229,6 @@ export async function getEscrowBooking(escrowBookingId) {
   } catch (err) {
     logger.error(`[escrow] getEscrowBooking failed: ${err.message}`);
     return null;
- * Read the on-chain booking struct for a booking id.
- *
- * @param {string} escrowBookingId — bytes32 booking id (e.g. from order.escrow_booking_id)
- * @returns {Promise<{customer: string, driver: string, amount: bigint, status: number, paid: boolean, started: boolean, createdAt: bigint}|null>}
- */
-export async function getEscrowBooking (escrowBookingId) {
-  if (!escrowContract) {
-    logger.warn('[escrow] Contract not initialised — cannot read booking.')
-    return null
-  }
-  if (!escrowBookingId) {
-    logger.warn('[escrow] Cannot read booking without a booking id.')
-    return null
-  }
-
-  const booking = await escrowContract.bookings(escrowBookingId)
-  return {
-    customer: booking.customer,
-    driver: booking.driver,
-    amount: booking.amount,
-    status: Number(booking.status),
-    paid: booking.paid,
-    started: booking.started,
-    createdAt: booking.createdAt,
   }
 }
 
@@ -593,45 +569,6 @@ export async function submitEscrowCancelWithPenalty (orderDisplayId, driverFeeWe
       }
     } catch (err) {
       logger.error(`[escrow] cancelWithPenalty failed for booking ${orderDisplayId}: ${err.message}`)
-      return { txHash: null, bookingId, error: err.message }
-    }
-  })
-}
-
-/**
- * Call the contract's markBookingStarted function when a driver begins a trip.
- * Marks the on-chain booking as started, which is required for the escrow
- * release/withdraw logic to proceed.
- *
- * @param {string} orderDisplayId — display ID of the order, e.g. "#FF20260521"
- * @returns {Promise<{txHash: string | null, bookingId: string, error?: string}>}
- */
-export async function markEscrowBookingStarted(orderDisplayId) {
-  return measureExecution('EscrowService.markEscrowBookingStarted', async () => {
-    const bookingId = getEscrowBookingId(orderDisplayId)
-
-    if (!escrowContract) {
-      logger.warn('[escrow] Contract not initialised — skipping markBookingStarted.')
-      return { txHash: null, bookingId }
-    }
-
-    try {
-      const tx = await escrowContract.markBookingStarted(bookingId)
-      logger.info(`[escrow] markBookingStarted tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
-      return {
-        txHash: tx.hash,
-        bookingId,
-        waitForConfirmation: async () => {
-          const receipt = await tx.wait(1)
-          if (!receipt || receipt.status === 0) {
-            throw new Error('Escrow markBookingStarted transaction reverted or was not found.')
-          }
-          logger.info(`[escrow] markBookingStarted confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`)
-          return receipt
-        },
-      }
-    } catch (err) {
-      logger.error(`[escrow] markBookingStarted failed for booking ${orderDisplayId}: ${err.message}`)
       return { txHash: null, bookingId, error: err.message }
     }
   })
