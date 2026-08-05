@@ -1,6 +1,6 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { supabase } from '../config/db.js';
+import { supabase, supabaseAdmin } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { paramIdSchema } from '../validation/requestSchemas.js';
 import { authenticate } from '../middleware/auth.js';
@@ -23,13 +23,11 @@ const telemetryHistoryLimiter = rateLimit({
   message: { error: 'Rate limit exceeded', retryAfter: 900 },
 });
 
-function canReadTelemetry(user, load) {
-  return user?.role === 'admin' || load.customer_id === user?.id || load.driver_id === user?.id;
-}
-
-// =====================================================================// 1. POST TELEMETRY DATA (IoT)
+// ============================================================================
+// 1. POST TELEMETRY DATA (IoT)
 // POST /api/iot/telemetry/:id
-// =====================================================================router.post('/telemetry/:id', authenticate, validateParams(paramIdSchema), async (req, res) => {
+// ============================================================================
+router.post('/telemetry/:id', telemetryHistoryLimiter, authenticate, validateParams(paramIdSchema), async (req, res) => {
   try {
     const parseResult = telemetrySchema.safeParse(req.body);
     if (!parseResult.success) {
@@ -63,8 +61,9 @@ function canReadTelemetry(user, load) {
       return res.status(403).json({ error: 'Access denied for this load' });
     }
 
-    // Insert telemetry
-    const { error: insertErr } = await supabase
+    // Insert telemetry (service-role client: RLS only permits service_role to
+    // write temperature_telemetry, so the backend must use supabaseAdmin).
+    const { error: insertErr } = await (supabaseAdmin ?? supabase)
       .from('temperature_telemetry')
       .insert({
         load_id: loadId,
@@ -108,19 +107,14 @@ function canReadTelemetry(user, load) {
   }
 });
 
-// =====================================================================// 2. GET TELEMETRY DATA
+// =====================================================================
+// 2. GET TELEMETRY DATA
 // GET /api/iot/telemetry/:id
-// =====================================================================router.get('/telemetry/:id', telemetryHistoryLimiter, authenticate, validateParams(paramIdSchema), async (req, res) => {
-  try {
-    const loadId = req.params.id;
-    const { data: load, error: loadErr } = await supabase
-      .from('load_offers')
-      .select('id, customer_id, driver_id')
-router.get('/telemetry/:id', authenticate, validateParams(paramIdSchema), async (req, res) => {
+// =====================================================================
+router.get('/telemetry/:id', telemetryHistoryLimiter, authenticate, validateParams(paramIdSchema), async (req, res) => {
   const loadId = req.params.id;
 
   try {
-    // Fetch the load to check ownership
     const { data: load, error: loadErr } = await supabase
       .from('load_offers')
       .select('customer_id')
@@ -128,7 +122,6 @@ router.get('/telemetry/:id', authenticate, validateParams(paramIdSchema), async 
       .maybeSingle();
 
     if (loadErr) {
-      logger.error('Failed to fetch load for telemetry history:', loadErr);
       logger.error('Failed to fetch load for telemetry authorization:', loadErr);
       return res.status(500).json({ error: 'Database error' });
     }
@@ -137,13 +130,9 @@ router.get('/telemetry/:id', authenticate, validateParams(paramIdSchema), async 
       return res.status(404).json({ error: 'Load not found' });
     }
 
-    if (!canReadTelemetry(req.user, load)) {
-      return res.status(403).json({ error: 'Access denied for this load' });
-    // Authorization: admin, customer, or assigned driver
     if (req.user.role !== 'admin') {
       let isAuthorized = load.customer_id === req.user.id;
 
-      // Check if the user is the assigned driver for this load
       if (!isAuthorized) {
         const { data: order } = await supabase
           .from('orders')
@@ -160,13 +149,13 @@ router.get('/telemetry/:id', authenticate, validateParams(paramIdSchema), async 
       }
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await (supabaseAdmin ?? supabase)
       .from('temperature_telemetry')
       .select('*')
       .eq('load_id', loadId)
       .order('recorded_at', { ascending: false })
       .limit(20);
-
+      
     if (error) {
       return res.status(500).json({ error: 'Failed to fetch telemetry' });
     }

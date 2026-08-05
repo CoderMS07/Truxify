@@ -125,6 +125,8 @@ const POLICIES = {
   'webrtc:sync-offline':       { roles: [ROLES.DRIVER, ROLES.ADMIN] },
 
   'demand:view-heatmap':       { roles: [ROLES.DRIVER, ROLES.ADMIN] },
+  'liquibase:migrate':         { roles: [ROLES.ADMIN] },
+  'liquibase:rollback':        { roles: [ROLES.ADMIN] },
 };
 
 export class PolicyEngine {

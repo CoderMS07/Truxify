@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 
 import 'package:http/http.dart' as http;
 import '../core/config.dart';
@@ -82,7 +83,7 @@ class GeocodeService {
       _reverseCache['$lat,$lon'] = _CacheEntry(displayName, DateTime.now());
       return ll;
     } catch (e) {
-      print('Error: $e');
+      debugPrint('[GeocodeService] Error: $e');
       return null;
     }
   }
@@ -120,7 +121,7 @@ class GeocodeService {
       }
       return displayName;
     } catch (e) {
-      print('Error: $e');
+      debugPrint('[GeocodeService] Error: $e');
       return null;
     }
   }
@@ -148,7 +149,7 @@ class GeocodeService {
           .where((s) => s.isNotEmpty)
           .toList();
     } catch (e) {
-      print('Error: $e');
+      debugPrint('[GeocodeService] Error: $e');
       return [];
     }
   }

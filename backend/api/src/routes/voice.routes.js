@@ -2,12 +2,21 @@ import express from 'express';
 import multer from 'multer';
 import voiceAiService from '../services/voice/VoiceAiService.js';
 import logger from '../middleware/logger.js';
-// Assuming you have an auth middleware, we'll import it, or just leave it open for now
-import { requireAuth } from '../middleware/auth.js';
+import { authenticate } from '../middleware/auth.js';
+import { userLimiter } from '../middleware/rateLimiter.js';
 
 const router = express.Router();
-const upload = multer({ dest: 'uploads/voice/' }); // Temporary storage for incoming audio
-
+const upload = multer({
+  dest: 'uploads/voice/', // Temporary storage for incoming audio
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('audio/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only audio is allowed.'));
+    }
+  }
+});
 /**
  * @swagger
  * /api/v1/voice/assistant:
@@ -16,7 +25,7 @@ const upload = multer({ dest: 'uploads/voice/' }); // Temporary storage for inco
  *     description: Accepts an audio file, transcribes it, queries the LLM, and returns TTS audio.
  *     tags: [Voice]
  */
-router.post('/assistant', requireAuth, upload.single('audio'), async (req, res) => {
+router.post('/assistant', authenticate, userLimiter, upload.single('audio'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'Audio file is required' });

@@ -2,7 +2,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_gen/gen_l10n/app_localizations.dart';
 
 import '../l10n/app_localizations.dart';
 import '../services/auth_service.dart';
@@ -209,7 +208,7 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  void _verifyOtp() async {
+  Future<void> _verifyOtp() async {
     final otp = _otpControllers.map((controller) => controller.text).join();
 
     if (otp.length != 6 || !RegExp(r'^\d{6}$').hasMatch(otp)) {

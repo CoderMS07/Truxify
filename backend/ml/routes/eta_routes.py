@@ -1,10 +1,17 @@
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
-from typing import Optional, Dict, Any
-from services.traffic_pipeline import TrafficPipeline
-import numpy as np
+import hmac
+import logging
 import os
 from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy import text
+import numpy as np
+
+from services.traffic_pipeline import TrafficPipeline
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/eta", tags=["ETA Predictions"])
 
@@ -12,12 +19,30 @@ db_url = os.getenv('DATABASE_URL', 'sqlite:///./traffic.db')
 redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
 traffic_pipeline = TrafficPipeline(db_url, redis_url)
 
+
+async def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
+    ml_api_key = os.environ.get("ML_API_KEY")
+    if not ml_api_key:
+        logger.warning("ML_API_KEY not set - ML engine is unavailable (503)")
+        raise HTTPException(status_code=503, detail="ML engine not configured: missing ML_API_KEY")
+    if not x_api_key or not hmac.compare_digest(x_api_key, ml_api_key):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 class ETARequest(BaseModel):
     order_id: str
     source_lat: float
     source_lng: float
     dest_lat: float
     dest_lng: float
+
+
+class ETAUpdateRequest(BaseModel):
+    current_lat: float = Field(..., ge=-90, le=90, description="Current location latitude")
+    current_lng: float = Field(..., ge=-180, le=180, description="Current location longitude")
+    dest_lat: float = Field(..., ge=-90, le=90, description="Destination latitude")
+    dest_lng: float = Field(..., ge=-180, le=180, description="Destination longitude")
+
 
 class ETAResponse(BaseModel):
     order_id: str
@@ -28,8 +53,30 @@ class ETAResponse(BaseModel):
     congestion_level: Optional[float] = None
     timestamp: str
 
+
+def _order_is_assigned(order_id: str) -> bool:
+    """Return True only if the order exists and is assigned to a driver."""
+    try:
+        from app.models.database import SessionLocal
+        db = SessionLocal()
+        try:
+            result = db.execute(
+                text(
+                    "SELECT 1 FROM orders "
+                    "WHERE order_display_id = :oid AND driver_id IS NOT NULL"
+                ),
+                {"oid": order_id},
+            ).scalar()
+            return result is not None
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Order verification failed for {order_id}: {e}")
+        return False
+
+
 @router.post("/predict")
-async def predict_eta(request: ETARequest):
+async def predict_eta(request: ETARequest, _auth=Depends(verify_api_key)):
     """Predict ETA for a trip"""
     try:
         # Ingest traffic data
@@ -38,7 +85,7 @@ async def predict_eta(request: ETARequest):
             {'lat': request.source_lat, 'lng': request.source_lng},
             {'lat': request.dest_lat, 'lng': request.dest_lng}
         )
-        
+
         if traffic_data:
             # Get prediction
             features = np.array([[
@@ -48,9 +95,9 @@ async def predict_eta(request: ETARequest):
                 datetime.now().hour,
                 datetime.now().weekday()
             ]])
-            
+
             eta_seconds = traffic_pipeline.predict_eta(features)
-            
+
             if eta_seconds:
                 return ETAResponse(
                     order_id=request.order_id,
@@ -61,41 +108,42 @@ async def predict_eta(request: ETARequest):
                     congestion_level=traffic_data.congestion_level,
                     timestamp=datetime.now().isoformat()
                 )
-        
-        raise HTTPException(status_code=500, detail="ETA prediction failed")
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/update/{order_id}")
-async def update_eta(order_id: str):
-    """Update ETA in real-time"""
-    try:
-        # Get current location from tracking
-        # For demo, use simulated location
-        current_location = {'lat': 28.6139, 'lng': 77.2090}
-        destination = {'lat': 28.7041, 'lng': 77.1025}
-        
-        result = await traffic_pipeline.update_eta_realtime(
-            order_id,
-            current_location,
-            destination
-        )
-        
-        if result:
-            return {
-                'order_id': order_id,
-                'data': result,
-                'timestamp': datetime.now().isoformat()
-            }
-        
-        raise HTTPException(status_code=404, detail="Order not found")
-        
+        raise HTTPException(status_code=500, detail="ETA prediction failed")
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}")
+
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/update/{order_id}")
+async def update_eta(order_id: str, request: ETAUpdateRequest, _auth=Depends(verify_api_key)):
+    """Update ETA in real-time from real tracking coordinates"""
+    if not _order_is_assigned(order_id):
+        raise HTTPException(status_code=404, detail="Order not found or not assigned to a driver")
+
+    current_location = {'lat': request.current_lat, 'lng': request.current_lng}
+    destination = {'lat': request.dest_lat, 'lng': request.dest_lng}
+
+    result = await traffic_pipeline.update_eta_realtime(
+        order_id,
+        current_location,
+        destination
+    )
+
+    if result:
+        return {
+            'order_id': order_id,
+            'data': result,
+            'timestamp': datetime.now().isoformat()
+        }
+
+    raise HTTPException(status_code=500, detail="ETA update failed")
+
 
 @router.get("/traffic/{route_id}")
-async def get_traffic(route_id: str):
+async def get_traffic(route_id: str, _auth=Depends(verify_api_key)):
     """Get real-time traffic data"""
     try:
         traffic = await traffic_pipeline.get_real_time_traffic(route_id)
@@ -111,10 +159,13 @@ async def get_traffic(route_id: str):
             'message': 'No traffic data available'
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}")
+
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 @router.get("/forecast/{route_id}")
-async def get_forecast(route_id: str, hours: int = Query(1, ge=1, le=24)):
+async def get_forecast(route_id: str, hours: int = Query(1, ge=1, le=24), _auth=Depends(verify_api_key)):
     """Get traffic forecast"""
     try:
         forecast = await traffic_pipeline.get_traffic_forecast(route_id, hours)
@@ -124,10 +175,13 @@ async def get_forecast(route_id: str, hours: int = Query(1, ge=1, le=24)):
             'timestamp': datetime.now().isoformat()
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}")
+
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 @router.post("/train")
-async def train_model():
+async def train_model(_auth=Depends(verify_api_key)):
     """Trigger model retraining"""
     try:
         traffic_pipeline.train_model(epochs=50)
@@ -137,4 +191,6 @@ async def train_model():
             'timestamp': datetime.now().isoformat()
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}")
+
+        raise HTTPException(status_code=500, detail="Internal server error")

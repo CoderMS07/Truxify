@@ -22,6 +22,7 @@ except ImportError:
 import redis
 import os
 import logging
+from functools import partial
 
 logger = logging.getLogger(__name__)
 Base = declarative_base()
@@ -48,9 +49,42 @@ class TrafficPipeline:
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
         self.redis = redis.Redis.from_url(redis_url)
+        self._loop = asyncio.get_event_loop()
         self.model = self._load_or_create_model()
         self.gmaps_api_key = os.getenv('GOOGLE_MAPS_API_KEY', '')
         self.osrm_url = os.getenv('OSRM_URL', 'http://localhost:5000')
+        self._closed = False
+
+    def close(self):
+        """Dispose DB connection pool and close Redis connection.
+
+        Safe to call multiple times.
+        """
+        if self._closed:
+            return
+        try:
+            self.engine.dispose()
+        except Exception as e:
+            logger.error(f"Error disposing SQLAlchemy engine: {e}")
+        try:
+            self.redis.close()
+        except Exception as e:
+            logger.error(f"Error closing Redis connection: {e}")
+        self._closed = True
+        logger.info("TrafficPipeline resources released")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def __del__(self):
+        try:
+            if not getattr(self, '_closed', True):
+                self.close()
+        except Exception:
+            pass
         
     def _load_or_create_model(self):
         """Load existing LSTM model or create new"""
@@ -61,6 +95,11 @@ class TrafficPipeline:
         else:
             logger.info("Creating new LSTM model")
             return self._create_lstm_model()
+
+    def close(self):
+        """Dispose database connections and close Redis connection."""
+        self.engine.dispose()
+        self.redis.close()
     
     def _create_lstm_model(self):
         """Create LSTM model for ETA prediction"""
@@ -116,14 +155,16 @@ class TrafficPipeline:
                 session.close()
             
             # Cache in Redis
-            self.redis.setex(
-                f"traffic:{route_id}",
-                300,  # 5 minutes
-                json.dumps({
-                    'speed': traffic_entry.traffic_speed,
-                    'congestion': traffic_entry.congestion_level,
-                    'timestamp': traffic_entry.timestamp.isoformat()
-                })
+            await self._loop.run_in_executor(
+                None, partial(self.redis.setex,
+                    f"traffic:{route_id}",
+                    300,
+                    json.dumps({
+                        'speed': traffic_entry.traffic_speed,
+                        'congestion': traffic_entry.congestion_level,
+                        'timestamp': traffic_entry.timestamp.isoformat()
+                    })
+                )
             )
             
             logger.info(f"Traffic data ingested for route {route_id}")
@@ -181,7 +222,7 @@ class TrafficPipeline:
     
     async def get_real_time_traffic(self, route_id: str):
         """Get real-time traffic data for a route"""
-        cached = self.redis.get(f"traffic:{route_id}")
+        cached = await self._loop.run_in_executor(None, partial(self.redis.get, f"traffic:{route_id}"))
         if cached:
             return json.loads(cached)
         return None
@@ -189,12 +230,13 @@ class TrafficPipeline:
     def predict_eta(self, route_data: np.ndarray) -> float:
         """Predict ETA using LSTM model"""
         try:
-            # Reshape for LSTM input: (batch, timesteps, features)
-            if len(route_data.shape) == 2:
-                route_data = route_data.reshape(1, *route_data.shape)
-            elif len(route_data.shape) == 1:
-                route_data = route_data.reshape(1, 1, -1)
-                
+            # Model expects (batch, 60, 5) — trained on 60-step sequences.
+            # Repeat a single feature row to fill the 60-timestep window.
+            if route_data.ndim == 1:
+                route_data = route_data.reshape(1, -1)
+            if route_data.shape[1] == 5:
+                route_data = np.tile(route_data, (1, 60, 1))
+
             prediction = self.model.predict(route_data, verbose=0)
             return float(prediction[0][0])
         except Exception as e:
@@ -237,6 +279,7 @@ class TrafficPipeline:
         )
         
         # Save model
+        os.makedirs(os.path.dirname('models/eta_lstm.h5'), exist_ok=True)
         self.model.save('models/eta_lstm.h5')
         logger.info("Model trained and saved")
     
@@ -268,25 +311,38 @@ class TrafficPipeline:
                     datetime.now().weekday()
                 ]])
                 
-                # Predict ETA
-                eta_seconds = self.predict_eta(features)
-                
-                if eta_seconds is not None:
+                # Predict traffic speed (km/h) with the LSTM.
+                predicted_speed_kmh = self.predict_eta(features)
+
+                if predicted_speed_kmh is not None:
+                    # The model predicts speed, not duration. Convert the
+                    # predicted speed into an ETA in seconds using the route
+                    # distance so the value is meaningful as a travel time.
+                    osrm_data = await self._fetch_osrm_data(current_location, destination)
+                    route_distance_m = float(osrm_data.get('distance') or 0)
+                    if route_distance_m > 0 and predicted_speed_kmh > 0:
+                        eta_seconds = (route_distance_m / 1000.0) / (predicted_speed_kmh / 3.6)
+                    else:
+                        # Fall back to the routing engine's duration estimate.
+                        eta_seconds = float(osrm_data.get('duration') or 0)
+
                     eta_minutes = eta_seconds / 60
                     eta_string = str(timedelta(seconds=int(eta_seconds)))
                     
                     # Update Redis
-                    self.redis.setex(
-                        f"eta:order:{order_id}",
-                        300,  # 5 minutes
-                        json.dumps({
-                            'eta_seconds': eta_seconds,
-                            'eta_minutes': eta_minutes,
-                            'eta_string': eta_string,
-                            'timestamp': datetime.now().isoformat(),
-                            'traffic_speed': traffic_data.traffic_speed,
-                            'congestion_level': traffic_data.congestion_level
-                        })
+                    await self._loop.run_in_executor(
+                        None, partial(self.redis.setex,
+                            f"eta:order:{order_id}",
+                            300,
+                            json.dumps({
+                                'eta_seconds': eta_seconds,
+                                'eta_minutes': eta_minutes,
+                                'eta_string': eta_string,
+                                'timestamp': datetime.now().isoformat(),
+                                'traffic_speed': traffic_data.traffic_speed,
+                                'congestion_level': traffic_data.congestion_level
+                            })
+                        )
                     )
                     
                     logger.info(f"ETA updated for order {order_id}: {eta_string}")

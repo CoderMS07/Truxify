@@ -45,6 +45,7 @@ describe('routingService - getHaversineDistance', () => {
 describe('routingService - optimizeWaypoints', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAxiosGet.mockReset();
   });
 
   it('returns empty array when waypoints is empty', async () => {
@@ -84,7 +85,10 @@ describe('routingService - optimizeWaypoints', () => {
   it('falls back to original order when waypointsResult is empty', async () => {
     mockAxiosGet.mockResolvedValueOnce({ data: { code: 'Ok', waypoints: [] } });
 
-    const wp = [{ lat: 13, lng: 77, address: 'A' }];
+    const wp = [
+      { lat: 13, lng: 77, address: 'A' },
+      { lat: 14, lng: 78, address: 'B' },
+    ];
     const result = await optimizeWaypoints(
       { lat: 0, lng: 0, address: 'Start' },
       { lat: 20, lng: 90, address: 'End' },
@@ -109,35 +113,38 @@ describe('routingService - optimizeWaypoints', () => {
   });
 
   it('reorders waypoints based on OSRM waypoint_index values', async () => {
-    // OSRM returns waypoints in trip order with waypoint_index indicating
-    // the input coordinate position.
-    // Input coords: [start(0), WP_B(1), WP_A(2), end(3)]
-    // Trip order: WP_A, WP_B, start, end
-    // waypoint_indices in trip order: 2 (WP_A), 1 (WP_B), 0 (start), 3 (end)
+    // OSRM Trip API returns waypoints in INPUT order; each waypoint's
+    // `waypoint_index` is its position in the optimized trip.
+    // Input coords: [start(0), WP1(1), WP2(2), WP3(3), end(4)]
+    // Trip order: start, WP3, WP1, WP2, end
+    // waypoint_indices in input order: 0 (start), 2 (WP1), 3 (WP2), 1 (WP3), 4 (end)
     mockAxiosGet.mockResolvedValueOnce({
       data: {
         code: 'Ok',
         waypoints: [
-          { waypoint_index: 2 },
-          { waypoint_index: 1 },
           { waypoint_index: 0 },
+          { waypoint_index: 2 },
           { waypoint_index: 3 },
+          { waypoint_index: 1 },
+          { waypoint_index: 4 },
         ],
       },
     });
 
-    const wpA = { lat: 14, lng: 78, address: 'A' };
-    const wpB = { lat: 13, lng: 77, address: 'B' };
-    const wp = [wpA, wpB]; // input order
+    const wp1 = { lat: 14, lng: 78, address: 'WP1' };
+    const wp2 = { lat: 15, lng: 79, address: 'WP2' };
+    const wp3 = { lat: 16, lng: 80, address: 'WP3' };
+    const wp = [wp1, wp2, wp3]; // input order
 
     const result = await optimizeWaypoints(
       { lat: 0, lng: 0, address: 'Start' },
       { lat: 20, lng: 90, address: 'End' },
       wp
     );
-    // Trip order: WP_A (index 2), WP_B (index 1)
-    // Expected: [wpA, wpB] since WP_A comes first in trip
-    expect(result).toEqual([wpA, wpB]);
+    // Trip order of the middle stops: WP3, WP1, WP2
+    expect(result).toEqual([wp3, wp1, wp2]);
+    expect(result).toHaveLength(wp.length);
+    expect(result.every(waypoint => waypoint !== undefined)).toBe(true);
   });
 
   it('calls OSRM Trip API with correct coordinates', async () => {
@@ -145,9 +152,9 @@ describe('routingService - optimizeWaypoints', () => {
       data: {
         code: 'Ok',
         waypoints: [
+          { waypoint_index: 0 },
           { waypoint_index: 2 },
           { waypoint_index: 1 },
-          { waypoint_index: 0 },
           { waypoint_index: 3 },
         ],
       },

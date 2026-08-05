@@ -134,6 +134,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter, createStore } from '../middleware/rateLimiter.js';
 import { checkBypassEligibility } from '../services/weighStationService.js';
+import { isPayoutProviderConfigured } from '../services/wallet/payoutProvider.js';
 
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { driverOnlineSchema, withdrawSchema, uuidParamSchema, paramIdSchema, predictDriverProfitSchema, uuidSchema, driverIdParamSchema, driverStatementSchema } from '../validation/requestSchemas.js';
@@ -154,7 +155,7 @@ function parseIntegerQuery(value) {
 }
 
 function parseCoordinate(value) {
-  if (typeof value !== 'string' || value.trim() === '') {
+  if (typeof value !== 'string' || value.trim().length === 0) {
     return null;
   }
 
@@ -372,13 +373,13 @@ router.get('/wallet/history', authenticate, userLimiter, requirePolicy('driver:v
     const limit = parseIntegerQuery(req.query.limit) ?? 20;
 
     // Validation
-    if (isNaN(page) || page < 1) {
+    if (Number.isNaN(page) || page < 1) {
       return res.status(400).json({
         error: 'page must be greater than or equal to 1'
       });
     }
 
-    if (isNaN(limit) || limit < 1 || limit > 100) {
+    if (Number.isNaN(limit) || limit < 1 || limit > 100) {
       return res.status(400).json({
         error: 'limit must be between 1 and 100'
       });
@@ -431,7 +432,7 @@ router.get('/wallet/history', authenticate, userLimiter, requirePolicy('driver:v
  *   get:
  *     tags: [Driver]
  *     summary: Get earnings summary for charts
- *     description: Returns aggregated daily earnings data for the specified number of days (max 365).
+ *     description: Returns aggregated daily earnings data for the specified number of days (max 365) or, when start_date/end_date are given, for that exact window (inclusive start, exclusive end).
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -443,6 +444,18 @@ router.get('/wallet/history', authenticate, userLimiter, requirePolicy('driver:v
  *           minimum: 1
  *           maximum: 365
  *         description: Number of days to include
+ *       - in: query
+ *         name: start_date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Inclusive lower bound of the earnings window (YYYY-MM-DD)
+ *       - in: query
+ *         name: end_date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Exclusive upper bound of the earnings window (YYYY-MM-DD)
  *     responses:
  *       200:
  *         description: Earnings data array
@@ -451,28 +464,52 @@ router.get('/wallet/history', authenticate, userLimiter, requirePolicy('driver:v
  *             schema:
  *               $ref: '#/components/schemas/EarningsSummaryResponse'
  *       400:
- *         description: Invalid days parameter
+ *         description: Invalid days parameter or invalid date range
  */
 router.get('/earnings/summary', authenticate, userLimiter, requirePolicy('driver:view-earnings'), async (req, res) => {
   const daysParam = req.query.days ?? '30';
   const limitDays = typeof daysParam === 'string' ? Number(daysParam) : NaN;
 
-  if (!Number.isInteger(limitDays) || limitDays < 1 || limitDays > 365) {
+  const startDateParam = req.query.start_date;
+  const endDateParam = req.query.end_date;
+  const hasRange = startDateParam !== undefined || endDateParam !== undefined;
+
+  if (hasRange) {
+    if (
+      typeof startDateParam !== 'string' ||
+      typeof endDateParam !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(startDateParam) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(endDateParam)
+    ) {
+      return res.status(400).json({
+        error: 'start_date and end_date must both be provided as YYYY-MM-DD'
+      });
+    }
+    if (startDateParam > endDateParam) {
+      return res.status(400).json({ error: 'start_date must not be after end_date' });
+    }
+  } else if (!Number.isInteger(limitDays) || limitDays < 1 || limitDays > 365) {
     return res.status(400).json({
       error: 'days must be an integer between 1 and 365'
     });
   }
 
   try {
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - (limitDays - 1));
-
-    const { data: summary, error } = await supabase
+    let query = supabase
       .from('earnings_daily')
       .select('day_date, amount, trip_count, hours_driven')
-      .eq('driver_id', req.user.id)
-      .gte('day_date', cutoff.toISOString().split('T')[0])
-      .order('day_date', { ascending: true });
+      .eq('driver_id', req.user.id);
+
+    if (hasRange) {
+      // Exact window: inclusive start, exclusive end ([start, end)).
+      query = query.gte('day_date', startDateParam).lt('day_date', endDateParam);
+    } else {
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - (limitDays - 1));
+      query = query.gte('day_date', cutoff.toISOString().split('T')[0]);
+    }
+
+    const { data: summary, error } = await query.order('day_date', { ascending: true });
 
     if (error) {
       return res.status(500).json({ error: 'Failed to fetch earnings summary.', details: error.message });
@@ -554,12 +591,29 @@ router.get('/trips', authenticate, userLimiter, requirePolicy('driver:view-trips
     const { data: trips, error, count } = await query.order('trip_date', { ascending: false }).range(from, to);
 
     if (error) return res.status(500).json({ error: 'Failed to fetch trips.', details: error.message });
+
+    // Enrich trips with escrow_status from orders
+    const tripDisplayIds = (trips || []).map(t => t.trip_display_id).filter(Boolean);
+    let escrowMap = {};
+    if (tripDisplayIds.length > 0) {
+      const { data: orders } = await supabase
+        .from('orders')
+        .select('order_display_id, escrow_status')
+        .in('order_display_id', tripDisplayIds);
+      escrowMap = Object.fromEntries((orders || []).map(o => [o.order_display_id, o.escrow_status]));
+    }
+
+    const enrichedTrips = (trips || []).map(t => ({
+      ...t,
+      escrow_status: escrowMap[t.trip_display_id] || 'pending'
+    }));
+
     res.json({
       page,
       limit,
       total: count || 0,
       totalPages: Math.ceil((count || 0) / limit),
-      trips: trips || []
+      trips: enrichedTrips
     });
   } catch (err) {
     logger.error('Driver trips fetch error:', err);
@@ -913,6 +967,12 @@ router.post('/wallet/withdraw', authenticate, userLimiter, requirePolicy('driver
   const { amount } = req.body; // in paisa
 
   try {
+    if (!isPayoutProviderConfigured()) {
+      return res.status(503).json({
+        error: 'Withdrawal is temporarily unavailable: no payout provider is configured.',
+      });
+    }
+
     // 5.1 Fetch driver confirmed balance
     const { data: details, error: detailsErr } = await supabase
       .from('driver_details')
@@ -920,7 +980,10 @@ router.post('/wallet/withdraw', authenticate, userLimiter, requirePolicy('driver
       .eq('user_id', req.user.id)
       .maybeSingle();
 
-    if (detailsErr || !details) {
+    if (detailsErr) {
+      return res.status(500).json({ error: 'Failed to fetch driver details.', details: detailsErr.message });
+    }
+    if (!details) {
       return res.status(404).json({ error: 'Driver profile details not found.' });
     }
 
@@ -933,7 +996,7 @@ router.post('/wallet/withdraw', authenticate, userLimiter, requirePolicy('driver
     }
 
     // 5.2 Execute atomically via Supabase RPC
-    const userClient = req.token ? createUserClient(req.token) : supabase;
+    const userClient = createUserClient(req.token);
     const { error: rpcErr } = await userClient.rpc('withdraw_funds_tx', {
       p_driver_id: req.user.id,
       p_amount:    amount
@@ -1364,7 +1427,7 @@ router.get('/ltl/optimize-route', authenticate, userLimiter, requirePolicy('driv
     const lat = parseFloat(req.query.lat);
     const lng = parseFloat(req.query.lng);
 
-    if (isNaN(lat) || isNaN(lng)) {
+    if (Number.isNaN(lat) || Number.isNaN(lng)) {
       return res.status(400).json({ error: 'Valid lat and lng query parameters are required.' });
     }
 
@@ -1482,7 +1545,7 @@ router.get('/:id/earnings', authenticate, userLimiter, requirePolicy('driver:vie
     let totalKm = 0;
     trips.forEach(trip => {
       if (trip.distance) {
-        const distanceNum = parseInt(trip.distance.replace(/[^0-9]/g, '')) || 0;
+        const distanceNum = parseInt(String(trip.distance, 10).replace(/[^0-9]/g, '')) || 0;
         totalKm += distanceNum;
       }
     });
@@ -1501,8 +1564,8 @@ router.get('/:id/earnings', authenticate, userLimiter, requirePolicy('driver:vie
         const prevTrip = allCompletedTrips[i - 1];
         const currTrip = allCompletedTrips[i];
         
-        const prevRoute = prevTrip.route_label.split(' → ');
-        const currRoute = currTrip.route_label.split(' → ');
+        const prevRoute = (prevTrip.route_label || '').split(' → ');
+        const currRoute = (currTrip.route_label || '').split(' → ');
         
         if (prevRoute.length === 2 && currRoute.length === 2) {
           const prevDrop = prevRoute[1].trim().toLowerCase();

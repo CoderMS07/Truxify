@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' as math;
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/api_client.dart';
 import '../theme/app_theme.dart';
@@ -21,17 +23,21 @@ class _VoiceAiScreenState extends State<VoiceAiScreen> with SingleTickerProvider
   bool _isRecording = false;
   bool _isProcessing = false;
   bool _isPlaying = false;
-  
+
   String? _transcript;
   String? _responseText;
   String? _audioUrl;
-  
+  String? _errorMessage;
+
   late AnimationController _waveController;
   final List<double> _waveAmplitudes = List.filled(30, 0.1);
-  Timer? _recordingTimer;
+  Timer? _amplitudeTimer;
   Timer? _playbackTimer;
   double _playbackProgress = 0.0;
-  
+
+  final AudioRecorder _recorder = AudioRecorder();
+  String? _recordingPath;
+
   @override
   void initState() {
     super.initState();
@@ -44,33 +50,65 @@ class _VoiceAiScreenState extends State<VoiceAiScreen> with SingleTickerProvider
   @override
   void dispose() {
     _waveController.dispose();
-    _recordingTimer?.cancel();
+    _amplitudeTimer?.cancel();
     _playbackTimer?.cancel();
+    _recorder.dispose();
     super.dispose();
   }
 
-  void _startRecording() {
+  Future<void> _startRecording() async {
+    final hasPermission = await _recorder.hasPermission();
+    if (!hasPermission) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Microphone permission is required to use voice queries.';
+      });
+      return;
+    }
+
+    final dir = await getTemporaryDirectory();
+    _recordingPath =
+        '${dir.path}/voice_query_${DateTime.now().millisecondsSinceEpoch}.wav';
+
+    await _recorder.start(
+      const RecordConfig(
+        encoder: AudioEncoder.wav,
+        sampleRate: 16000,
+        numChannels: 1,
+      ),
+      path: _recordingPath!,
+    );
+
     setState(() {
       _isRecording = true;
       _transcript = null;
       _responseText = null;
       _audioUrl = null;
+      _errorMessage = null;
       _isPlaying = false;
       _playbackProgress = 0.0;
     });
 
-    _recordingTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
-      final random = math.Random();
+    _amplitudeTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) async {
+      final amp = await _recorder.getAmplitude();
+      final normalized = ((amp.current + 45) / 45).clamp(0.0, 1.0);
       setState(() {
-        for (int i = 0; i < _waveAmplitudes.length; i++) {
-          _waveAmplitudes[i] = 0.1 + random.nextDouble() * 0.8;
-        }
+        _waveAmplitudes.removeAt(0);
+        _waveAmplitudes.add(0.1 + normalized * 0.8);
       });
     });
   }
 
   Future<void> _stopRecording() async {
-    _recordingTimer?.cancel();
+    _amplitudeTimer?.cancel();
+
+    String? path;
+    try {
+      path = await _recorder.stop();
+    } catch (e) {
+      path = null;
+    }
+
     setState(() {
       _isRecording = false;
       _isProcessing = true;
@@ -79,26 +117,41 @@ class _VoiceAiScreenState extends State<VoiceAiScreen> with SingleTickerProvider
       }
     });
 
+    if (path == null) {
+      setState(() {
+        _isProcessing = false;
+        _errorMessage = 'Recording failed. Please try again.';
+      });
+      return;
+    }
+
+    final file = File(path);
+    if (!await file.exists() || await file.length() == 0) {
+      setState(() {
+        _isProcessing = false;
+        _errorMessage = 'No audio was captured. Please try again.';
+      });
+      return;
+    }
+
     try {
       final session = Supabase.instance.client.auth.currentSession;
       final token = session?.accessToken ?? '';
-      
-      final dummyWav = List<int>.filled(1000, 0);
-      
+
       final request = http.MultipartRequest(
         'POST',
         Uri.parse('${ApiClient.defaultBaseUrl}/api/voice/query'),
       );
-      
+
       if (token.isNotEmpty) {
         request.headers['Authorization'] = 'Bearer $token';
       }
-      
+
       request.fields['bookingId'] = widget.orderId;
       request.files.add(
-        http.MultipartFile.fromBytes(
+        await http.MultipartFile.fromPath(
           'file',
-          dummyWav,
+          file.path,
           filename: 'voice_query.wav',
         ),
       );
@@ -108,6 +161,7 @@ class _VoiceAiScreenState extends State<VoiceAiScreen> with SingleTickerProvider
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
+        if (!mounted) return;
         setState(() {
           _transcript = data['transcript']?.toString();
           _responseText = data['response_text']?.toString();
@@ -122,10 +176,17 @@ class _VoiceAiScreenState extends State<VoiceAiScreen> with SingleTickerProvider
         throw Exception('Server returned status: ${response.statusCode}');
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _isProcessing = false;
         _responseText = 'Failed to process voice query: $e';
       });
+    } finally {
+      try {
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (_) {}
     }
   }
 
@@ -187,6 +248,23 @@ class _VoiceAiScreenState extends State<VoiceAiScreen> with SingleTickerProvider
                   ],
                 ),
               ),
+
+              if (_errorMessage != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.redAccent.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    _errorMessage!,
+                    style: GoogleFonts.dmSans(fontSize: 12, color: Colors.redAccent),
+                  ),
+                ),
+              ],
+
               const Spacer(),
 
               SizedBox(
@@ -276,7 +354,7 @@ class _VoiceAiScreenState extends State<VoiceAiScreen> with SingleTickerProvider
                               ),
                             ),
                             const SizedBox(height: 24),
-                            
+
                             if (_audioUrl != null) ...[
                               Row(
                                 children: [

@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { WASI } from 'wasi';
 import { createRequire } from 'module';
-import logger from '../../api/src/middleware/logger.js';
+import logger from '../backend/api/src/middleware/logger.js';
 
 const require = createRequire(import.meta.url);
 
@@ -12,20 +12,24 @@ class EdgeRuntime {
         this.isInitialized = false;
         this.memoryLimit = 128 * 1024 * 1024; // 128MB
         this.timeoutLimit = 5000; // 5 seconds
-        
+
         logger.info('✅ Edge Runtime initialized');
     }
 
     async initialize() {
         if (this.isInitialized) return;
-        
+
         try {
             const wasmPath = process.env.WASM_MODULE_PATH || './wasm/truxify_wasm.wasm';
             if (fs.existsSync(wasmPath)) {
                 const wasmBytes = fs.readFileSync(wasmPath);
                 const wasi = new WASI({
                     args: [],
-                    env: process.env,
+                    env: Object.fromEntries(
+                        Object.entries(process.env).filter(([k]) =>
+                            /^(PATH|HOME|TMP|USER|LANG|LC_|RUST_|WASM_)/.test(k)
+                        )
+                    ),
                     preopens: { '/': './' }
                 });
                 const importObject = { wasi_snapshot_preview1: wasi.wasiImport };
@@ -51,46 +55,73 @@ class EdgeRuntime {
         } catch (err) {
             logger.error(`WASM initialization warning: ${err.message}`);
         }
-        
+
         this.isInitialized = true;
     }
 
     async executeEdgeFunction(functionName, params) {
-        try {
-            await this.initialize();
-            
-            const wasm = this.wasmModules.get('default');
-            if (!wasm) {
-                throw new Error('WASM module not loaded');
+        return new Promise((resolve) => {
+            const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
+
+            if (!isMainThread) return;
+
+            const workerCode = `
+            const { parentPort, workerData } = require('worker_threads');
+            const { functionName, params, wasmPath } = workerData;
+            try {
+                const fs = require('fs');
+                const { WASI } = require('wasi');
+                const wasmBytes = fs.readFileSync(wasmPath);
+                const wasi = new WASI({ args: [], env: {}, preopens: {} });
+                const importObject = { wasi_snapshot_preview1: wasi.wasiImport };
+                const { instance } = new WebAssembly.Instance(
+                    new WebAssembly.Module(wasmBytes), importObject
+                );
+                const func = instance.exports[functionName];
+                if (!func) throw new Error('Function ' + functionName + ' not found');
+                const result = func(...params);
+                parentPort.postMessage({ success: true, data: result });
+            } catch (err) {
+                parentPort.postMessage({ success: false, error: err.message });
             }
-            
-            // Execute function with timeout
-            const result = await this.executeWithTimeout(
-                () => {
-                    const func = wasm.exports[functionName];
-                    if (!func) {
-                        throw new Error(`Function ${functionName} not found`);
-                    }
-                    return func(...params);
+        `;
+
+            const wasmPath = process.env.WASM_MODULE_PATH || './wasm/truxify_wasm.wasm';
+
+            const worker = new Worker(workerCode, {
+                eval: true,
+                workerData: { functionName, params, wasmPath },
+                resourceLimits: {
+                    maxOldGenerationSizeMb: 64,
+                    maxYoungGenerationSizeMb: 16,
+                    stackSizeMb: 2,
                 },
-                this.timeoutLimit
-            );
-            
-            return {
-                success: true,
-                result,
-                executionTime: Date.now(),
-                functionName
-            };
-            
-        } catch (error) {
-            logger.error(`Edge function execution failed: ${error}`);
-            return {
-                success: false,
-                error: error.message,
-                functionName
-            };
-        }
+            });
+
+            const timer = setTimeout(() => {
+                worker.terminate();
+                logger.error(`Edge function '${functionName}' timed out after ${this.timeoutLimit}ms`);
+                resolve({ success: false, error: `Execution timed out after ${this.timeoutLimit}ms` });
+            }, this.timeoutLimit);
+
+            worker.on('message', (result) => {
+                clearTimeout(timer);
+                resolve(result);
+            });
+
+            worker.on('error', (err) => {
+                clearTimeout(timer);
+                logger.error(`Edge function worker error: ${err.message}`);
+                resolve({ success: false, error: err.message });
+            });
+
+            worker.on('exit', (code) => {
+                if (code !== 0) {
+                    clearTimeout(timer);
+                    resolve({ success: false, error: `Worker exited with code ${code}` });
+                }
+            });
+        });
     }
 
     async executeWithTimeout(fn, timeout) {
@@ -98,7 +129,7 @@ class EdgeRuntime {
             const timer = setTimeout(() => {
                 reject(new Error(`Execution timeout after ${timeout}ms`));
             }, timeout);
-            
+
             try {
                 const result = fn();
                 clearTimeout(timer);

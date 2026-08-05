@@ -1,7 +1,7 @@
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:truxify_shared/truxify_shared.dart';
+import 'package:truxify_shared/truxify_shared.dart' hide NotificationsScreen;
 
 import '../controllers/app_controller.dart';
 import '../l10n/app_localizations.dart';
@@ -224,6 +224,7 @@ class _TruxifyShellScreenState extends State<TruxifyShellScreen> {
             ),
           );
         });
+        break;
 
       case NavigateToLiveTracking(:final orderId):
         _openInOrdersTab(() {
@@ -233,9 +234,11 @@ class _TruxifyShellScreenState extends State<TruxifyShellScreen> {
             ),
           );
         });
+        break;
 
       case NavigateToWallet():
         _switchTab(3);
+        break;
 
       case NavigateToSupportTicket():
         // Navigate to notifications screen — support ticket detail is
@@ -245,6 +248,7 @@ class _TruxifyShellScreenState extends State<TruxifyShellScreen> {
             AppPageRoute(builder: (_) => const NotificationsScreen()),
           );
         });
+        break;
 
       case NavigateToNotificationsList():
         _openInHomeTab(() {
@@ -252,6 +256,7 @@ class _TruxifyShellScreenState extends State<TruxifyShellScreen> {
             AppPageRoute(builder: (_) => const NotificationsScreen()),
           );
         });
+        break;
 
       case NavigateToEarnings():
       case NavigateToLoadDetail():
@@ -262,6 +267,7 @@ class _TruxifyShellScreenState extends State<TruxifyShellScreen> {
             AppPageRoute(builder: (_) => const NotificationsScreen()),
           );
         });
+        break;
     }
   }
 

@@ -3,27 +3,44 @@ import crypto from 'crypto';
 import { supabase } from '../config/db.js';
 import logger from '../middleware/logger.js';
 
+const MAX_CACHE_SIZE = 100;
+const CACHE_TTL_MS = 10 * 60 * 1000;
 export const audioCache = new Map();
 
-async function getBookingContext(bookingId) {
+function trimCache() {
+  const now = Date.now();
+  // 1. Collect and purge expired entries first
+  const expiredKeys = [];
+  for (const [key, value] of audioCache.entries()) {
+    if (now - value.timestamp >= CACHE_TTL_MS) {
+      expiredKeys.push(key);
+    }
+  }
+  for (const key of expiredKeys) {
+    audioCache.delete(key);
+  }
+
+  // 2. If capacity still exceeds MAX_CACHE_SIZE, evict oldest remaining entries
+  if (audioCache.size > MAX_CACHE_SIZE) {
+    const oldest = [...audioCache.entries()]
+      .sort(([, a], [, b]) => a.timestamp - b.timestamp);
+    const toDelete = audioCache.size - MAX_CACHE_SIZE;
+    for (let i = 0; i < toDelete && i < oldest.length; i++) {
+      audioCache.delete(oldest[i][0]);
+    }
+  }
+}
+
+function cacheAudio(id, buffer) {
+  audioCache.set(id, { buffer, timestamp: Date.now() });
+  trimCache();
+}
+
+async function getBookingContext(bookingId, userId) {
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const isUuid = uuidRegex.test(bookingId);
 
-  // Try bookings table first
-  try {
-    let query = supabase.from('bookings').select('*');
-    if (isUuid) {
-      query = query.eq('id', bookingId);
-    } else {
-      query = query.eq('booking_display_id', bookingId);
-    }
-    const { data: booking } = await query.maybeSingle();
-    if (booking) return booking;
-  } catch (err) {
-    logger.warn('Bookings table check failed in voiceService:', err.message);
-  }
-
-  // Fallback to orders table
+  // Orders table is the real order model (there is no bookings table).
   try {
     let orderQuery = supabase.from('orders').select('*');
     if (isUuid) {
@@ -31,6 +48,11 @@ async function getBookingContext(bookingId) {
     } else {
       orderQuery = orderQuery.eq('order_display_id', bookingId);
     }
+    
+    if (userId) {
+      orderQuery = orderQuery.or(`customer_id.eq.${userId},driver_id.eq.${userId}`);
+    }
+
     const { data: order } = await orderQuery.maybeSingle();
     return order;
   } catch (err) {
@@ -40,7 +62,7 @@ async function getBookingContext(bookingId) {
 }
 
 export async function processVoiceQuery(userId, bookingId, audioBuffer, filename) {
-  const bookingData = await getBookingContext(bookingId);
+  const bookingData = await getBookingContext(bookingId, userId);
   
   if (!process.env.OPENAI_API_KEY || !process.env.ELEVENLABS_API_KEY) {
     logger.warn('Missing OpenAI or ElevenLabs API keys. Using mock Voice AI pipeline.');
@@ -72,7 +94,7 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
     // Generate a dummy silent mp3
     const mockAudio = Buffer.alloc(1000);
     const audioId = crypto.randomUUID();
-    audioCache.set(audioId, mockAudio);
+    cacheAudio(audioId, mockAudio);
 
     return {
       transcript: selected.transcript,
@@ -82,7 +104,7 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
   }
 
   // Production Whisper call
-  let transcript = '';
+  let transcript;
   try {
     const boundary = '----VoiceAIBoundary' + Math.random().toString(16).substring(2);
     const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename || 'audio.wav'}"\r\nContent-Type: audio/wav\r\n\r\n`;
@@ -102,11 +124,11 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
     transcript = whisperResponse.data.text;
   } catch (err) {
     logger.error('Whisper transcription failed:', err.message);
-    throw new Error('Transcription failed: ' + err.message);
+    throw new Error('Transcription failed: ' + err.message, { cause: err });
   }
 
   // Production LLM call
-  let responseText = '';
+  let responseText;
   try {
     const systemPrompt = `You are a freight assistant. Answer in 1-2 sentences in the customer's language (Hindi/English/Tamil).\nBooking: ${JSON.stringify(bookingData || {})}`;
     
@@ -125,11 +147,11 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
     responseText = llmResponse.data.choices[0].message.content;
   } catch (err) {
     logger.error('LLM completion failed:', err.message);
-    throw new Error('LLM failed: ' + err.message);
+    throw new Error('LLM failed: ' + err.message, { cause: err });
   }
 
   // Production ElevenLabs TTS call
-  let audioUrl = '';
+  let audioUrl;
   try {
     const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
     const ttsResponse = await axios.post(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
@@ -148,11 +170,11 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
     });
 
     const audioId = crypto.randomUUID();
-    audioCache.set(audioId, Buffer.from(ttsResponse.data));
+    cacheAudio(audioId, Buffer.from(ttsResponse.data));
     audioUrl = `/api/voice/audio/${audioId}`;
   } catch (err) {
     logger.error('ElevenLabs TTS failed:', err.message);
-    throw new Error('TTS failed: ' + err.message);
+    throw new Error('TTS failed: ' + err.message, { cause: err });
   }
 
   return {
@@ -161,3 +183,5 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
     audio_url: audioUrl
   };
 }
+
+export const __testing = { getBookingContext, trimCache, cacheAudio, MAX_CACHE_SIZE, CACHE_TTL_MS };

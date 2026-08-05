@@ -42,7 +42,6 @@ export async function uploadDriverDocument(req, res) {
     let verifiedMimeType;
     try {
       verifiedMimeType = validateDocumentBuffer(req.file.buffer, req.file.mimetype);
-      const scanResult = await scanDocument(req.file.buffer, req.file.originalname);
     } catch (validationError) {
       if (validationError instanceof DocumentValidationError) {
         return res.status(422).json({ error: validationError.message });
@@ -51,7 +50,7 @@ export async function uploadDriverDocument(req, res) {
     }
 
     try {
-      const scanResult = await scanDocument(req.file.buffer);
+      const scanResult = await scanDocument(req.file.buffer, req.file.originalname);
       if (!scanResult.clean) {
         return res.status(422).json({
           error: 'Uploaded document failed malware scanning.',
@@ -67,10 +66,6 @@ export async function uploadDriverDocument(req, res) {
           error: scanError.message,
         });
       }
-      if (validationError instanceof MalwareScanError) {
-        return res.status(422).json({ error: validationError.message });
-      }
-      throw validationError;
       throw scanError;
     }
 

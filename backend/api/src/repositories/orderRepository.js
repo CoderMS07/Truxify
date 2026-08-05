@@ -81,6 +81,10 @@ export class OrderRepository {
     return this.findOrderByDisplayId(id, columns);
   }
 
+  async findOrderByIdOrDisplayId(id, columns = '*') {
+    return this.findOrderByAnyId(id, columns);
+  }
+
   async findOrdersByCustomer(customerId, columns, statuses, orderColumn, ascending, pagination) {
     return this._retryableQuery(() => {
       let query = this.supabase
@@ -95,6 +99,18 @@ export class OrderRepository {
       }
       return query;
     }, 'findOrdersByCustomer');
+  }
+
+  async findActiveOrderForDriverByCustomer(customerId, driverId, columns) {
+    const activeStatuses = ['pending', 'active', 'truck_assigned', 'en_route_pickup', 'arrived_pickup', 'picked_up', 'in_transit', 'arriving'];
+    return this._retryableQuery(() => this.supabase
+      .from('orders')
+      .select(columns || 'id, order_display_id')
+      .eq('customer_id', customerId)
+      .eq('driver_id', driverId)
+      .in('status', activeStatuses)
+      .limit(1)
+      .maybeSingle(), 'findActiveOrderForDriverByCustomer');
   }
 
   async findOrdersWithCount(customerId, columns, pagination) {
@@ -357,8 +373,12 @@ export class OrderRepository {
   // ===================================================================
 
   async executeRpc(name, params, client) {
-    const supabaseClient = client || this.supabase;
-    return this._retryableQuery(() => supabaseClient.rpc(name, params), `executeRpc:${name}`);
+    if (!client) {
+      throw new Error(
+        `executeRpc("${name}") requires a Supabase client. Pass the per-request user client so auth.uid() resolves to the caller instead of falling back to the shared anon-key client.`
+      );
+    }
+    return this._retryableQuery(() => client.rpc(name, params), `executeRpc:${name}`);
   }
 
   // ===================================================================
@@ -499,14 +519,29 @@ export class OrderRepository {
   // ESCROW
   // ===================================================================
 
-  async updateEscrowBooking(orderId, bookingId, escrowStatus) {
-    return this._retryableQuery(() => this.supabase
-      .from('orders')
-      .update({
-        escrow_booking_id: bookingId,
-        escrow_status: escrowStatus,
-      })
-      .eq('id', orderId), 'updateEscrowBooking');
+  async updateEscrowBooking(orderId, bookingId, escrowStatus, extra = {}, filters) {
+    return this._retryableQuery(() => {
+      let query = this.supabase
+        .from('orders')
+        .update({
+          escrow_booking_id: bookingId,
+          escrow_status: escrowStatus,
+          ...extra,
+        })
+        .eq('id', orderId);
+      if (filters) {
+        for (const f of filters) {
+          if (f.op === 'eq') {
+            query = query.eq(f.column, f.value);
+          } else if (f.op === 'is') {
+            query = query.is(f.column, f.value);
+          } else if (f.op === 'or') {
+            query = query.or(f.value);
+          }
+        }
+      }
+      return query.select('id, escrow_status, pending_bid_acceptance').single();
+    }, 'updateEscrowBooking');
   }
 
   async revertEscrowStatus(orderId) {
@@ -517,6 +552,15 @@ export class OrderRepository {
         escrow_booking_id: null,
       })
       .eq('id', orderId), 'revertEscrowStatus');
+  }
+
+  async findStaleFundingOrders(cutoff) {
+    return this._retryableQuery(() => this.supabase
+      .from('orders')
+      .select('id, order_display_id, customer_id, escrow_booking_id, pending_bid_acceptance, escrow_funding_attempts, escrow_funding_last_attempt_at')
+      .eq('escrow_status', 'funding')
+      .not('pending_bid_acceptance', 'is', null)
+      .or(`escrow_funding_started_at.lt.${cutoff},and(escrow_funding_started_at.is.null,updated_at.lt.${cutoff})`), 'findStaleFundingOrders');
   }
 
   // ===================================================================
@@ -536,7 +580,7 @@ export class OrderRepository {
   async findPendingEscrowRefunds() {
     return this._retryableQuery(() => this.supabase
       .from('orders')
-      .select('id, order_display_id, refund_tx_hash, escrow_status, escrow_refund_retry_count, updated_at')
+      .select('id, order_display_id, refund_tx_hash, escrow_status, escrow_refund_attempts, updated_at')
       .in('escrow_status', ['refund_pending', 'refund_failed'])
       .limit(50), 'findPendingEscrowRefunds');
   }

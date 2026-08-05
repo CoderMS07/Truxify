@@ -34,9 +34,15 @@ import { measureExecution } from '../core/performanceMetrics.js'
 
 const ESCROW_ABI = [
   'function createBooking(uint256 bookingId, address payable driver) external payable',
+  'function lockPayment(uint256 bookingId, address payable customer, address payable driver) external payable',
   'function releasePayment(uint256 bookingId) external',
   'function cancelBooking(uint256 bookingId) external',
-  'function bookings(uint256 bookingId) external view returns (address customer, address driver, uint256 amount, uint8 status, bool paid, uint256 createdAt)'
+  'function cancelWithPenalty(uint256 bookingId, uint256 driverFee) external',
+  'function markBookingStarted(uint256 bookingId) external',
+  'function raiseDispute(uint256 bookingId) external',
+  'function resolveDispute(uint256 bookingId, uint256 driverAmount) external',
+  'function resolveDisputeTimeout(uint256 bookingId) external',
+  'function bookings(uint256 bookingId) external view returns (address customer, address driver, uint256 amount, uint8 status, bool paid, bool started, uint256 createdAt)'
 ]
 
 const rpcUrl            = process.env.POLYGON_RPC_URL;
@@ -44,14 +50,14 @@ const contractAddress   = process.env.ESCROW_CONTRACT_ADDRESS;
 const relayerPrivateKey = process.env.RELAYER_WALLET_PRIVATE_KEY;
 function parseEnvFloat(raw, defaultVal, name) {
   const val = parseFloat(raw || defaultVal);
-  if (isNaN(val) || val <= 0) {
+  if (Number.isNaN(val) || val <= 0) {
     throw new Error(`Invalid ${name}: "${raw}" — must be a positive number`);
   }
   return val;
 }
 
-export const ESCROW_MATIC_PER_PAISA = parseEnvFloat(process.env.ESCROW_MATIC_PER_PAISA, '0.01', 'ESCROW_MATIC_PER_PAISA');
-const MAX_ESCROW_MATIC = parseEnvFloat(process.env.MAX_ESCROW_MATIC, '5', 'MAX_ESCROW_MATIC');
+export const ESCROW_MATIC_PER_PAISA = parseEnvFloat(process.env.ESCROW_MATIC_PER_PAISA, '0.000004', 'ESCROW_MATIC_PER_PAISA');
+const MAX_ESCROW_MATIC = parseEnvFloat(process.env.MAX_ESCROW_MATIC, '100', 'MAX_ESCROW_MATIC');
 
 /** @type {ethers.Contract | null} */
 let escrowContract = null
@@ -200,6 +206,33 @@ export function getEscrowBookingId (orderDisplayId) {
 }
 
 /**
+ * Query the escrow contract's bookings mapping for a given booking ID.
+ * Used by escrowFundingReconciliation to check on-chain booking state.
+ *
+ * @param {string} escrowBookingId — bytes32 hash (result of getEscrowBookingId)
+ * @returns {Promise<{customer: string, driver: string, amount: bigint, status: number, paid: boolean, started: boolean, createdAt: bigint} | null>}
+ */
+export async function getEscrowBooking(escrowBookingId) {
+  if (!escrowContract) {
+    logger.warn('[escrow] Contract not initialised — cannot query bookings.');
+    return null;
+  }
+
+  if (!ethers.isHexString(escrowBookingId, 32)) {
+    logger.warn('[escrow] Invalid escrowBookingId format — cannot query bookings.');
+    return null;
+  }
+
+  try {
+    const booking = await escrowContract.bookings(escrowBookingId);
+    return booking;
+  } catch (err) {
+    logger.error(`[escrow] getEscrowBooking failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Build an unsigned deposit transaction for the customer's wallet to sign.
  * Called when a bid is accepted and the order moves to in_progress.
  *
@@ -245,7 +278,7 @@ export async function buildDepositTx (orderDisplayId, driverWalletAddress, amoun
   });
 }
 
-export async function recordDepositTx (bookingId, txHash, expectedSenderAddress = null) {
+export async function recordDepositTx (bookingId, txHash, expectedSenderAddress = null, expectedDriverAddress = null, expectedAmountWei = null) {
   return measureExecution('EscrowService.recordDepositTx', async () => {
   if (!escrowContract) {
     return { error: 'Contract not initialised' }
@@ -254,10 +287,26 @@ export async function recordDepositTx (bookingId, txHash, expectedSenderAddress 
     return { error: 'Invalid transaction hash' }
   }
 
-  // Idempotency: check if this booking already has a funded escrow on-chain
+  // Idempotency: check if this booking already has a funded escrow on-chain.
+  // createBooking is callable by anyone, so an already-existing booking must be
+  // verified to have been created by the registered customer — and, when the
+  // expected values are persisted on the order, for the assigned driver and
+  // for at least the expected escrow amount — before it is accepted as funded.
   try {
     const booking = await escrowContract.bookings(bookingId)
     if (booking && booking.amount > 0n) {
+      if (!expectedSenderAddress) {
+        return { error: 'No registered customer wallet on file to verify transaction sender against' }
+      }
+      if (booking.customer.toLowerCase() !== expectedSenderAddress.toLowerCase()) {
+        return { error: 'Existing booking was created by a different wallet than the registered customer for this order' }
+      }
+      if (expectedDriverAddress && booking.driver.toLowerCase() !== expectedDriverAddress.toLowerCase()) {
+        return { error: 'Existing booking was created for a different driver than the one assigned to this order' }
+      }
+      if (expectedAmountWei !== null && booking.amount < BigInt(expectedAmountWei)) {
+        return { error: 'Existing booking is underfunded for the expected escrow amount of this order' }
+      }
       logger.info(`[escrow] Booking ${bookingId} already has a funded escrow — idempotency skip.`)
       return { txHash, bookingId, alreadyFunded: true }
     }
@@ -292,14 +341,17 @@ export async function recordDepositTx (bookingId, txHash, expectedSenderAddress 
   }
 
   const [txBookingId, txDriver] = decoded.args
-  if (BigInt(txBookingId) !== BigInt(bookingId)) {
+  let bookingIdMatches
+  try {
+    bookingIdMatches = BigInt(txBookingId) === BigInt(bookingId)
+  } catch (err) {
+    return { error: 'Invalid booking ID format' }
+  }
+  if (!bookingIdMatches) {
     return { error: 'Transaction booking ID does not match' }
   }
 
-  // (No txCustomer argument in createBooking, so we skip that check).
-  // We can still verify the on-chain sender (tx.from) is expected.
-
-  // If an expected sender address was provided (from order record), verify it matches.
+  // Verify the on-chain sender (tx.from) is the registered customer wallet.
   // Reject if no wallet is on file rather than silently skipping sender verification (fail closed).
   if (!expectedSenderAddress) {
     return { error: 'No registered customer wallet on file to verify transaction sender against' }
@@ -308,8 +360,56 @@ export async function recordDepositTx (bookingId, txHash, expectedSenderAddress 
     return { error: 'Transaction sender does not match the registered customer wallet for this order' }
   }
 
+  // Verify the booking was created for the assigned driver and with at least
+  // the expected escrow amount when those are persisted for the order.
+  if (expectedDriverAddress && txDriver.toLowerCase() !== expectedDriverAddress.toLowerCase()) {
+    return { error: 'Transaction driver address does not match the assigned driver for this order' }
+  }
+  if (expectedAmountWei !== null && BigInt(tx.value) < BigInt(expectedAmountWei)) {
+    return { error: 'Transaction value is less than the expected escrow amount for this order' }
+  }
+
   logger.info(`[escrow] deposit confirmed for booking ${bookingId} in block ${receipt.blockNumber}`)
   return { txHash: receipt.hash, bookingId }
+  });
+}
+
+/**
+ * Mark a booking as started on-chain after the goods are loaded (picked_up).
+ * This is required so cancelBooking / cancelWithPenalty revert for a full
+ * refund once the trip has begun.
+ *
+ * @param {string} orderDisplayId
+ * @returns {Promise<{txHash: string|null, bookingId: string, waitForConfirmation?: Function, error?: string}>}
+ */
+export async function markEscrowBookingStarted (orderDisplayId) {
+  return measureExecution('EscrowService.markEscrowBookingStarted', async () => {
+  const bookingId = getEscrowBookingId(orderDisplayId)
+
+  if (!escrowContract) {
+    logger.warn('[escrow] Contract not initialised — skipping markBookingStarted.')
+    return { txHash: null, bookingId }
+  }
+
+  try {
+    const tx = await escrowContract.markBookingStarted(bookingId)
+    logger.info(`[escrow] markBookingStarted tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
+    return {
+      txHash: tx.hash,
+      bookingId,
+      waitForConfirmation: async () => {
+        const receipt = await tx.wait(1)
+        if (!receipt || receipt.status === 0) {
+          throw new Error('Escrow markBookingStarted transaction reverted or was not found.')
+        }
+        logger.info(`[escrow] markBookingStarted confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`)
+        return receipt
+      },
+    }
+  } catch (err) {
+    logger.error(`[escrow] markBookingStarted failed for booking ${orderDisplayId}: ${err.message}`)
+    return { txHash: null, bookingId, error: err.message }
+  }
   });
 }
 
@@ -343,6 +443,10 @@ export async function escrowRelease (orderDisplayId) {
     const tx = await escrowContract.releasePayment(bookingId)
     logger.info(`[escrow] releasePayment tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
     const receipt = await tx.wait(1)
+    if (!receipt || receipt.status === 0) {
+      logger.error(`[escrow] releasePayment reverted or not found for booking ${orderDisplayId}`)
+      return { txHash: null, bookingId, error: 'release reverted' }
+    }
     logger.info(`[escrow] releaseFunds confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`)
     return { txHash: receipt.hash, bookingId }
   } catch (err) {
@@ -407,8 +511,67 @@ export async function confirmEscrowRefund (txHash) {
   });
 }
 
+export async function escrowLockPayment(orderDisplayId, customerWalletAddress, driverWalletAddress, amountWei) {
+  return measureExecution('EscrowService.escrowLockPayment', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId);
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping lockPayment.');
+      return { txHash: null, bookingId };
+    }
+
+    try {
+      const tx = await escrowContract.lockPayment(
+        bookingId,
+        customerWalletAddress,
+        driverWalletAddress,
+        {
+          value: amountWei
+        }
+      );
+      logger.info(`[escrow] lockPayment tx submitted: ${tx.hash} for booking ${orderDisplayId}`);
+      const receipt = await tx.wait(1);
+      logger.info(`[escrow] lockPayment confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`);
+      return { txHash: receipt.hash, bookingId };
+    } catch (err) {
+      logger.error(`[escrow] lockPayment failed for booking ${orderDisplayId}: ${err.message}`);
+      return { txHash: null, bookingId, error: err.message };
+    }
+  });
+}
+
 export function bookingIdFromUuid (orderId) {
   return getEscrowBookingId(orderId)
+}
+
+export async function submitEscrowCancelWithPenalty (orderDisplayId, driverFeeWei) {
+  return measureExecution('EscrowService.submitEscrowCancelWithPenalty', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId)
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping cancelWithPenalty.')
+      return { txHash: null, bookingId }
+    }
+
+    try {
+      const tx = await escrowContract.cancelWithPenalty(bookingId, driverFeeWei)
+      logger.info(`[escrow] cancelWithPenalty tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
+      return {
+        txHash: tx.hash,
+        bookingId,
+        waitForConfirmation: async () => {
+          const receipt = await tx.wait(1)
+          if (!receipt || receipt.status === 0) {
+            throw new Error('Escrow cancelWithPenalty transaction reverted or was not found.')
+          }
+          return receipt
+        },
+      }
+    } catch (err) {
+      logger.error(`[escrow] cancelWithPenalty failed for booking ${orderDisplayId}: ${err.message}`)
+      return { txHash: null, bookingId, error: err.message }
+    }
+  })
 }
 
 export async function releaseEscrowFunds (orderDisplayId) {
@@ -417,4 +580,116 @@ export async function releaseEscrowFunds (orderDisplayId) {
 
 export async function escrowRefund (orderDisplayId) {
   return submitEscrowRefund(orderDisplayId)
+}
+
+/**
+ * Submit an escrow dispute raise and return its hash before confirmation.
+ * Only the relayer (owner) may call raiseDispute on-chain.
+ */
+export async function submitEscrowRaiseDispute (orderDisplayId) {
+  return measureExecution('EscrowService.submitEscrowRaiseDispute', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId)
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping raiseDispute.')
+      return { txHash: null, bookingId }
+    }
+
+    let tx
+    try {
+      tx = await escrowContract.raiseDispute(bookingId)
+      logger.info(`[escrow] raiseDispute tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
+    } catch (err) {
+      logger.error(`[escrow] raiseDispute failed for booking ${orderDisplayId}: ${err.message}`)
+      return { txHash: null, bookingId, error: err.message }
+    }
+    return {
+      txHash: tx.hash,
+      bookingId,
+      waitForConfirmation: async () => {
+        const receipt = await tx.wait(1)
+        if (!receipt || receipt.status === 0) {
+          throw new Error('Escrow raiseDispute transaction reverted or was not found.')
+        }
+        logger.info(`[escrow] raiseDispute confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`)
+        return receipt
+      }
+    }
+  })
+}
+
+/**
+ * Submit a dispute resolution that splits the escrowed funds. driverAmountWei
+ * is awarded to the driver; the remainder is refunded to the customer.
+ * Only the relayer (owner) may call resolveDispute on-chain.
+ *
+ * @param {string} orderDisplayId
+ * @param {string|bigint} driverAmountWei — wei awarded to the driver
+ */
+export async function submitEscrowResolveDispute (orderDisplayId, driverAmountWei) {
+  return measureExecution('EscrowService.submitEscrowResolveDispute', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId)
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping resolveDispute.')
+      return { txHash: null, bookingId }
+    }
+
+    let tx
+    try {
+      tx = await escrowContract.resolveDispute(bookingId, driverAmountWei)
+      logger.info(`[escrow] resolveDispute tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
+    } catch (err) {
+      logger.error(`[escrow] resolveDispute failed for booking ${orderDisplayId}: ${err.message}`)
+      return { txHash: null, bookingId, error: err.message }
+    }
+    return {
+      txHash: tx.hash,
+      bookingId,
+      waitForConfirmation: async () => {
+        const receipt = await tx.wait(1)
+        if (!receipt || receipt.status === 0) {
+          throw new Error('Escrow resolveDispute transaction reverted or was not found.')
+        }
+        logger.info(`[escrow] resolveDispute confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`)
+        return receipt
+      }
+    }
+  })
+}
+
+/**
+ * Submit a dispute-timeout resolution that refunds the customer in full.
+ * Only the relayer (owner) may call resolveDisputeTimeout on-chain.
+ */
+export async function submitEscrowResolveDisputeTimeout (orderDisplayId) {
+  return measureExecution('EscrowService.submitEscrowResolveDisputeTimeout', async () => {
+    const bookingId = getEscrowBookingId(orderDisplayId)
+
+    if (!escrowContract) {
+      logger.warn('[escrow] Contract not initialised — skipping resolveDisputeTimeout.')
+      return { txHash: null, bookingId }
+    }
+
+    let tx
+    try {
+      tx = await escrowContract.resolveDisputeTimeout(bookingId)
+      logger.info(`[escrow] resolveDisputeTimeout tx submitted: ${tx.hash} for booking ${orderDisplayId}`)
+    } catch (err) {
+      logger.error(`[escrow] resolveDisputeTimeout failed for booking ${orderDisplayId}: ${err.message}`)
+      return { txHash: null, bookingId, error: err.message }
+    }
+    return {
+      txHash: tx.hash,
+      bookingId,
+      waitForConfirmation: async () => {
+        const receipt = await tx.wait(1)
+        if (!receipt || receipt.status === 0) {
+          throw new Error('Escrow resolveDisputeTimeout transaction reverted or was not found.')
+        }
+        logger.info(`[escrow] resolveDisputeTimeout confirmed for booking ${orderDisplayId} in block ${receipt.blockNumber}`)
+        return receipt
+      }
+    }
+  })
 }

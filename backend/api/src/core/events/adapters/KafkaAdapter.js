@@ -1,6 +1,7 @@
 import { EventPublisher } from '../EventPublisher.js';
 import logger from '../../../middleware/logger.js';
 import { v4 as uuidv4 } from 'uuid';
+import { ContextPropagator } from '../../telemetry/ContextPropagator.js';
 
 export class KafkaAdapter extends EventPublisher {
   constructor(kafkaConfig) {
@@ -56,11 +57,13 @@ export class KafkaAdapter extends EventPublisher {
     const topic = this.getTopic(event.eventType);
     const key = event.metadata?.eventId || uuidv4();
 
+    const enriched = ContextPropagator.injectIntoEventPayload(event);
+
     const kafkaEvent = {
       eventId: event.metadata?.eventId || uuidv4(),
       eventType: event.eventType,
       data: event.payload,
-      metadata: event.metadata?.toJSON ? event.metadata.toJSON() : event.metadata,
+      metadata: enriched.metadata?.toJSON ? enriched.metadata.toJSON() : enriched.metadata,
     };
 
     try {
@@ -77,16 +80,19 @@ export class KafkaAdapter extends EventPublisher {
       await this.connect();
     }
 
-    const messages = events.map(event => ({
-      topic: this.getTopic(event.eventType),
-      event: {
-        eventId: event.metadata?.eventId || uuidv4(),
-        eventType: event.eventType,
-        data: event.payload,
-        metadata: event.metadata?.toJSON ? event.metadata.toJSON() : event.metadata,
-      },
-      key: event.metadata?.eventId || uuidv4(),
-    }));
+    const messages = events.map(event => {
+      const enriched = ContextPropagator.injectIntoEventPayload(event);
+      return {
+        topic: this.getTopic(event.eventType),
+        event: {
+          eventId: event.metadata?.eventId || uuidv4(),
+          eventType: event.eventType,
+          data: event.payload,
+          metadata: enriched.metadata?.toJSON ? enriched.metadata.toJSON() : enriched.metadata,
+        },
+        key: event.metadata?.eventId || uuidv4(),
+      };
+    });
 
     try {
       await this._kafkaConfig.publishBatch(messages);

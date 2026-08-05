@@ -20,6 +20,8 @@ Future<void> main() async {
   await CrashReportingService.init(appName: 'Driver');
 
   BackgroundSyncService.initialize();
+  BackgroundSyncService.registerSyncTask();
+  BackgroundSyncService.listenForConnectivity();
   FcmService.initialize();
   Firebase.initializeApp();
   FcmService.registerTokenForUser(userId);
@@ -59,7 +61,7 @@ Future<void> main() async {
   try {
     await Supabase.initialize(
       url: Env.supabaseUrl,
-      publishableKey: Env.supabaseAnonKey,
+      anonKey: Env.supabaseAnonKey,
     );
   } catch (e) {
     debugPrint('Supabase initialization failed: $e');

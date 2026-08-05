@@ -2,6 +2,9 @@ import EventEmitter from 'events';
 import logger from '../../middleware/logger.js';
 import { EventMetadata, EVENT_CATEGORIES } from './EventMetadata.js';
 import { EventRegistry } from './EventRegistry.js';
+import { ContextPropagator } from '../telemetry/ContextPropagator.js';
+import { context, trace, SpanStatusCode } from '@opentelemetry/api';
+import spanFactory, { STANDARD_ATTRIBUTES } from '../telemetry/SpanFactory.js';
 
 class EventBus extends EventEmitter {
   constructor() {
@@ -94,6 +97,8 @@ class EventBus extends EventEmitter {
     }
 
     const eventType = event.metadata?.eventType || event.eventType;
+    const source = event.metadata?.source || 'unknown';
+    const eventId = event.metadata?.eventId;
 
     if (this._registry.isValid(eventType)) {
       const validation = this._registry.validate(eventType, event.payload);
@@ -108,12 +113,28 @@ class EventBus extends EventEmitter {
       return this;
     }
 
-    this._metrics.published++;
+    const traceSnapshot = ContextPropagator.snapshot();
 
-    this.emitSafe(eventType, event);
+    const enrichedEvent = ContextPropagator.injectIntoEventPayload(event);
 
-    if (options.adapters !== false) {
-      this._publishToAdapters(event, options);
+    const span = spanFactory.startEventPublishSpan(eventType, { source, eventId });
+
+    try {
+      context.with(trace.setSpan(context.active(), span), () => {
+        this._metrics.published++;
+        this.emitSafe(eventType, enrichedEvent);
+
+        if (options.adapters !== false) {
+          this._publishToAdapters(enrichedEvent, options);
+        }
+      });
+
+      span.setStatus({ code: SpanStatusCode.OK });
+      span.end();
+    } catch (error) {
+      spanFactory.recordError(span, error);
+      span.end();
+      throw error;
     }
 
     return this;
@@ -141,7 +162,30 @@ class EventBus extends EventEmitter {
   subscribe(eventType, handler) {
     if (typeof handler === 'function') {
       this._metrics.subscribed++;
-      this.on(eventType, handler);
+      const tracedHandler = (event) => {
+        const parentCtx = event?.metadata?.traceContext
+          ? ContextPropagator.extractFromEventPayload(event)
+          : undefined;
+
+        const span = spanFactory.startEventSubscribeSpan(eventType, {
+          source: event?.metadata?.source || 'unknown',
+        });
+
+        const runContext = parentCtx || context.active();
+        return context.with(trace.setSpan(runContext, span), async () => {
+          try {
+            const result = await handler(event);
+            span.setStatus({ code: SpanStatusCode.OK });
+            span.end();
+            return result;
+          } catch (error) {
+            spanFactory.recordError(span, error);
+            span.end();
+            throw error;
+          }
+        });
+      };
+      this.on(eventType, tracedHandler);
       return this;
     }
 

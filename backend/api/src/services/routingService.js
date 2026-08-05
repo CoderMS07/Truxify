@@ -13,11 +13,32 @@ export async function optimizeWaypoints(start, end, waypoints) {
   if (waypoints.length === 1) return waypoints; // Nothing to reorder
 
   try {
+    const normalizeCoordinatePoint = (point, label) => {
+      const lat = Number(point?.lat);
+      const lng = Number(point?.lng);
+
+      if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+        throw new Error(`Invalid latitude for ${label}`);
+      }
+
+      if (!Number.isFinite(lng) || lng < -180 || lng > 180) {
+        throw new Error(`Invalid longitude for ${label}`);
+      }
+
+      return { lat, lng };
+    };
+
+    const normalizedStart = normalizeCoordinatePoint(start, 'start');
+    const normalizedEnd = normalizeCoordinatePoint(end, 'end');
+    const normalizedWaypoints = waypoints.map((wp, index) =>
+      normalizeCoordinatePoint(wp, `waypoint ${index + 1}`)
+    );
+
     // Construct coordinate string: OSRM uses lon,lat
     const coords = [
-      `${start.lng},${start.lat}`,
-      ...waypoints.map(wp => `${wp.lng},${wp.lat}`),
-      `${end.lng},${end.lat}`
+      `${normalizedStart.lng},${normalizedStart.lat}`,
+      ...normalizedWaypoints.map(wp => `${wp.lng},${wp.lat}`),
+      `${normalizedEnd.lng},${normalizedEnd.lat}`
     ].join(';');
 
     // Use OSRM trip API with configurable URL
@@ -42,14 +63,15 @@ export async function optimizeWaypoints(start, end, waypoints) {
     // Index 0 is the start, Index N is the end.
     
     const optimizedWaypoints = new Array(waypoints.length);
-    
-    // Original array order: [Start, WP1, WP2, ..., End]
-    for (let i = 0; i < waypointsResult.length; i++) {
+
+    // waypointsResult is in input order: [Start, WP1, WP2, ..., End].
+    // Each waypoint's `waypoint_index` is its position in the optimized trip
+    // (0 = start, waypoints.length + 1 = end), so subtract 1 for the middle stops.
+    for (let i = 1; i <= waypoints.length; i++) {
       const osrmWp = waypointsResult[i];
-      const originalIndex = osrmWp.waypoint_index - 1;
-      const optimizedIndex = i;
-      if (originalIndex >= 0 && originalIndex < waypoints.length) {
-        optimizedWaypoints[optimizedIndex] = waypoints[originalIndex];
+      const optimizedIndex = osrmWp.waypoint_index - 1;
+      if (optimizedIndex >= 0 && optimizedIndex < waypoints.length) {
+        optimizedWaypoints[optimizedIndex] = waypoints[i - 1];
       }
     }
 

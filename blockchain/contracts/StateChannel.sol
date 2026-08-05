@@ -50,6 +50,7 @@ contract StateChannel is Ownable, ReentrancyGuard, Pausable {
     mapping(uint256 => Dispute) public disputes;
     mapping(address => uint256[]) public userChannels;
     mapping(uint256 => mapping(address => uint256)) public pendingWithdrawals;
+    mapping(uint256 => uint256) public channelClosesAt;
 
     uint256 public channelCounter;
     uint256 public constant CHALLENGE_PERIOD = 1 days;
@@ -129,7 +130,7 @@ contract StateChannel is Ownable, ReentrancyGuard, Pausable {
         bytes memory signatureB
     ) external whenNotPaused {
         Channel storage channel = channels[channelId];
-        require(channel.isOpen, "Channel not open");
+        require(channel.isOpen || (!channel.isSettled && block.timestamp <= channelClosesAt[channelId]), "Channel not open or challenge period expired");
         require(!channel.isSettled, "Channel settled");
         require(nonce > channel.nonce, "Invalid nonce");
 
@@ -189,6 +190,7 @@ contract StateChannel is Ownable, ReentrancyGuard, Pausable {
 
         channel.isOpen = false;
         channel.lastUpdated = block.timestamp;
+        channelClosesAt[channelId] = block.timestamp + CHALLENGE_PERIOD;
 
         // Capture final balances before settlement
         uint256 finalBalanceA = channel.balanceA;
@@ -196,8 +198,16 @@ contract StateChannel is Ownable, ReentrancyGuard, Pausable {
 
         // Emit event before zeroing balances
         emit ChannelClosed(channelId, finalBalanceA, finalBalanceB);
+    }
 
-        // Settle balances
+    function settleChannel(uint256 channelId) external whenNotPaused {
+        Channel storage channel = channels[channelId];
+        require(!channel.isOpen, "Channel still open");
+        require(!channel.isSettled, "Already settled");
+        require(channelClosesAt[channelId] > 0, "Channel not closed");
+        require(block.timestamp > channelClosesAt[channelId], "Challenge period not elapsed");
+        require(msg.sender == channel.participantA || msg.sender == channel.participantB, "Not participant");
+
         _settleChannel(channelId);
     }
 
@@ -250,21 +260,55 @@ contract StateChannel is Ownable, ReentrancyGuard, Pausable {
     }
 
     function resolveDispute(uint256 channelId, bytes memory proof) external onlyOwner {
-        Dispute storage dispute = disputes[channelId];
-        require(dispute.challenger != address(0), "No dispute");
-        require(!dispute.resolved, "Already resolved");
-        require(block.timestamp >= dispute.startedAt + SETTLEMENT_PERIOD, "Settlement period not elapsed");
+    Dispute storage dispute = disputes[channelId];
+    require(dispute.challenger != address(0), "No dispute");
+    require(!dispute.resolved, "Already resolved");
+    require(block.timestamp >= dispute.startedAt + SETTLEMENT_PERIOD, "Settlement period not elapsed");
 
-        // Verify proof and resolve
-        // In production: verify state proof
-        dispute.resolved = true;
+    Channel storage channel = channels[channelId];
 
-        // Reopen channel with disputed state
-        Channel storage channel = channels[channelId];
-        channel.isOpen = true;
+    // Decode proof: (balanceA, balanceB, nonce, signatureA, signatureB)
+    (uint256 proofBalanceA, uint256 proofBalanceB, uint256 proofNonce, bytes memory sigA, bytes memory sigB) =
+        abi.decode(proof, (uint256, uint256, uint256, bytes, bytes));
 
-        emit DisputeResolved(channelId, true);
+    // Verify that balances sum to the channel's total
+    uint256 totalBalance = channel.balanceA + channel.balanceB;
+    require(proofBalanceA + proofBalanceB == totalBalance, "Invalid proof balances");
+
+    // The disputed state must be at least as recent as the last state the
+    // contract already knows about via updateState — this stops a stale,
+    // mutually-signed state from overriding a newer one.
+    require(proofNonce >= channel.nonce, "Stale disputed state");
+
+    // Use the exact same state encoding as updateState so a dispute proof
+    // is nothing more than a (channelId, balanceA, balanceB, nonce) state
+    // that both channel participants actually signed off on.
+    bytes32 stateHash = keccak256(abi.encodePacked(
+        channelId, proofBalanceA, proofBalanceB, proofNonce
+    ));
+
+    // Require BOTH participants' signatures on the SAME state. A proof
+    // signed only by the challenger (the previous behaviour) let either
+    // party fabricate an arbitrary payout and win by default.
+    require(_verifySignature(stateHash, sigA, channel.participantA), "Invalid signature A");
+    require(_verifySignature(stateHash, sigB, channel.participantB), "Invalid signature B");
+
+    dispute.resolved = true;
+
+    // Only move the channel state forward — never backward — and only to
+    // a state number that is provably authoritative (signed by both
+    // participants above).
+    if (proofNonce > channel.nonce) {
+        channel.balanceA = proofBalanceA;
+        channel.balanceB = proofBalanceB;
+        channel.nonce = proofNonce;
+        channel.latestStateHash = stateHash;
     }
+
+    _settleChannel(channelId);
+
+    emit DisputeResolved(channelId, true);
+}
 
     // ============ Batch Settlement ============
 

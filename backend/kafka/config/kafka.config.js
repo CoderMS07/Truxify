@@ -1,5 +1,6 @@
 import { Kafka } from 'kafkajs';
-import logger from '../api/src/middleware/logger.js';
+import { context, propagation } from '@opentelemetry/api';
+import logger from '../../api/src/middleware/logger.js';
 
 const kafka = new Kafka({
   clientId: 'truxify',
@@ -60,6 +61,8 @@ class KafkaConfig {
       this.producer = kafka.producer({
         allowAutoTopicCreation: true,
         transactionTimeout: 30000,
+        enableIdempotence: true,
+        maxInFlightRequests: 5,
       });
       await this.producer.connect();
       this.isConnected = true;
@@ -131,6 +134,10 @@ class KafkaConfig {
   async publishEvent(topic, event, key = null) {
     try {
       const producer = await this.getProducer();
+
+      const traceHeaders = {};
+      propagation.inject(context.active(), traceHeaders);
+
       const message = {
         topic,
         messages: [
@@ -141,6 +148,7 @@ class KafkaConfig {
               timestamp: event.timestamp || new Date().toISOString(),
               version: '1.0',
             }),
+            headers: traceHeaders,
             timestamp: Date.now(),
           },
         ],
@@ -158,6 +166,10 @@ class KafkaConfig {
   async publishBatch(events) {
     try {
       const producer = await this.getProducer();
+
+      const traceHeaders = {};
+      propagation.inject(context.active(), traceHeaders);
+
       const messages = events.map(({ topic, event, key }) => ({
         topic,
         messages: [
@@ -168,6 +180,7 @@ class KafkaConfig {
               timestamp: event.timestamp || new Date().toISOString(),
               version: '1.0',
             }),
+            headers: traceHeaders,
             timestamp: Date.now(),
           },
         ],
@@ -189,8 +202,18 @@ class KafkaConfig {
       eachMessage: async ({ topic, partition, message }) => {
         try {
           const value = JSON.parse(message.value.toString());
+          const headers = message.headers || {};
+          const normalizedHeaders = {};
+          for (const [k, v] of Object.entries(headers)) {
+            normalizedHeaders[k] = Buffer.isBuffer(v) ? v.toString('utf-8') : String(v ?? '');
+          }
+          const parentContext = propagation.extract(context.active(), normalizedHeaders);
+
           logger.debug(`📥 Message received: ${topic}`, { key: message.key.toString() });
-          await messageHandler(topic, value, message);
+
+          await context.with(parentContext, async () => {
+            await messageHandler(topic, value, message);
+          });
         } catch (error) {
           logger.error(`❌ Error processing message from ${topic}:`, error);
           if (errorHandler) {
@@ -199,7 +222,6 @@ class KafkaConfig {
         }
       },
       eachBatch: async ({ batch }) => {
-        // Handle batch processing if needed
         logger.debug(`📦 Batch received: ${batch.topic}, ${batch.messages.length} messages`);
       },
     });

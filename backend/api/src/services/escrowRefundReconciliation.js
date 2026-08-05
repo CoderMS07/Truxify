@@ -66,7 +66,7 @@ export async function reconcilePendingEscrowRefunds(orderRepository) {
     }
 
     for (const order of pendingOrders ?? []) {
-      const retryCount = order.escrow_refund_retry_count ?? 0;
+      const retryCount = order.escrow_refund_attempts ?? 0;
 
       // Exponential backoff logic based on updated_at
       if (retryCount > 0 && order.updated_at) {
@@ -96,7 +96,7 @@ export async function reconcilePendingEscrowRefunds(orderRepository) {
       }
 
       try {
-        const retryCount = order.escrow_refund_retry_count ?? 0;
+        const retryCount = order.escrow_refund_attempts ?? 0;
         if (retryCount >= MAX_RETRIES) {
           logger.warn(`[escrow-reconciliation] Order ${order.order_display_id} exceeded max retries (${MAX_RETRIES}), escalating.`);
           continue;
@@ -140,8 +140,9 @@ export async function reconcilePendingEscrowRefunds(orderRepository) {
           refund_tx_hash: receipt.hash ?? refundTxHash,
           escrow_refunded_at: refundedAt,
           escrow_refund_error: null,
+          reconciled_by: null,
           updated_at: refundedAt,
-        }, [{ op: 'in', column: 'escrow_status', value: ['refund_pending', 'refund_failed'] }], 'id');
+        }, [{ op: 'in', column: 'escrow_status', value: ['refund_pending', 'refund_failed'] }, { op: 'eq', column: 'reconciled_by', value: instanceId }], 'id');
 
         if (updateError) {
           logger.error(
@@ -150,10 +151,11 @@ export async function reconcilePendingEscrowRefunds(orderRepository) {
           );
         }
       } catch (err) {
-        const newRetryCount = (order.escrow_refund_retry_count ?? 0) + 1;
+        const newRetryCount = (order.escrow_refund_attempts ?? 0) + 1;
         await orderRepository.updateOrder(order.id, {
-          escrow_refund_retry_count: newRetryCount,
+          escrow_refund_attempts: newRetryCount,
           escrow_refund_error: err.message,
+          reconciled_by: null,
           updated_at: new Date().toISOString(),
         });
         logger.warn(

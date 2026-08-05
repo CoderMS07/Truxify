@@ -1,5 +1,8 @@
 import { EventEmitter } from 'events';
 import logger from '../api/src/middleware/logger.js';
+import { context, trace, SpanStatusCode } from '@opentelemetry/api';
+import spanFactory from '../api/src/core/telemetry/SpanFactory.js';
+import { ContextPropagator } from '../api/src/core/telemetry/ContextPropagator.js';
 
 // Priority levels
 export const Priority = {
@@ -197,21 +200,26 @@ class RenderScheduler extends EventEmitter {
     
     async processLoop() {
         while (this.isProcessing) {
-            // Check if we can run more tasks
-            if (this.running.size >= this.maxConcurrent) {
-                await this.sleep(100);
-                continue;
+            try {
+                // Check if we can run more tasks
+                if (this.running.size >= this.maxConcurrent) {
+                    await this.sleep(100);
+                    continue;
+                }
+                
+                // Get next task
+                const task = this.getNextTask();
+                if (!task) {
+                    await this.sleep(100);
+                    continue;
+                }
+                
+                // Run task
+                this.runTask(task);
+            } catch (err) {
+                logger.error(`Scheduler processLoop error: ${err.message}`);
+                await this.sleep(1000);
             }
-            
-            // Get next task
-            const task = this.getNextTask();
-            if (!task) {
-                await this.sleep(100);
-                continue;
-            }
-            
-            // Run task
-            this.runTask(task);
         }
     }
     
@@ -257,10 +265,20 @@ class RenderScheduler extends EventEmitter {
         this.running.set(task.id, task);
         this.emit('taskStarted', { taskId: task.id });
         logger.debug(`Task ${task.id} started`);
+
+        const span = spanFactory.startSchedulerTaskSpan(`render-task-${task.id}`, {
+            attributes: {
+                'scheduler.task_id': task.id,
+                'scheduler.priority': PriorityNames[task.priority],
+                'scheduler.attempt': task.attempts,
+                'scheduler.max_attempts': task.maxAttempts,
+            },
+        });
         
         try {
-            // Execute task
-            const result = await this.executeTask(task);
+            const result = await context.with(trace.setSpan(context.active(), span), async () => {
+                return await this.executeTask(task);
+            });
             
             // Complete task
             task.status = 'completed';
@@ -287,6 +305,10 @@ class RenderScheduler extends EventEmitter {
                 this.stats.averageWaitTime = 
                     (this.stats.averageWaitTime * (this.stats.completedTasks - 1) + waitTime) / this.stats.completedTasks;
             }
+
+            span.setAttributes({ 'scheduler.execution_time_ms': execTime });
+            span.setStatus({ code: SpanStatusCode.OK });
+            span.end();
             
             this.emit('taskCompleted', { taskId: task.id, result, executionTime: execTime });
             logger.debug(`Task ${task.id} completed in ${execTime}ms`);
@@ -300,6 +322,9 @@ class RenderScheduler extends EventEmitter {
             task.error = error.message;
             
             this.running.delete(task.id);
+
+            spanFactory.recordError(span, error);
+            span.end();
             
             if (task.attempts < task.maxAttempts) {
                 // Retry

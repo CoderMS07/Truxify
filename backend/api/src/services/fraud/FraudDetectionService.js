@@ -20,6 +20,10 @@ class FraudDetectionService {
     this._cleanupInterval = setInterval(() => this._evictStale(), 300_000); // every 5 min
     this._cleanupInterval.unref?.();
     
+    this.pendingUpserts = new Map();
+    this._flushInterval = setInterval(() => this._flushPendingUpserts(), 5000); // flush every 5 seconds
+    this._flushInterval.unref?.();
+    
     // Initialize ML models (in production, load from FastAPI)
     this.models = {
       behavioral: null,
@@ -32,23 +36,8 @@ class FraudDetectionService {
 
   // ============ Behavioral Fingerprinting ============
   async trackBehavior(userId, eventData) {
-    let lockAcquired = false;
-    const lockKey = `lock:behavior:${userId}`;
     try {
       if (!supabase) return null;
-
-      if (this.redis) {
-        for (let i = 0; i < 5; i++) {
-          lockAcquired = await this.redis.set(lockKey, '1', 'NX', 'PX', 5000);
-          if (lockAcquired) break;
-          await new Promise(r => setTimeout(r, 100));
-        }
-        if (!lockAcquired) {
-          logger.warn(`[FraudDetection] Could not acquire lock for user ${userId}, dropping behavioral event to prevent data corruption`);
-          return null;
-        }
-      }
-
       const profile = await this.getOrCreateProfile(userId);
       
       // Update behavioral metrics
@@ -77,20 +66,14 @@ class FraudDetectionService {
         this.behavioralProfiles.set(userId, profile);
       }
 
-      // Persist to Supabase to prevent data loss across Redis expirations
-      const { error: dbErr } = await supabase
-        .from('behavioral_profiles')
-        .upsert({
-          user_id: userId,
-          events: profile.events,
-          patterns: profile.patterns,
-          last_activity: new Date(profile.lastActivity).toISOString(),
-          updated_at: new Date().toISOString()
-        }, { onConflict: 'user_id' });
-
-      if (dbErr) {
-        logger.error('[FraudDetection] Failed to persist behavioral profile to DB:', dbErr.message);
-      }
+      // Queue for batch upsert instead of awaiting individual upsert to prevent event loop blocking
+      this.pendingUpserts.set(userId, {
+        user_id: userId,
+        events: profile.events,
+        patterns: profile.patterns,
+        last_activity: new Date(profile.lastActivity).toISOString(),
+        updated_at: new Date().toISOString()
+      });
 
       // Calculate risk score
       const riskScore = await this.calculateBehavioralRisk(profile);
@@ -111,10 +94,6 @@ class FraudDetectionService {
     } catch (error) {
       logger.error('Behavior tracking error:', error);
       return null;
-    } finally {
-      if (lockAcquired && this.redis) {
-        await this.redis.del(lockKey).catch(() => {});
-      }
     }
   }
 
@@ -135,7 +114,7 @@ class FraudDetectionService {
       .from('behavioral_profiles')
       .select('*')
       .eq('user_id', userId)
-      .maybeSingle();
+      .single();
 
     if (data) {
       // Normalize: DB returns user_id, code expects userId
@@ -159,6 +138,26 @@ class FraudDetectionService {
       lastActivity: Date.now(),
       createdAt: Date.now()
     };
+  }
+
+  async _flushPendingUpserts() {
+    if (this.pendingUpserts.size === 0 || !supabase) return;
+    
+    // Extract records and clear the map for the next batch
+    const records = Array.from(this.pendingUpserts.values());
+    this.pendingUpserts.clear();
+
+    try {
+      const { error: dbErr } = await supabase
+        .from('behavioral_profiles')
+        .upsert(records, { onConflict: 'user_id' });
+
+      if (dbErr) {
+        logger.error('[FraudDetection] Failed to batch persist behavioral profiles to DB:', dbErr.message);
+      }
+    } catch (error) {
+      logger.error('[FraudDetection] Batch upsert error:', error);
+    }
   }
 
   updateBehavioralPatterns(profile, eventData) {
@@ -235,28 +234,28 @@ class FraudDetectionService {
       }
     }
 
-    // 2. Check location anomalies
+    // 2. Check location anomalies — flag genuinely impossible travel speed,
+    // not just cumulative distance. Truxify drivers legitimately cover
+    // hundreds of km per trip, so summing raw distance with no time window
+    // flagged nearly every long-haul driver.
     if (patterns.locationHistory.length > 10) {
       const locations = patterns.locationHistory;
-      let distanceTraveled = 0;
+      let maxSpeedKmh = 0;
       for (let i = 1; i < locations.length; i++) {
-        distanceTraveled += this.calculateDistance(
+        const dist = this.calculateDistance(
           locations[i-1].lat, locations[i-1].lng,
           locations[i].lat, locations[i].lng
         );
+        const hours = (locations[i].timestamp - locations[i-1].timestamp) / 3_600_000;
+        const speedKmh = hours > 0 ? dist / hours : Infinity;
+        if (speedKmh > maxSpeedKmh) {
+          maxSpeedKmh = speedKmh;
+        }
       }
 
-      // Impossible travel: check both distance AND speed (time window)
-      // Extract timestamps to compute actual time elapsed across history
-      const firstTs = locations[0].timestamp;
-      const lastTs = locations[locations.length - 1].timestamp;
-      const elapsedHours = (lastTs - firstTs) / (1000 * 60 * 60);
-
-      // Speed threshold: 200 km/h is well above any legal trucking speed.
-      // Score only added if distance is large AND elapsed time is short
-      // enough to imply physically impossible speed.
-      const MAX_LEGIT_SPEED_KMH = 200;
-      if (distanceTraveled > 100 && elapsedHours > 0 && (distanceTraveled / elapsedHours) > MAX_LEGIT_SPEED_KMH) {
+      // Sustained speed above ~150 km/h between consecutive pings is not
+      // achievable by road and indicates spoofed/shared location data.
+      if (maxSpeedKmh > 150) {
         riskScore += 0.3;
       }
     }
@@ -316,13 +315,24 @@ class FraudDetectionService {
     }
   }
 
+  sanitizeUserId(userId) {
+    if (typeof userId !== 'string') return '';
+    if (/[,)(\‘\"\s]/.test(userId)) {
+      logger.warn(`[FraudDetection] Rejected userId with invalid characters: ${userId}`);
+      return '';
+    }
+    return userId;
+  }
+
   async getUserConnections(userId) {
     if (!supabase) return [];
+    const safeUserId = this.sanitizeUserId(userId);
+    if (!safeUserId) return [];
     // Get all connections (orders, trips, shared routes)
     const { data: orders, error } = await supabase
       .from('orders')
       .select('customer_id, driver_id')
-      .or(`customer_id.eq.${userId},driver_id.eq.${userId}`);
+      .or(`customer_id.eq.${safeUserId},driver_id.eq.${safeUserId}`);
 
     if (error) {
       logger.error('Failed to load user fraud connections:', error);
@@ -348,10 +358,13 @@ class FraudDetectionService {
   async getBatchUserConnections(userIds) {
     if (userIds.length === 0) return {};
 
+    const safeIds = userIds.map(id => this.sanitizeUserId(id)).filter(Boolean);
+    if (safeIds.length === 0) return {};
+
     const { data: orders, error } = await supabase
       .from('orders')
       .select('customer_id, driver_id')
-      .or(userIds.map(id => `customer_id.eq.${id}`).join(',') + ',' + userIds.map(id => `driver_id.eq.${id}`).join(','));
+      .or(safeIds.map(id => `customer_id.eq.${id}`).join(',') + ',' + safeIds.map(id => `driver_id.eq.${id}`).join(','));
 
     if (error) {
       logger.error('Failed to load batch user fraud connections:', error);
@@ -632,7 +645,7 @@ class FraudDetectionService {
           created_at: new Date().toISOString()
         }])
         .select()
-        .maybeSingle();
+        .single();
 
       logger.info(`User ${userId} added to review queue`, { reason, riskScore });
       return data;
@@ -666,7 +679,7 @@ class FraudDetectionService {
       })
       .eq('id', reviewId)
       .select()
-      .maybeSingle();
+      .single();
 
     return data;
   }

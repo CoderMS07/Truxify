@@ -89,7 +89,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
       setState(() {
         _earningsMap = {
           for (final item in data)
-            item['day_date'].toString(): EarningsDailyModel.fromMap(item),
+            item['day_date']?.toString() ?? '': EarningsDailyModel.fromMap(item),
         };
       });
     } catch (e) {
@@ -583,7 +583,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                 maxY: maxVal * 1.1,
                 barTouchData: BarTouchData(
                   touchTooltipData: BarTouchTooltipData(
-                    getTooltipColor: (_) => TruxifyColors.accentDark,
+                    tooltipBgColor: TruxifyColors.accentDark,
                     getTooltipItem: (group, groupIndex, rod, rodIndex) {
                       final item = chartData[group.x] as Map;
                       return BarTooltipItem(
@@ -652,7 +652,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
     if (stats == null) return const SizedBox.shrink();
 
     final totalKm = stats['total_km'] ?? 0;
-    final avgEarning = stats['avg_earning_per_km'] ?? 0.0;
+    final avgEarning = (stats['avg_earning_per_km'] as num?)?.toDouble() ?? 0.0;
     final lifetimeTrips = stats['lifetime_trips'] ?? 0;
 
     return Container(
@@ -687,7 +687,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                 icon: Icons.trending_up_rounded,
                 color: Colors.green,
                 label: 'Avg Earning/km',
-                value: '₹${(avgEarning as double).toStringAsFixed(1)}',
+                value: '₹${avgEarning.toStringAsFixed(1)}',
               ),
             ],
           ),

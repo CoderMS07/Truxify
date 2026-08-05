@@ -14,14 +14,24 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/offline/websocket/resilient_websocket.dart';
 import '../theme/app_theme.dart';
 import '../constants/supabase_config.dart';
+import '../services/supabase_service.dart';
 import '../widgets/common_widgets.dart';
 import '../widgets/timeline_connector.dart';
 import '../widgets/timeline_milestone.dart';
 
 class LiveTrackingScreen extends StatefulWidget {
-  const LiveTrackingScreen({super.key, required this.orderId});
-
   final String orderId;
+  final OrderService? orderService;
+  final TrackingService? trackingService;
+  final ResilientWebSocket? trackingWebSocket;
+
+  const LiveTrackingScreen({
+    super.key,
+    required this.orderId,
+    this.orderService,
+    this.trackingService,
+    this.trackingWebSocket,
+  });
 
   @override
   State<LiveTrackingScreen> createState() => _LiveTrackingScreenState();
@@ -60,12 +70,15 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   bool _isRouteLoading = false;
   static const Duration _routeRefreshInterval = Duration(seconds: 30);
 
+  // ── WebSocket connection state ────────────────────────────────────
+  bool _wsConnected = false;
+
   @override
   void initState() {
     super.initState();
 
-    _orderService = OrderService();
-    _trackingService = TrackingService();
+    _orderService = widget.orderService ?? OrderService();
+    _trackingService = widget.trackingService ?? TrackingService();
     _movementController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1500),
@@ -78,8 +91,10 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
       _routeRefreshInterval,
       (_) => _loadRoute(),
     );
-    if (SupabaseConfig.isConfigured) {
-      _subscribeToOrderUpdates();
+    if (SupabaseConfig.isConfigured || widget.trackingWebSocket != null) {
+      if (SupabaseConfig.isConfigured || SupabaseService.mockClient != null) {
+        _subscribeToOrderUpdates();
+      }
       _subscribeToTracking();
     } else {
       debugPrint('[LiveTracking] Supabase not configured — real-time updates disabled');
@@ -90,12 +105,12 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   void dispose() {
     _routeRefreshTimer?.cancel();
     _movementController.dispose();
-    if (SupabaseConfig.isConfigured) {
+    if (SupabaseConfig.isConfigured || SupabaseService.mockClient != null) {
       if (_ordersChannel != null) {
-        Supabase.instance.client.removeChannel(_ordersChannel!);
+        SupabaseService.client.removeChannel(_ordersChannel!);
       }
       if (_supabaseRealtimeChannel != null) {
-        Supabase.instance.client.removeChannel(_supabaseRealtimeChannel!);
+        SupabaseService.client.removeChannel(_supabaseRealtimeChannel!);
       }
     }
     _trackingSubscription?.cancel();
@@ -115,31 +130,30 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
     wsPath = '$wsPath/ws/tracking';
 
     String buildUrl() {
-      final session = Supabase.instance.client.auth.currentSession;
-      final token = session?.accessToken ?? '';
       final wsUri = Uri(
         scheme: wsScheme,
         host: baseUri.host,
         port: baseUri.hasPort ? baseUri.port : null,
         path: wsPath,
-        queryParameters: token.isNotEmpty ? {'token': token} : null,
       );
       return wsUri.toString();
     }
 
     final initialWsUrl = buildUrl();
-    final redactedUrl = initialWsUrl.replaceAll(RegExp(r'token=[^&]+'), 'token=[REDACTED]');
-    debugPrint('Connecting to tracking WebSocket at: $redactedUrl');
+    debugPrint('Connecting to tracking WebSocket at: $initialWsUrl');
 
     _trackingWebSocket = ResilientWebSocket(
       initialWsUrl,
       urlFactory: buildUrl,
       onConnect: () {
-        debugPrint('WebSocket connected, subscribing to order updates...');
+        debugPrint('WebSocket connected, authenticating...');
+        if (mounted) setState(() => _wsConnected = true);
+        final session = SupabaseService.client.auth.currentSession;
+        final token = session?.accessToken ?? '';
         _trackingWebSocket?.send({
-          'event': 'subscribe_tracking',
+          'event': 'auth',
           'data': {
-            'order_display_id': widget.orderId,
+            'token': token,
           },
         });
       },
@@ -152,7 +166,15 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
         if (message == 'pong') return;
         final payload = jsonDecode(message) as Map<String, dynamic>;
 
-        if (payload['event'] == 'location_update') {
+        if (payload['status'] == 'authenticated') {
+          // First-frame auth succeeded; now register for order updates.
+          _trackingWebSocket?.send({
+            'event': 'subscribe_tracking',
+            'data': {
+              'order_display_id': widget.orderId,
+            },
+          });
+        } else if (payload['event'] == 'location_update') {
           final data = payload['data'] as Map<String, dynamic>?;
           if (data != null) {
             final lat = (data['latitude'] as num?)?.toDouble();
@@ -162,10 +184,21 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
               _updateTruckPosition(LatLng(lat, lng));
             }
           }
+        } else if (payload['event'] == 'milestone_update') {
+          // Refresh timeline whenever the driver hits a new milestone.
+          debugPrint('[LiveTracking] Milestone update received: ${payload['data']}');
+          _loadTimeline();
+        } else if (payload['event'] == null && payload['error'] != null) {
+          debugPrint('[LiveTracking] WS server error: ${payload['error']}');
+          if (mounted) setState(() => _wsConnected = false);
         }
       } catch (e) {
         debugPrint('Error parsing tracking WebSocket message: $e');
       }
+    }, onError: (_) {
+      if (mounted) setState(() => _wsConnected = false);
+    }, onDone: () {
+      if (mounted) setState(() => _wsConnected = false);
     });
 
     _trackingWebSocket!.connect();
@@ -303,7 +336,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
 
     debugPrint('Subscribing to Supabase Realtime channel driver-location:$orderUuid');
 
-    _supabaseRealtimeChannel = Supabase.instance.client
+    _supabaseRealtimeChannel = SupabaseService.client
         .channel('driver-location:$orderUuid');
 
     _supabaseRealtimeChannel!.onBroadcast(
@@ -630,8 +663,8 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
                               );
 
                               final pricing = resp['pricing'];
-                              final total = pricing != null ? pricing['total_amount'] : null;
-                              setModalState(() => pricingText = total != null ? 'New estimated price: ₹${total.toString()}' : 'Price updated');
+                              final total = pricing != null ? pricing['total_amount'] as num? : null;
+                              setModalState(() => pricingText = total != null ? 'New estimated price: ₹${(total / 100).toStringAsFixed(0)}' : 'Price updated');
 
                               // refresh outer order state
                               await _loadOrder();
@@ -662,7 +695,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   Future<void> _showCancel() async {
     bool isLoading = false;
     final rawFee = _order?['cancellation_fee'];
-    final feeInRupees = rawFee != null ? (rawFee as num) / 100 : null;
+    final feeInRupees = rawFee is num ? rawFee / 100 : null;
     String? feeText = feeInRupees != null ? 'Cancellation fee ₹${feeInRupees.toStringAsFixed(2)}' : null;
 
     await showModalBottomSheet<void>(
@@ -696,7 +729,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
                           try {
                             final resp = await _orderService.cancelOrder(orderDisplayId: widget.orderId);
                             final rawFee = resp['cancellation_fee'];
-                            final feeInRupees = rawFee != null ? (rawFee as num) / 100 : 0;
+                            final feeInRupees = rawFee is num ? rawFee / 100 : 0;
                             await _loadOrder();
                             if (!context.mounted) return;
                             Navigator.of(context).pop();
@@ -764,7 +797,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   }
 
   void _subscribeToOrderUpdates() {
-    _ordersChannel = Supabase.instance.client
+    _ordersChannel = SupabaseService.client
         .channel('order_updates_${widget.orderId}')
         .onPostgresChanges(
           event: PostgresChangeEvent.update,
@@ -921,8 +954,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
                       }
                     ),
                   ],
-                );
-            ),
+                ),
           ),
           Positioned(
             top: 0,
@@ -1009,7 +1041,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
                                             fontWeight: FontWeight.w700,
                                           ),
                                         ),
-                                      ] else ...[
+                                      ] else if (_wsConnected) ...[
                                         const LiveDot(
                                           color: TruxifyColors.accent,
                                           size: 8,
@@ -1020,6 +1052,24 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
                                           style: TextStyle(
                                             fontSize: 12,
                                             color: TruxifyColors.accent,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ] else ...[
+                                        const SizedBox(
+                                          width: 8,
+                                          height: 8,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 1.5,
+                                            color: Colors.orangeAccent,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          'Connecting...',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.orangeAccent,
                                             fontWeight: FontWeight.w700,
                                           ),
                                         ),

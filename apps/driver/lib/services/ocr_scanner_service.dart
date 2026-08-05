@@ -1,38 +1,28 @@
-import 'dart:math';
+import 'dart:io';
+
 import '../models/pod_document_model.dart';
 
 class OcrScannerService {
-  /// Simulates scanning an image file using an OCR engine (like Google ML Kit)
-  /// and extracting key Bill of Lading (BoL) data.
+  /// Scans an image file and extracts key Bill of Lading data.
   Future<PodDocument> scanDocument(String imagePath) async {
-    // Simulate processing delay for OCR engine
-    await Future.delayed(const Duration(seconds: 3));
+    final file = File(imagePath);
+    if (!await file.exists()) {
+      throw ArgumentError.value(
+        imagePath,
+        'imagePath',
+        'Document image does not exist.',
+      );
+    }
 
-    final randomId = Random().nextInt(10000).toString().padLeft(4, '0');
-    
-    // Simulated extracted text block
-    const mockExtractedText = '''
-    BILL OF LADING
-    Load Ref: TRK-992-AZ
-    Receiver: Acme Warehouse Corp
-    Date: 2026-07-27
-    Signature: [VERIFIED]
-    ''';
-
-    return PodDocument(
-      documentId: 'DOC-$randomId',
-      loadReferenceNumber: 'TRK-992-AZ',
-      receiverName: 'Acme Warehouse Corp',
-      scanTimestamp: DateTime.now(),
-      hasSignature: true,
-      rawExtractedText: mockExtractedText,
+    throw UnsupportedError(
+      'OCR scanning is not configured. Connect an OCR provider before accepting scanned PoD data.',
     );
   }
 
   /// Submits the processed digital PoD to the blockchain ledger for immutable storage
   Future<bool> submitDigitalPoD(PodDocument document) async {
-    // Simulate network upload
-    await Future.delayed(const Duration(seconds: 1));
-    return true; // Success
+    throw UnsupportedError(
+      'Digital PoD submission is not configured. Connect the backend or ledger submission endpoint before reporting success.',
+    );
   }
 }

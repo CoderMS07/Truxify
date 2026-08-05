@@ -1,5 +1,7 @@
 import kafka, { TOPICS, CONSUMER_GROUPS } from '../config/kafka.config.js';
-import logger from '../api/src/middleware/logger.js';
+import processedEventRepository from '../repositories/processedEvent.repository.js';
+import deadLetterRepository from '../repositories/deadLetter.repository.js';
+import logger from '../../api/src/middleware/logger.js';
 
 class OrderConsumer {
   constructor({ eventBus: externalEventBus } = {}) {
@@ -79,6 +81,23 @@ class OrderConsumer {
     const handlers = this.handlers;
 
     const messageHandler = async (topic, message, rawMessage) => {
+      // Idempotency claim: only the first delivery of an event may apply side
+      // effects. Kafka redelivers messages on restarts/rebalances, so without
+      // this guard PAYMENT_CONFIRMED / TRIP_COMPLETED / ESCROW_RELEASED would
+      // be processed (and credit wallets) more than once.
+      const eventId = message?.metadata?.eventId || rawMessage?.key?.toString() || null;
+      if (eventId) {
+        const isNew = await processedEventRepository.claimProcessed(
+          topic,
+          eventId,
+          message?.orderId || message?.payload?.orderId || null
+        );
+        if (!isNew) {
+          logger.info(`[OrderConsumer] Skipping duplicate event ${eventId} on ${topic}`);
+          return;
+        }
+      }
+
       if (handlers.has(topic)) {
         const topicHandlers = handlers.get(topic);
         for (const handler of topicHandlers) {
@@ -86,17 +105,26 @@ class OrderConsumer {
             await handler(message, rawMessage);
           } catch (error) {
             logger.error(`Handler error for ${topic}:`, error);
+            await this.storeDeadLetter(topic, rawMessage, error);
           }
         }
       }
 
       if (this._eventBus) {
         const eventType = topic.replace(/\./g, '_').toUpperCase();
-        this._eventBus.publish(eventType, message, {
-          adapters: [],
-          deduplicate: false,
-          source: `kafka:${groupId}`,
-        });
+        if (message && typeof message === 'object' && message.metadata) {
+          // Object form reuses the original event id so the in-process
+          // EventBus deduplication window applies to redelivered messages.
+          this._eventBus.publish(message, {
+            adapters: [],
+            source: `kafka:${groupId}`,
+          });
+        } else {
+          this._eventBus.publish(eventType, message, {
+            adapters: [],
+            source: `kafka:${groupId}`,
+          });
+        }
       }
     };
 
@@ -111,14 +139,58 @@ class OrderConsumer {
   }
 
   async storeDeadLetter(topic, message, error) {
+    const rawValue = message?.value;
+    const serialized = Buffer.isBuffer(rawValue)
+      ? rawValue.toString()
+      : rawValue != null
+        ? String(rawValue)
+        : null;
+
     const dlqEntry = {
       topic,
-      message: message.value.toString(),
+      message: serialized,
       error: error.message,
       timestamp: new Date().toISOString(),
       retryCount: 0,
     };
-    logger.info(`📦 Dead letter stored for ${topic}`, dlqEntry);
+
+    const stored = await deadLetterRepository.store({
+      topic,
+      message: dlqEntry,
+      error: error.message,
+      retryCount: 0,
+    });
+
+    if (stored) {
+      logger.info(`📦 Dead letter persisted for ${topic} (id: ${stored.id})`);
+    } else {
+      logger.error(`📦 Dead letter for ${topic} could NOT be persisted — message dropped`, dlqEntry);
+    }
+  }
+
+  async replayDeadLetters({ topic = null, limit = 50 } = {}) {
+    const pending = await deadLetterRepository.listPending({ topic, limit });
+    const results = { attempted: pending.length, succeeded: 0, failed: 0 };
+
+    for (const entry of pending) {
+      const topicHandlers = this.handlers.get(entry.topic) || [];
+      const parsedMessage = entry.message;
+
+      try {
+        for (const handler of topicHandlers) {
+          await handler(parsedMessage, { value: parsedMessage?.message });
+        }
+        await deadLetterRepository.markStatus(entry.id, 'replayed');
+        results.succeeded += 1;
+      } catch (error) {
+        logger.error(`Replay failed for dead letter ${entry.id} (${entry.topic}):`, error);
+        await deadLetterRepository.markStatus(entry.id, 'pending', { incrementRetry: true });
+        results.failed += 1;
+      }
+    }
+
+    logger.info(`♻️ Dead letter replay complete`, results);
+    return results;
   }
 
   async startAllConsumers() {

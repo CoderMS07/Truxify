@@ -250,6 +250,66 @@ describe('Driver Routes', () => {
     }
   });
 
+  it('GET /earnings/summary with start_date/end_date returns only that window', async () => {
+    m.store.earnings_daily.push(
+      { driver_id: 'driver-1', day_date: '2026-05-31', amount: 1000, trip_count: 1 },
+      { driver_id: 'driver-1', day_date: '2026-06-01', amount: 2000, trip_count: 2 },
+      { driver_id: 'driver-1', day_date: '2026-06-15', amount: 3000, trip_count: 3 },
+      { driver_id: 'driver-1', day_date: '2026-07-01', amount: 4000, trip_count: 4 }
+    );
+
+    const app = buildApp();
+
+    const res = await request(app)
+      .get('/api/drivers/earnings/summary?start_date=2026-06-01&end_date=2026-07-01')
+      .set(DRIVER_HEADERS);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+    expect(res.body[0].day_date).toBe('2026-06-01');
+    expect(res.body[1].day_date).toBe('2026-06-15');
+  });
+
+  it('GET /earnings/summary with a historical month window returns that month only', async () => {
+    m.store.earnings_daily.push(
+      { driver_id: 'driver-1', day_date: '2019-12-31', amount: 100, trip_count: 1 },
+      { driver_id: 'driver-1', day_date: '2020-01-10', amount: 2500, trip_count: 2 },
+      { driver_id: 'driver-1', day_date: '2020-01-31', amount: 1500, trip_count: 1 },
+      { driver_id: 'driver-1', day_date: '2020-02-01', amount: 200, trip_count: 1 }
+    );
+
+    const app = buildApp();
+
+    const res = await request(app)
+      .get('/api/drivers/earnings/summary?start_date=2020-01-01&end_date=2020-02-01')
+      .set(DRIVER_HEADERS);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+    expect(res.body[0].day_date).toBe('2020-01-10');
+    expect(res.body[1].day_date).toBe('2020-01-31');
+  });
+
+  it('GET /earnings/summary rejects malformed or single-sided date ranges', async () => {
+    const app = buildApp();
+
+    const badQueries = [
+      'start_date=2026-06-01',
+      'end_date=2026-07-01',
+      'start_date=2026-06-01&end_date=not-a-date',
+      'start_date=not-a-date&end_date=2026-07-01',
+      'start_date=2026-07-01&end_date=2026-06-01',
+    ];
+
+    for (const qs of badQueries) {
+      const res = await request(app)
+        .get(`/api/drivers/earnings/summary?${qs}`)
+        .set(DRIVER_HEADERS);
+
+      expect(res.status).toBe(400);
+    }
+  });
+
   it('POST /wallet/withdraw rejects invalid amount', async () => {
     const app = buildApp();
 
@@ -284,12 +344,15 @@ describe('Driver Routes', () => {
       wallet_confirmed: 10000,
     });
 
+    process.env.WITHDRAWAL_PAYOUT_PROVIDER = 'test';
     const app = buildApp();
 
     const res = await request(app)
       .post('/api/drivers/wallet/withdraw')
       .set(DRIVER_HEADERS)
       .send({ amount: 1000 });
+
+    delete process.env.WITHDRAWAL_PAYOUT_PROVIDER;
 
     expect(res.status).toBe(200);
 
@@ -298,6 +361,32 @@ describe('Driver Routes', () => {
     );
 
     expect(rpcCall).toBeTruthy();
+  });
+
+  it('POST /wallet/withdraw fails closed when no payout provider is configured', async () => {
+    delete process.env.WITHDRAWAL_PAYOUT_PROVIDER;
+    delete process.env.WITHDRAWAL_PAYOUT_WEBHOOK_URL;
+
+    m.store.driver_details.push({
+      user_id: 'driver-1',
+      wallet_confirmed: 10000,
+    });
+
+    const app = buildApp();
+
+    const res = await request(app)
+      .post('/api/drivers/wallet/withdraw')
+      .set(DRIVER_HEADERS)
+      .send({ amount: 1000 });
+
+    expect(res.status).toBe(503);
+    expect(res.body.error).toContain('no payout provider');
+
+    const rpcCall = m.calls.find(
+      c => c.rpc === 'withdraw_funds_tx'
+    );
+
+    expect(rpcCall).toBeFalsy();
   });
 
   it('PUT /online updates driver status successfully', async () => {

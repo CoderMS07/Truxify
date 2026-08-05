@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'fs/promises';
+import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -142,6 +143,32 @@ describe('Individual migration files with RLS policies', () => {
   });
 });
 
+describe('RLS ownership policies compare profile ids, not auth.uid() (issue #5852)', () => {
+  const readMigration = (name) =>
+    readFileSync(path.resolve(__dirname, `../../../../supabase/migrations/${name}`), 'utf8');
+
+  it('bids migration uses get_profile_id() for driver and customer ownership policies', () => {
+    const content = readMigration('20260730120000_create_bids_table.sql');
+    expect(content).toMatch(/USING \(get_profile_id\(\) = driver_id\)/);
+    expect(content).toMatch(/WITH CHECK \(get_profile_id\(\) = driver_id\)/);
+    expect(content).toMatch(/USING \(get_profile_id\(\) = driver_id AND status = 'pending'\)/);
+    expect(content).toMatch(/lo\.customer_id = get_profile_id\(\)/);
+    expect(content).not.toMatch(/auth\.uid\(\)/);
+  });
+
+  it('application_audit_logs admin-read policy resolves the profile via get_profile_id()', () => {
+    const content = readMigration('20260723000010_create_application_audit_logs.sql');
+    expect(content).toMatch(/profiles\.id = get_profile_id\(\)/);
+    expect(content).not.toMatch(/auth\.uid\(\)/);
+  });
+
+  it('cold chain telemetry policy uses get_profile_id() for load ownership checks', () => {
+    const content = readMigration('20260721000000_add_cold_chain_telemetry.sql');
+    expect(content).toMatch(/load_offers\.customer_id = get_profile_id\(\) OR load_offers\.driver_id = get_profile_id\(\)/);
+    expect(content).not.toMatch(/auth\.uid\(\) = [a-z_]+_id/);
+  });
+});
+
 describe('Revoke anon privileges (revoke_anon_privileges.sql)', () => {
   let revokeContent;
 
@@ -152,6 +179,35 @@ describe('Revoke anon privileges (revoke_anon_privileges.sql)', () => {
 
   it.each(ALL_TABLES)('revokes anon privileges on table: %s', (table) => {
     expect(revokeContent).toContain(`REVOKE ALL ON TABLE public.${table} FROM anon`);
+  });
+});
+
+describe('Admin role on profiles (issue #5848)', () => {
+  let migrationContent;
+  let setupContent;
+  let auditLogContent;
+
+  beforeAll(async () => {
+    const migrationPath = path.resolve(__dirname, '../../../../supabase/migrations/20260802160000_add_admin_role_to_profiles.sql');
+    migrationContent = await fs.readFile(migrationPath, 'utf8');
+    const setupPath = path.resolve(__dirname, '../../../../docs/supabase_setup.sql');
+    setupContent = await fs.readFile(setupPath, 'utf8');
+    const auditPath = path.resolve(__dirname, '../../../../supabase/migrations/20260723000010_create_application_audit_logs.sql');
+    auditLogContent = await fs.readFile(auditPath, 'utf8');
+  });
+
+  it('adds admin to the profiles.role CHECK constraint in a migration', () => {
+    expect(migrationContent).toMatch(/ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_role_check/i);
+    expect(migrationContent).toMatch(/CHECK \(role IN \('customer', 'driver', 'admin'\)\)/i);
+  });
+
+  it('updates the canonical profiles.role constraint in docs/supabase_setup.sql', () => {
+    expect(setupContent).toMatch(/role\s+text\s+not\s+null\s+check\s*\(\s*role\s+in\s*\(\s*'customer'\s*,\s*'driver'\s*,\s*'admin'\s*\)\s*\)/i);
+  });
+
+  it('keeps the audit-logs admin-read policy on role = \'admin\', which is now satisfiable', () => {
+    expect(auditLogContent).toMatch(/CREATE POLICY "Admins can read audit logs"/i);
+    expect(auditLogContent).toMatch(/profiles\.role = 'admin'/i);
   });
 });
 
@@ -209,5 +265,134 @@ describe('accept_bid_tx — auth.uid() verification present in migration chain',
   it('withdraw_funds_tx has auth.uid() check verifying caller owns the wallet', () => {
     const hasAuthCheck = /IF auth\.uid\(\) <> p_driver_id THEN/i.test(secureRpcContent);
     expect(hasAuthCheck).toBe(true);
+  });
+});
+
+describe('complete_trip_tx — order-linked trip finalization (issue #5756)', () => {
+  it('the 20260704000001 migration selects the trip by order_id and raises when none exists', async () => {
+    const p = path.resolve(__dirname, '../../../../supabase/migrations/20260704000001_add_auth_verification_to_complete_trip_tx.sql');
+    const content = await fs.readFile(p, 'utf8');
+
+    expect(/select\s+trip_display_id\s+into\s+v_trip_display_id\s+from\s+trips\s+where\s+order_id\s*=\s*p_order_id/i.test(content)).toBe(true);
+    expect(/if\s+v_trip_display_id\s+is\s+null[\s\S]*raise\s+exception[\s\S]*no\s+active\s+trip\s+found/i.test(content)).toBe(true);
+    expect(/v_active_trip_count/i.test(content)).toBe(false);
+  });
+
+  it('the link_trips_to_orders migration adds an order_id FK to trips and recreates complete_trip_tx', async () => {
+    const p = path.resolve(__dirname, '../../../../supabase/migrations/20260802060000_link_trips_to_orders.sql');
+    const content = await fs.readFile(p, 'utf8');
+
+    expect(/alter\s+table\s+trips\s+add\s+column\s+if\s+not\s+exists\s+order_id\s+uuid\s+references\s+orders\s*\(\s*id\s*\)/i.test(content)).toBe(true);
+    expect(/create\s+index\s+if\s+not\s+exists\s+idx_trips_order_id\s+on\s+trips\s*\(\s*order_id\s*\)/i.test(content)).toBe(true);
+    expect(/select\s+trip_display_id\s+into\s+v_trip_display_id\s+from\s+trips\s+where\s+order_id\s*=\s*p_order_id/i.test(content)).toBe(true);
+    expect(/if\s+v_trip_display_id\s+is\s+null[\s\S]*raise\s+exception[\s\S]*no\s+active\s+trip\s+found/i.test(content)).toBe(true);
+  });
+});
+
+describe('SECURITY DEFINER RPC ownership checks resolve the caller to profiles.id (issue #6275)', () => {
+  let fixContent;
+
+  beforeAll(async () => {
+    const fixPath = path.resolve(__dirname, '../../../../supabase/migrations/20260805120000_fix_rpc_ownership_checks.sql');
+    fixContent = await fs.readFile(fixPath, 'utf8');
+  });
+
+  it('redefines all three affected RPC functions in the fix migration', () => {
+    expect(/CREATE OR REPLACE FUNCTION withdraw_funds_tx\(/i.test(fixContent)).toBe(true);
+    expect(/CREATE OR REPLACE FUNCTION submit_rating_tx\(/i.test(fixContent)).toBe(true);
+    expect(/CREATE OR REPLACE FUNCTION accept_bid_tx\(/i.test(fixContent)).toBe(true);
+  });
+
+  it('withdraw_funds_tx guards ownership via get_profile_id(), not auth.uid()', () => {
+    expect(
+      /IF auth\.uid\(\) IS NOT NULL AND get_profile_id\(\) <> p_driver_id THEN\s+RAISE EXCEPTION 'Unauthorized: you can only withdraw your own funds'/i.test(fixContent)
+    ).toBe(true);
+    expect(/IF auth\.uid\(\) <> p_driver_id THEN/i.test(fixContent)).toBe(false);
+  });
+
+  it('submit_rating_tx guards ownership via get_profile_id(), not auth.uid()', () => {
+    expect(
+      /IF auth\.uid\(\) IS NOT NULL AND get_profile_id\(\) <> p_customer_id THEN\s+RAISE EXCEPTION 'Unauthorized: you can only submit ratings for yourself'/i.test(fixContent)
+    ).toBe(true);
+    expect(/IF auth\.uid\(\) <> p_customer_id THEN/i.test(fixContent)).toBe(false);
+  });
+
+  it('accept_bid_tx guards ownership via get_profile_id() while preserving the service_role bypass', () => {
+    expect(
+      /IF auth\.role\(\) <> 'service_role'\s+AND \(auth\.uid\(\) IS NULL OR get_profile_id\(\) <> v_customer_id\) THEN\s+RAISE EXCEPTION 'Unauthorized: you can only accept bids on your own orders'/i.test(fixContent)
+    ).toBe(true);
+    expect(/auth\.uid\(\) <> v_customer_id/i.test(fixContent)).toBe(false);
+  });
+});
+
+describe('Service-level RPC calls carry an authenticated client (issue #5737)', () => {
+  const base = path.resolve(__dirname, '../../src');
+  const readSource = (rel) => readFileSync(path.resolve(base, rel), 'utf8');
+
+  // Extract every `executeRpc('<rpc_name>', {...}, <client>)` invocation block
+  // so we can assert each one passes an explicit client rather than relying on
+  // the repository defaulting to the shared anon-key client.
+  function rpcCallBlocks(content) {
+    const blocks = [];
+    const re = /executeRpc\(\s*'([a-z_0-9]+)'/g;
+    let match;
+    while ((match = re.exec(content))) {
+      // The regex consumed the opening '(' of executeRpc, so start at depth 1;
+      // the balanced closing ')' brings the count back to 0.
+      let depth = 1;
+      let i = re.lastIndex;
+      for (; i < content.length; i++) {
+        const ch = content[i];
+        if (ch === '(') depth += 1;
+        else if (ch === ')') {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      blocks.push({ rpc: match[1], block: content.slice(match.index, i + 1) });
+    }
+    return blocks;
+  }
+
+  it('executeRpc requires an explicit client instead of falling back to the shared anon-key client', () => {
+    const orderRepositoryContent = readSource('repositories/orderRepository.js');
+    const executeRpcMethod = orderRepositoryContent.match(/async executeRpc\(name, params, client\)[\s\S]*?\n\s{2}\}/)[0];
+    expect(executeRpcMethod).toMatch(/if \(!client\)\s*\{\s*throw new Error/);
+    expect(executeRpcMethod).not.toMatch(/client \|\| this\.supabase/);
+  });
+
+  it.each(rpcCallBlocks(readSource('services/order/deliveryVerificationService.js')))(
+    'deliveryVerificationService passes a client for $rpc',
+    ({ block }) => {
+      expect(block).toMatch(/,\s*(userClient|supabaseAdmin)\s*\)\s*;?$/);
+    }
+  );
+
+  it.each(rpcCallBlocks(readSource('services/order/orderMilestoneService.js')))(
+    'orderMilestoneService passes a client for $rpc',
+    ({ block }) => {
+      expect(block).toMatch(/,\s*(userClient|supabaseAdmin)\s*\)\s*;?$/);
+    }
+  );
+
+  it.each(rpcCallBlocks(readSource('services/order/orderLifecycleService.js')))(
+    'orderLifecycleService passes a client for $rpc',
+    ({ block }) => {
+      expect(block).toMatch(/,\s*(userClient(?:\s*\?\?\s*supabaseAdmin)?|supabaseAdmin)\s*\)\s*;?$/);
+    }
+  );
+
+  it.each(rpcCallBlocks(readSource('routes/orderRoutes.js')))(
+    'orderRoutes passes a client for $rpc',
+    ({ block }) => {
+      expect(block).toMatch(/,\s*(req\.token \? createUserClient\(req\.token\) : undefined|supabaseAdmin)\s*\)\s*;?$/);
+    }
+  );
+
+  it('withdraw_funds_tx is invoked through a per-user client in driverRoutes, never the shared anon-key client', () => {
+    const driverRoutesContent = readSource('routes/driverRoutes.js');
+    expect(driverRoutesContent).toMatch(/createUserClient\(req\.token\)/);
+    expect(driverRoutesContent).toMatch(/userClient\.rpc\('withdraw_funds_tx'/);
+    expect(driverRoutesContent).not.toMatch(/createUserClient\(req\.token\) \? [^;]* : supabase/);
   });
 });

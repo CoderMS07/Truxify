@@ -43,7 +43,7 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  void _sendOtp() async {
+  Future<void> _sendOtp() async {
     final phone = _phoneController.text.replaceAll(' ', '').trim();
 
     if (phone.isEmpty) {
@@ -88,6 +88,8 @@ class _LoginScreenState extends State<LoginScreen> {
               'phone': phone,
               'verificationId': verificationId,
               'countryCode': _selectedCode,
+              if (resendToken != null)
+            'resendToken': resendToken.toString(),
             },
           );
         },

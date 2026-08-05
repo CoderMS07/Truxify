@@ -80,7 +80,7 @@
  */
 
 import express from 'express';
-import { supabase, mongoDb } from '../config/db.js';
+import { supabase, mongoDb, redisClient } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
@@ -138,7 +138,7 @@ router.get('/types', authenticate, userLimiter, (req, res) => {
 });
 function parseCapacityFilter(value, field) {
   if (value === undefined) return { value: undefined };
-  if (typeof value !== 'string' || value.trim() === '') {
+  if (typeof value !== 'string' || value.trim().length === 0) {
     return { error: `${field} must be a non-negative number` };
   }
 
@@ -188,7 +188,7 @@ function parseCapacityFilter(value, field) {
  *         description: Number plate already registered
  */
 router.post('/', authenticate, requirePolicy('truck:register'), userLimiter, validateBody(registerTruckSchema), async (req, res) => {
-  const { name, number_plate, max_capacity_tons } = req.body;
+  const { name, truck_type, number_plate, max_capacity_tons } = req.body;
   const normalizedNumberPlate = sanitizeNumberPlate(number_plate);
 
   try {
@@ -209,8 +209,8 @@ router.post('/', authenticate, requirePolicy('truck:register'), userLimiter, val
 
     const { data: truck, error: insertErr } = await supabase
       .from('trucks')
-      .insert({ name, number_plate: normalizedNumberPlate, max_capacity_tons, owner_id: req.user.id })
-      .select('id, name, number_plate, max_capacity_tons, created_at')
+      .insert({ name, truck_type, number_plate: normalizedNumberPlate, max_capacity_tons, driver_id: req.user.id })
+      .select('id, name, truck_type, number_plate, max_capacity_tons, created_at')
       .single();
 
     if (insertErr) {
@@ -289,7 +289,7 @@ router.get('/', authenticate, requirePolicy('truck:list-own'), userLimiter, asyn
     let query = supabase
       .from('trucks')
       .select('id, name, number_plate, max_capacity_tons, created_at')
-      .eq('owner_id', req.user.id);
+      .eq('driver_id', req.user.id);
 
     if (name && typeof name === 'string') {
       const cleanName = name.trim();
@@ -337,7 +337,7 @@ function isLongitude(value) {
 }
 
 async function canViewTruckNumber(user, truck) {
-  if (user.role === 'admin' || truck.owner_id === user.id) {
+  if (user.role === 'admin' || truck.driver_id === user.id) {
     return { allowed: true };
   }
 
@@ -478,6 +478,33 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
     return res.status(400).json({ error: 'min_capacity must be less than or equal to max_capacity' });
   }
 
+  const searchCacheFilters = {
+    pickupLat: numPickupLat,
+    pickupLng: numPickupLng,
+    dropLat: numDropLat,
+    dropLng: numDropLng,
+    weightTonnes: numWeightTonnes,
+    isFragile: fragileFilter.value,
+    isStackable: stackableFilter.value,
+    truckType: truck_type || '',
+    minCapacity: minCapFilter.value ?? '',
+    maxCapacity: maxCapFilter.value ?? '',
+    materialType: material_type || '',
+  };
+  const cacheKey = `truck_search:${JSON.stringify(searchCacheFilters)}`;
+
+  if (redisClient) {
+    try {
+      const cachedResult = await redisClient.get(cacheKey);
+      if (cachedResult) {
+        logger.info({ cacheKey }, 'Serving truck search results from Redis cache');
+        return res.json(JSON.parse(cachedResult));
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, 'Redis cache read error during search');
+    }
+  }
+
   try {
     const routeEstimate = await getRouteEstimate({
       pickupLat: numPickupLat,
@@ -573,8 +600,8 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
     const driverIds = drivers.map(d => d.user_id);
 
     const [trucksRes, profilesRes] = await Promise.all([
-      supabase.from('trucks').select('id, name, number_plate, max_capacity_tons').in('id', truckIds),
-      supabase.from('profiles').select('id, full_name, avatar_url').in('id', driverIds),
+      supabase.from('trucks').select('id, name, truck_type, number_plate, max_capacity_tons').in('id', truckIds),
+      supabase.from('profiles').select('id, full_name, avatar_url, is_digilocker_verified').in('id', driverIds),
     ]);
 
     if (trucksRes.error) {
@@ -605,12 +632,14 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
         truckNumber: truck.number_plate || '',
         capacity: truck.max_capacity_tons ? `${truck.max_capacity_tons} tonnes` : '',
         capacityTons: truck.max_capacity_tons || 0,
+        truckType: truck.truck_type || '',
         price: finalTotalAmount,
         baseFreight: finalBaseFreight,
         tollEstimate: finalTollEstimate,
         platformFee: finalPlatformFee,
         isAiEstimate,
         etaMinutes,
+        isDigilockerVerified: profile.is_digilocker_verified || false,
       };
     });
 
@@ -622,16 +651,22 @@ router.get('/search', authenticate, userLimiter, async (req, res) => {
         return false;
       }
       if (truck_type && truck_type !== '') {
-        const truckNameLower = (truck.truck || '').toLowerCase();
-        const typeLower = truck_type.toLowerCase();
-        if (!truckNameLower.includes(typeLower)) {
+        if (truck.truckType !== truck_type) {
           return false;
         }
       }
       return true;
     });
 
-    const responseResults = filteredResults.map(({ capacityTons, ...rest }) => rest);
+    const responseResults = filteredResults.map(({ capacityTons, truckType, ...rest }) => rest);
+
+    if (redisClient) {
+      try {
+        await redisClient.set(cacheKey, JSON.stringify(responseResults), 'EX', 60);
+      } catch (err) {
+        logger.warn({ err: err.message }, 'Redis cache write error during search');
+      }
+    }
 
     res.json(responseResults);
   } catch (err) {
@@ -670,7 +705,7 @@ router.get('/:id/number', authenticate, userLimiter, validateParams(uuidParamSch
   try {
     const { data: truck, error } = await supabase
       .from('trucks')
-      .select('id, owner_id, number_plate')
+      .select('id, driver_id, number_plate')
       .eq('id', req.params.id)
       .maybeSingle();
 

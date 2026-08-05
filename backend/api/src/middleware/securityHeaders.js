@@ -20,7 +20,7 @@ export default function securityHeaders(req, res, next) {
   if (!res.getHeader('Permissions-Policy')) {
     res.setHeader(
       'Permissions-Policy',
-      'camera=(), microphone=(), geolocation=()'
+      'geolocation=(self), camera=(self), microphone=(self)'
     );
   }
 

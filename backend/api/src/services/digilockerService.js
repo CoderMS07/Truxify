@@ -36,8 +36,17 @@ class DigilockerService {
     let tokenData;
     let isMock = false;
 
+    // Mock mode must be explicitly opted into. Without DIGILOCKER_MOCK=true the
+    // service fails closed whenever credentials or the OAuth code are missing,
+    // so staging/demo deployments can never silently fabricate government-verified
+    // KYC documents.
+    const mockModeEnabled = process.env.DIGILOCKER_MOCK === 'true';
+
     if (!this.clientId || !this.clientSecret || !code) {
-      logger.warn('Digilocker credentials or code missing. Running in high-fidelity mock mode.');
+      if (!mockModeEnabled) {
+        throw new Error('DigiLocker credentials or OAuth code are missing. This is a server misconfiguration. Set DIGILOCKER_MOCK=true only for local testing.');
+      }
+      logger.warn('Digilocker credentials or code missing. Running in high-fidelity mock mode (DIGILOCKER_MOCK=true).');
       isMock = true;
       tokenData = {
         access_token: 'mock_digilocker_access_token_12345',
@@ -57,7 +66,7 @@ class DigilockerService {
         tokenData = tokenResponse.data;
       } catch (err) {
         logger.error('Digilocker token exchange failed:', err.message);
-        throw new Error('Digilocker token exchange failed: ' + err.message);
+        throw new Error('Digilocker token exchange failed: ' + err.message, { cause: err });
       }
     }
 
@@ -107,7 +116,7 @@ class DigilockerService {
         }
       } catch (err) {
         logger.error('Failed to fetch issued documents from Digilocker:', err.message);
-        throw new Error('Failed to fetch issued documents: ' + err.message);
+        throw new Error('Failed to fetch issued documents: ' + err.message, { cause: err });
       }
     }
 
@@ -131,19 +140,16 @@ class DigilockerService {
       const docBytes = typeof doc.data === 'string' ? Buffer.from(doc.data) : doc.data;
       const docHash = ethers.keccak256(docBytes);
       
-      let txHash = null;
-      if (this.contract) {
+      let txHash;
+      if (this.contract && !isMock) {
         try {
           const tx = await this.contract.registerDocument(driverWallet, doc.type, docHash, true);
           const receipt = await tx.wait();
           txHash = receipt.hash;
         } catch (err) {
           logger.error(`On-chain registration failed for ${doc.type}:`, err.message);
-          // Return mock tx hash if smart contract call fails
-          txHash = '0x' + crypto.randomBytes(32).toString('hex');
+          throw new Error(`On-chain registration failed for ${doc.type}: ${err.message}`, { cause: err });
         }
-      } else {
-        txHash = '0x' + crypto.randomBytes(32).toString('hex');
       }
 
       // Upload mock/received document file representation to Supabase storage
@@ -169,8 +175,8 @@ class DigilockerService {
             document_type: doc.type,
             storage_path: storagePath,
             mime_type: 'application/json',
-            status: 'approved',
-            is_govt_verified: true,
+            status: isMock ? 'pending' : 'approved',
+            is_govt_verified: !isMock,
             blockchain_tx_hash: txHash
           }, { onConflict: 'driver_id,document_type' })
           .select('id, document_type, status, is_govt_verified, blockchain_tx_hash')
@@ -193,8 +199,8 @@ class DigilockerService {
             user_id: driverId,
             doc_type: doc.type,
             storage_path: storagePath,
-            status: 'verified',
-            is_govt_verified: true,
+            status: isMock ? 'pending' : 'verified',
+            is_govt_verified: !isMock,
             blockchain_tx_hash: txHash,
             last_verified_at: new Date().toISOString()
           }, { onConflict: 'user_id,doc_type' });
@@ -211,8 +217,8 @@ class DigilockerService {
       } else {
         syncedResults.push({
           document_type: doc.type,
-          status: 'approved',
-          is_govt_verified: true,
+          status: isMock ? 'pending' : 'approved',
+          is_govt_verified: !isMock,
           blockchain_tx_hash: txHash
         });
       }

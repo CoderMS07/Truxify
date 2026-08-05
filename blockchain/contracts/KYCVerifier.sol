@@ -41,6 +41,10 @@ contract KYCVerifier is Verifier {
         uint[2] memory input,
         address user
     ) public onlyAdmin returns (bool) {
+        // Reject zero / empty proofs before handing them to the verifier
+        require(a[0] != 0 || a[1] != 0, "Zero proof rejected");
+        require(input[0] != 0 || input[1] != 0, "Empty public input");
+
         // Verify the proof
         bool isValid = verifyProof(a, b, c, input);
         

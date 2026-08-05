@@ -32,6 +32,7 @@ class _TruxifyAppState extends State<TruxifyApp> {
     _controller = TruxifyController();
     _controller.addListener(_onControllerChanged);
     _controller.loadThemeMode();
+    _controller.loadLocale();
   }
 
   void _onControllerChanged() {
@@ -55,6 +56,7 @@ class _TruxifyAppState extends State<TruxifyApp> {
         theme: TruxifyTheme.light(),
         darkTheme: TruxifyTheme.dark(),
         themeMode: _controller.themeMode,
+        locale: _controller.locale,
         localizationsDelegates: const [
           AppLocalizations.delegate,
           GlobalMaterialLocalizations.delegate,
@@ -83,11 +85,15 @@ class _TruxifyAppState extends State<TruxifyApp> {
 
             case AppRoutes.otp:
               final args = settings.arguments as Map<String, String>? ?? {};
+              // resendToken is stored as a string in the args map because
+              // Navigator arguments are typed as Map<String, String>.
+              final resendToken = int.tryParse(args['resendToken'] ?? '');
               return truxifyPageRoute(
                 (context) => OtpScreen(
                   phone: args['phone'] ?? '',
                   verificationId: args['verificationId'] ?? '',
                   countryCode: args['countryCode'] ?? '+91',
+                  resendToken: resendToken, // issue #762
                 ),
               );
 

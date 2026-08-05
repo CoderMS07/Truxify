@@ -21,7 +21,7 @@ pub struct RouteResponse {
 }
 
 #[wasm_bindgen]
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DriverData {
     pub driver_id: String,
     pub lat: f64,
