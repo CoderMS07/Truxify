@@ -593,20 +593,25 @@ router.get('/trips', authenticate, userLimiter, requirePolicy('driver:view-trips
 
     if (error) return res.status(500).json({ error: 'Failed to fetch trips.', details: error.message });
 
-    // Enrich trips with escrow_status from orders
-    const tripDisplayIds = (trips || []).map(t => t.trip_display_id).filter(Boolean);
+    // Enrich trips with escrow_status from orders. Trip display ids are
+    // prefixed with TX- (trip_display_id := 'TX-' || order_display_id), so
+    // strip the prefix before matching against orders.order_display_id.
+    const stripTripPrefix = (id) => (typeof id === 'string' ? id.replace(/^TX-/, '') : id);
+    const orderDisplayIds = (trips || [])
+      .map(t => stripTripPrefix(t.trip_display_id))
+      .filter(Boolean);
     let escrowMap = {};
-    if (tripDisplayIds.length > 0) {
+    if (orderDisplayIds.length > 0) {
       const { data: orders } = await supabaseAdmin
         .from('orders')
         .select('order_display_id, escrow_status')
-        .in('order_display_id', tripDisplayIds);
+        .in('order_display_id', orderDisplayIds);
       escrowMap = Object.fromEntries((orders || []).map(o => [o.order_display_id, o.escrow_status]));
     }
 
     const enrichedTrips = (trips || []).map(t => ({
       ...t,
-      escrow_status: escrowMap[t.trip_display_id] || 'pending'
+      escrow_status: escrowMap[stripTripPrefix(t.trip_display_id)] || 'pending'
     }));
 
     res.json({

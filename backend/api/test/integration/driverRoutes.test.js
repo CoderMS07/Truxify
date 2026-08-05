@@ -111,6 +111,31 @@ describe('Driver Routes', () => {
     expect(res.body.truck.id).toBe('truck-1');
   });
 
+  it('GET /trips enriches escrow_status from the underlying order', async () => {
+    m.store.trips = [{
+      trip_display_id: 'TX-ORD-100',
+      driver_id: 'driver-1',
+      route_label: 'A → B',
+      status: 'active',
+      trip_date: '2026-08-05',
+    }];
+    m.store.orders = [{
+      order_display_id: 'ORD-100',
+      escrow_status: 'funded',
+    }];
+
+    const app = buildApp();
+
+    const res = await request(app)
+      .get('/api/drivers/trips')
+      .set(DRIVER_HEADERS);
+
+    expect(res.status).toBe(200);
+    expect(res.body.trips).toHaveLength(1);
+    expect(res.body.trips[0].trip_display_id).toBe('TX-ORD-100');
+    expect(res.body.trips[0].escrow_status).toBe('funded');
+  });
+
   it('PUT /online rejects invalid status', async () => {
     const app = buildApp();
 
