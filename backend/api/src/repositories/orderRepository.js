@@ -490,8 +490,8 @@ export class OrderRepository {
   // DELIVERY OTPS
   // ===================================================================
 
-  async findVerifiedDeliveryOtp(orderId) {
-    return this._retryableQuery(() => this.supabase
+  async findVerifiedDeliveryOtp(orderId, client) {
+    return this._retryableQuery(() => (client ?? this.supabase)
       .from('delivery_otps')
       .select('id')
       .eq('order_id', orderId)

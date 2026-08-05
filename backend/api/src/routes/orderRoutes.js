@@ -1403,7 +1403,12 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
  */
 router.post('/:id/cancel', authenticate, userLimiter, requirePolicy('order:cancel'), auditLog({ action: 'order:cancel', resourceType: 'order' }), requireIdempotency(86400), validateParams(paramIdSchema), validateBody(cancelOrderSchema), async (req, res) => {
   try {
-    const result = await orderLifecycleService.cancelOrder(req.params.id, req.user.id, req.body.reason);
+    const result = await orderLifecycleService.cancelOrder(
+      req.params.id,
+      req.user.id,
+      req.body.reason,
+      req.token ? createUserClient(req.token) : undefined
+    );
     return res.status(result.status).json(result.body);
   } catch (err) {
     if (err instanceof DomainError) {
