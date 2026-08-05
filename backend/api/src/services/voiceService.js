@@ -9,9 +9,20 @@ export const audioCache = new Map();
 
 function trimCache() {
   const now = Date.now();
+  // 1. Collect and purge expired entries first
+  const expiredKeys = [];
+  for (const [key, value] of audioCache.entries()) {
+    if (now - value.timestamp >= CACHE_TTL_MS) {
+      expiredKeys.push(key);
+    }
+  }
+  for (const key of expiredKeys) {
+    audioCache.delete(key);
+  }
+
+  // 2. If capacity still exceeds MAX_CACHE_SIZE, evict oldest remaining entries
   if (audioCache.size > MAX_CACHE_SIZE) {
     const oldest = [...audioCache.entries()]
-      .filter(([, v]) => now - v.timestamp < CACHE_TTL_MS)
       .sort(([, a], [, b]) => a.timestamp - b.timestamp);
     const toDelete = audioCache.size - MAX_CACHE_SIZE;
     for (let i = 0; i < toDelete && i < oldest.length; i++) {
@@ -168,4 +179,4 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
   };
 }
 
-export const __testing = { getBookingContext };
+export const __testing = { getBookingContext, trimCache, cacheAudio, MAX_CACHE_SIZE, CACHE_TTL_MS };
