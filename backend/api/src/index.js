@@ -421,11 +421,9 @@ app.use(suspiciousRequests)
 // allowed types match the parsers registered above.
 app.use(requireJsonContent)
 
-// ============================================================================
-// 🆕 FRAUD DETECTION MIDDLEWARE (Global)
-// ============================================================================
-app.use(fraudDetectionMiddleware)
-app.use(networkAnalysisMiddleware)
+/// Fraud middleware is NOT registered globally here.
+// It is applied per-route after authenticate() so req.user is always set.
+// See individual route mounts below.
 
 // ============================================================================
 // RATE LIMITING
@@ -435,8 +433,7 @@ app.use('/api/health', healthRoutes)
 app.use('/api/v1/health', healthLimiter)
 app.use('/api/v1/health', healthRoutes)
 app.use('/api/', globalLimiter)
-app.use('/api/v1/trips', tripRoutes)
-
+app.use('/api/v1/trips', fraudDetectionMiddleware, networkAnalysisMiddleware, tripRoutes)
 // ============================================================================
 // REQUEST-SCOPED CACHE — created per-request, destroyed after response.
 // Registers before all routes so every request handler benefits.
@@ -446,8 +443,8 @@ app.use('/api', requestCacheMiddleware)
 // ============================================================================
 // REST API ROUTING
 // ============================================================================
-app.use('/api/orders', orderRoutes)
-app.use('/api/payments', paymentRoutes)
+app.use('/api/orders', fraudDetectionMiddleware, networkAnalysisMiddleware, orderRoutes)
+app.use('/api/payments', fraudDetectionMiddleware, networkAnalysisMiddleware, paymentRoutes)
 app.use('/api/driver', deadheadRoutes)
 app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
