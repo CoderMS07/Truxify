@@ -275,6 +275,24 @@ describe('reconciliationRunning Recovery Behavior', () => {
     expect(mocks.redisSet).toHaveBeenCalledTimes(2);
   });
 
+  it('allows subsequent execution when findPendingEscrowRefunds returns an error result', async () => {
+    mocks.redisSet.mockReturnValueOnce('OK');
+    const mockOrderRepoWithDbError = {
+      findPendingEscrowRefunds: vi.fn().mockResolvedValue({ data: null, error: { message: 'Database connection timeout' } }),
+    };
+
+    await reconcilePendingEscrowRefunds(mockOrderRepoWithDbError);
+
+    // Verify first call returned early
+    expect(mockOrderRepoWithDbError.findPendingEscrowRefunds).toHaveBeenCalledTimes(1);
+
+    // Verify second invocation recovers and reaches Redis lock operation
+    mocks.redisSet.mockReturnValueOnce('OK');
+    configureBuilder([]);
+    await reconcilePendingEscrowRefunds(orderRepository);
+    expect(mocks.redisSet).toHaveBeenCalledTimes(2);
+  });
+
   it('4. allows subsequent execution after successful reconciliation completion', async () => {
     mocks.redisSet.mockReturnValueOnce('OK');
     configureBuilder([]);
