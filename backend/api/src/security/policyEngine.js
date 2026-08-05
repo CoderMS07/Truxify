@@ -130,6 +130,7 @@ const POLICIES = {
   'liquibase:rollback':        { roles: [ROLES.ADMIN] },
 
   'ebpf:manage':               { roles: [ROLES.ADMIN] },
+  'snyk:manage':               { roles: [ROLES.ADMIN] },
 };
 
 export class PolicyEngine {
