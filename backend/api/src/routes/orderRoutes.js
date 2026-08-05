@@ -1343,11 +1343,8 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       return res.status(500).json({ error: 'Failed to update order atomically.', details: updateErr.message });
     }
 
-    try {
-      await orderRepository.insertTimelineEntry({ order_display_id: order.order_display_id, milestone: 'Drop Changed', milestone_time: new Date().toISOString(), completed: true, sort_order: 25 });
-    } catch (timelineErr) {
-      logger.warn('Failed to update timeline for change-drop:', timelineErr.message);
-    }
+    // Single canonical writer for the drop-change event. OrderTimelineService
+    // is the only path that inserts into order_timeline for this milestone.
     await orderTimelineService.insertDropChangedEvent(order.order_display_id);
 
     await expireDeliveryOtps(order.id);
