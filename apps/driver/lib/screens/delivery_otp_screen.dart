@@ -175,26 +175,26 @@ class _DeliveryOtpScreenState extends State<DeliveryOtpScreen>
 
     try {
       final body = await _apiClient.post(
-        final body = await _apiClient.post(
-  '/api/orders/${widget.orderId}/confirm-otp',
-  body: {'otp': _otp},
-);
+        '/api/orders/${widget.orderId}/confirm-otp',
+        body: {'otp': _otp},
+      );
 
-final amount = body is Map ? (body['amount_inr'] as String?) : null;
-final reconciliationRequired = body is Map && body['reconciliation_required'] == true;
+      final amount = body is Map ? (body['amount_inr'] as String?) : null;
+      final reconciliationRequired =
+          body is Map && body['reconciliation_required'] == true;
 
-if (reconciliationRequired) {
-  if (mounted) {
-    setState(() {
-      _errorMessage =
-          'Delivery confirmed! Your payout of ₹${amount ?? widget.amountInr ?? '...'} '
-          'is pending reconciliation and will be credited shortly.';
-    });
-  }
-  return;
-}
+      if (reconciliationRequired) {
+        if (mounted) {
+          setState(() {
+            _errorMessage =
+                'Delivery confirmed! Your payout of ₹${amount ?? widget.amountInr ?? '...'} '
+                'is pending reconciliation and will be credited shortly.';
+          });
+        }
+        return;
+      }
 
-await _showPaymentReleased(amount ?? widget.amountInr);
+      await _showPaymentReleased(amount ?? widget.amountInr);
     } catch (e) {
       final msg = e.toString().replaceAll('Exception: ', '');
       setState(() => _errorMessage = msg);
