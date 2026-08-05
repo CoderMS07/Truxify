@@ -443,7 +443,7 @@ router.get('/wallet/history', authenticate, userLimiter, requirePolicy('driver:v
  *   get:
  *     tags: [Driver]
  *     summary: Get earnings summary for charts
- *     description: Returns aggregated daily earnings data for the specified number of days (max 365).
+ *     description: Returns aggregated daily earnings data for the specified number of days (max 365) or, when start_date/end_date are given, for that exact window (inclusive start, exclusive end).
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -455,6 +455,18 @@ router.get('/wallet/history', authenticate, userLimiter, requirePolicy('driver:v
  *           minimum: 1
  *           maximum: 365
  *         description: Number of days to include
+ *       - in: query
+ *         name: start_date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Inclusive lower bound of the earnings window (YYYY-MM-DD)
+ *       - in: query
+ *         name: end_date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Exclusive upper bound of the earnings window (YYYY-MM-DD)
  *     responses:
  *       200:
  *         description: Earnings data array
@@ -463,28 +475,52 @@ router.get('/wallet/history', authenticate, userLimiter, requirePolicy('driver:v
  *             schema:
  *               $ref: '#/components/schemas/EarningsSummaryResponse'
  *       400:
- *         description: Invalid days parameter
+ *         description: Invalid days parameter or invalid date range
  */
 router.get('/earnings/summary', authenticate, userLimiter, requirePolicy('driver:view-earnings'), async (req, res) => {
   const daysParam = req.query.days ?? '30';
   const limitDays = typeof daysParam === 'string' ? Number(daysParam) : NaN;
 
-  if (!Number.isInteger(limitDays) || limitDays < 1 || limitDays > 365) {
+  const startDateParam = req.query.start_date;
+  const endDateParam = req.query.end_date;
+  const hasRange = startDateParam !== undefined || endDateParam !== undefined;
+
+  if (hasRange) {
+    if (
+      typeof startDateParam !== 'string' ||
+      typeof endDateParam !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(startDateParam) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(endDateParam)
+    ) {
+      return res.status(400).json({
+        error: 'start_date and end_date must both be provided as YYYY-MM-DD'
+      });
+    }
+    if (startDateParam > endDateParam) {
+      return res.status(400).json({ error: 'start_date must not be after end_date' });
+    }
+  } else if (!Number.isInteger(limitDays) || limitDays < 1 || limitDays > 365) {
     return res.status(400).json({
       error: 'days must be an integer between 1 and 365'
     });
   }
 
   try {
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - (limitDays - 1));
-
-    const { data: summary, error } = await supabase
+    let query = supabase
       .from('earnings_daily')
       .select('day_date, amount, trip_count, hours_driven')
-      .eq('driver_id', req.user.id)
-      .gte('day_date', cutoff.toISOString().split('T')[0])
-      .order('day_date', { ascending: true });
+      .eq('driver_id', req.user.id);
+
+    if (hasRange) {
+      // Exact window: inclusive start, exclusive end ([start, end)).
+      query = query.gte('day_date', startDateParam).lt('day_date', endDateParam);
+    } else {
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - (limitDays - 1));
+      query = query.gte('day_date', cutoff.toISOString().split('T')[0]);
+    }
+
+    const { data: summary, error } = await query.order('day_date', { ascending: true });
 
     if (error) {
       return res.status(500).json({ error: 'Failed to fetch earnings summary.', details: error.message });
