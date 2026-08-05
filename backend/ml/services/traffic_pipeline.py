@@ -96,11 +96,6 @@ class TrafficPipeline:
             logger.info("Creating new LSTM model")
             return self._create_lstm_model()
 
-    def close(self):
-        """Dispose database connections and close Redis connection."""
-        self.engine.dispose()
-        self.redis.close()
-    
     def _create_lstm_model(self):
         """Create LSTM model for ETA prediction"""
         model = models.Sequential([
