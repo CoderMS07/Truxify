@@ -2,7 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import { verificationService } from '../core/container.js';
-import { supabase } from '../config/db.js';
+import { supabase, supabaseAdmin } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { safeIpKeyGenerator, createStore } from '../middleware/rateLimiter.js';
 import { validateParams, validateBody } from '../middleware/validate.js';
@@ -183,10 +183,10 @@ router.post('/kyc/upload', upload.single('image'), authenticate, async (req, res
     }
 
     // Set status to pending
-    const { error: updateError } = await supabase
+    const { error: updateError } = await supabaseAdmin
       .from('driver_details')
       .update({ kyc_status: 'Pending KYC' })
-      .eq('driver_id', userId);
+      .eq('id', userId);
 
     if (updateError) {
       logger.warn({ updateError }, 'Failed to set pending status, but continuing with OCR');
@@ -212,20 +212,20 @@ router.post('/kyc/upload', upload.single('image'), authenticate, async (req, res
     const ocrData = await mlResponse.json();
 
     if (ocrData.verified) {
-      const { error: verifyError } = await supabase
+      const { error: verifyError } = await supabaseAdmin
         .from('driver_details')
         .update({ 
           kyc_status: 'Verified',
           kyc_doc_number: ocrData.extracted_number
         })
-        .eq('driver_id', userId);
+        .eq('id', userId);
 
       if (verifyError) throw verifyError;
     } else {
-       const { error: rejectError } = await supabase
+       const { error: rejectError } = await supabaseAdmin
         .from('driver_details')
         .update({ kyc_status: 'Rejected' })
-        .eq('driver_id', userId);
+        .eq('id', userId);
 
       if (rejectError) throw rejectError;
     }
