@@ -387,3 +387,27 @@ describe('complete_trip_tx — authorization is not NULL-bypassable and is servi
     expect(/grant execute on function complete_trip_tx\(uuid,\s*uuid,\s*text\)\s+to service_role/i.test(content)).toBe(true);
   });
 });
+
+describe('Secure Fraud Tables RLS (20260805174232_secure_fraud_tables_rls.sql)', () => {
+  let content;
+
+  beforeAll(async () => {
+    const p = path.resolve(__dirname, '../../../../supabase/migrations/20260805174232_secure_fraud_tables_rls.sql');
+    content = await fs.readFile(p, 'utf8');
+  });
+
+  it('drops existing overly permissive authenticated policies', () => {
+    expect(/DROP POLICY IF EXISTS behavioral_profiles_authenticated_all ON public.behavioral_profiles/i.test(content)).toBe(true);
+    expect(/DROP POLICY IF EXISTS fraud_risk_scores_authenticated_all ON public.fraud_risk_scores/i.test(content)).toBe(true);
+    expect(/DROP POLICY IF EXISTS fraud_review_queue_authenticated_all ON public.fraud_review_queue/i.test(content)).toBe(true);
+  });
+
+  it('creates admin read-only policies for fraud tables', () => {
+    expect(/CREATE POLICY "Admins can read behavioral_profiles"/i.test(content)).toBe(true);
+    expect(/CREATE POLICY "Admins can read fraud_risk_scores"/i.test(content)).toBe(true);
+    expect(/CREATE POLICY "Admins can read fraud_review_queue"/i.test(content)).toBe(true);
+    
+    // Ensure they restrict to admin role
+    expect(/profiles\.role = 'admin'/i.test(content)).toBe(true);
+  });
+});
