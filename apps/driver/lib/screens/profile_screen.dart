@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../controllers/app_controller.dart';
 import '../core/app_routes.dart';
 import '../core/config.dart';
-import '../data/mock_data.dart';
+import '../services/driver_earnings_service.dart';
 import '../l10n/app_localizations.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
@@ -39,6 +39,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String _walletAddress = '';
   String _truckNumber = '';
 
+  double _driverRating = 0;
+  int _driverTrips = 0;
+  double _driverCompletionRate = 0;
+  num _driverEarnings = 0;
+
   bool _isLoadingReputation = true;
   double? _platformRating;
   int? _onChainScore;
@@ -48,6 +53,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void initState() {
     super.initState();
     _loadWalletAddress();
+    _loadDriverStats();
     _fetchReputation();
   }
 
@@ -88,6 +94,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   void dispose() {
     super.dispose();
+  }
+
+  Future<void> _loadDriverStats() async {
+    try {
+      final stats = await DriverEarningsService().fetchDriverStats();
+      if (!mounted) return;
+      setState(() {
+        _driverRating = (stats['rating'] as num?)?.toDouble() ?? 0;
+        _driverTrips = (stats['total_trips'] as num?)?.toInt() ?? 0;
+        _driverCompletionRate = (stats['completion_rate'] as num?)?.toDouble() ?? 0;
+        _driverEarnings = (stats['wallet_total'] as num?) ?? 0;
+      });
+    } catch (e) {
+      debugPrint('Failed to load driver stats: $e');
+    }
+  }
+
+  String _formatInr(num rupees) {
+    final value = rupees.toDouble();
+    if (value >= 100000) {
+      return '₹${(value / 100000).toStringAsFixed(1)}L';
+    } else if (value >= 1000) {
+      return '₹${(value / 1000).toStringAsFixed(1)}K';
+    }
+    return '₹${value.toStringAsFixed(0)}';
   }
 
   bool _isDigilockerVerified = false;
@@ -830,7 +861,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        '$driverTruck · $_truckNumber',
+                        '$_truckNumber',
                         style: GoogleFonts.dmSans(
                           fontSize: 12,
                           color: Colors.white.withValues(alpha: 0.85),
@@ -851,7 +882,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 color: Colors.amber, size: 14),
                             const SizedBox(width: 4),
                             Text(
-                              '$driverRating · $driverTrips trips',
+                              '${_driverRating.toStringAsFixed(1)} · $_driverTrips trips',
                               style: GoogleFonts.dmSans(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w600,
@@ -883,7 +914,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 Expanded(
                   child: _MetricColumn(
                     label: 'Earned',
-                    value: driverEarningsMonth,
+                    value: _formatInr(_driverEarnings),
                   ),
                 ),
                 Container(
@@ -894,7 +925,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 Expanded(
                   child: _MetricColumn(
                     label: 'Total Trips',
-                    value: driverTrips,
+                    value: '$_driverTrips',
                   ),
                 ),
                 Container(
@@ -905,7 +936,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 Expanded(
                   child: _MetricColumn(
                     label: 'Completion Rate',
-                    value: driverCompletion,
+                    value: '${_driverCompletionRate.round()}%',
                   ),
                 ),
               ],
