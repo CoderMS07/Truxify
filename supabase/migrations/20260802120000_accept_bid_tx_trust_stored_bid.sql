@@ -85,7 +85,7 @@ BEGIN
   END IF;
 
   IF auth.role() <> 'service_role'
-     AND (auth.uid() IS NULL OR auth.uid() <> v_customer_id) THEN
+     AND (auth.uid() IS NULL OR get_profile_id() <> v_customer_id) THEN
     RAISE EXCEPTION 'Unauthorized: you can only accept bids on your own orders';
   END IF;
 

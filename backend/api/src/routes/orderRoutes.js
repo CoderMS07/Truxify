@@ -1160,11 +1160,11 @@ router.post(
       );
 
       // Fetch the released amount to include in the response
-      const { data: order } = await orderRepository.findOrderByIdOrDisplayId(
+      const orderForAmount = await orderValidationService.findOrderByIdOrDisplayId(
         req.params.id,
         'total_amount, order_display_id'
       );
-      const amountInr = order?.total_amount
+      const amountInr = orderForAmount?.total_amount
         ? (order.total_amount / 100).toFixed(0)
         : null;
 
@@ -1481,18 +1481,28 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
       }, req.token ? createUserClient(req.token) : undefined);
       if (acceptErr) {
         logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
+        let refundOk = false;
         try {
           await escrowRefund(order.order_display_id);
+          refundOk = true;
         } catch (refundErr) {
           logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
         }
-        await orderRepository.revertEscrowStatus(orderId).catch((revertErr) => {
-          logger.error('[confirm-deposit] Failed to revert escrow status:', revertErr.message);
-        });
-        throw new DomainError(409, {
-          error: 'Deposit confirmed but the driver assignment could not be finalized. The escrow deposit has been refunded. Please try again.',
-          details: acceptErr.message,
-        });
+        if (refundOk) {
+          await orderRepository.revertEscrowStatus(orderId).catch((revertErr) => {
+            logger.error('[confirm-deposit] Failed to revert escrow status:', revertErr.message);
+          });
+          throw new DomainError(409, {
+            error: 'Deposit confirmed but the driver assignment could not be finalized. The escrow deposit has been refunded. Please try again.',
+            details: acceptErr.message,
+          });
+        } else {
+          // Refund failed — keep booking reference so reconciliation can reclaim it.
+          throw new DomainError(409, {
+            error: 'Deposit confirmed but the driver assignment could not be finalized. A refund is pending — please contact support if not resolved shortly.',
+            details: acceptErr.message,
+          });
+        }
       }
       sendPushNotification(
         pending.driver_id,

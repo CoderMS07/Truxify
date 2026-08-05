@@ -241,6 +241,16 @@ export const driverStatementSchema = z.object({
   sort_by: z.enum(['pickup_date', 'net_earnings', 'base_freight']).optional(),
 }).strict();
 
+/**
+ * Reporting window for the driver earnings summary.
+ *
+ * `.strict()` rejects unknown query keys so a typo surfaces as a 400 rather
+ * than silently falling back to the default period.
+ */
+export const earningsSummarySchema = z.object({
+  period: z.enum(['weekly', 'monthly']).optional(),
+}).strict();
+
 // Indian vehicle registration plate: 2 letters, 2 digits, up to 3 letters, up to 4 digits
 // e.g. MH12AB1234 or DL01C1234
 const numberPlateRegex = /^[A-Z]{2}\d{2}[A-Z]{1,3}\d{1,4}$/;

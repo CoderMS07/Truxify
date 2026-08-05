@@ -49,8 +49,10 @@ DECLARE
   v_day_total  INT;
   v_daily_cap  CONSTANT INT := 10000000;  -- ₹1,00,000 in paisa per UTC calendar day
 BEGIN
-  -- Verify the caller IS the driver
-  IF auth.uid() <> p_driver_id THEN
+  -- Verify the caller IS the driver.
+  -- auth.uid() is the Firebase UID; get_profile_id() maps it to profiles.id
+  -- which is what p_driver_id stores, so compare via get_profile_id().
+  IF auth.uid() IS NOT NULL AND get_profile_id() <> p_driver_id THEN
     RAISE EXCEPTION 'Unauthorized: you can only withdraw your own funds';
   END IF;
 
