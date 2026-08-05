@@ -486,6 +486,7 @@ export function initWebSocketServer(server, orderRepository) {
 
   wss.on('connection', async (ws, req) => {
     ws._request = req;
+    ws.socketId = ws.socketId || crypto.randomUUID();
     const reqUrl = new URL(req.url, 'http://localhost');
     const bypassAuth = process.env.BYPASS_AUTH === 'true';
 
@@ -578,7 +579,7 @@ export function initWebSocketServer(server, orderRepository) {
   logger.info('🚀 WebSocket tracking router initialized.');
 }
 
-function isMessageRateLimited(ws) {
+function isMessageRateLimitedInMemory(ws) {
   const now = Date.now();
   let state = messageRateTracker.get(ws);
   if (!state || now - state.windowStart >= 1000) {
@@ -589,8 +590,34 @@ function isMessageRateLimited(ws) {
   return state.count > MAX_MSG_PER_SECOND;
 }
 
+/**
+ * Per-socket message rate limiter (issue #986). Counts messages in a Redis
+ * keyed by socket + 1-second window so the cap holds cluster-wide across all
+ * API instances, and falls back to the in-memory limiter when Redis is down
+ * so the cap is still enforced on this node.
+ */
+export async function isMessageRateLimited(ws) {
+  if (redisClient && redisClient.status === 'ready') {
+    try {
+      const bucket = Math.floor(Date.now() / 1000);
+      const key = `ws:msg:${ws.socketId || ws.driverId || 'anon'}:${bucket}`;
+      const count = await redisClient.incr(key);
+      if (count === 1) {
+        await redisClient.expire(key, 2);
+      }
+      return count > MAX_MSG_PER_SECOND;
+    } catch (err) {
+      logger.warn(
+        'Redis WS message rate limit failed, falling back to in-memory:',
+        err.message,
+      );
+    }
+  }
+  return isMessageRateLimitedInMemory(ws);
+}
+
 export async function handleTrackingMessage(ws, message, req) {
-  if (isMessageRateLimited(ws)) {
+  if (await isMessageRateLimited(ws)) {
     return;
   }
 
