@@ -174,10 +174,10 @@ function isRateLimitError(error) {
   return false;
 }
 
-async function run({ github, context, core, dryRun = false, prState = 'closed' }) {
+async function run({ github, context, core, dryRun = false, prState = 'closed', sinceHours = 0 }) {
   const { owner, repo } = context.repo;
 
-  core.info(`Starting retrospective PR labeler (dryRun = ${dryRun})...`);
+  core.info(`Starting retrospective PR labeler (dryRun = ${dryRun}, prState = ${prState}, sinceHours = ${sinceHours})...`);
 
   // Fetch available labels in repo to check if we need to create them
   let repoLabels = [];
@@ -240,15 +240,49 @@ async function run({ github, context, core, dryRun = false, prState = 'closed' }
   }
 
   // Fetch pull requests
-  core.info(`Fetching ${prState} pull requests...`);
+  const cutoffTime = sinceHours && sinceHours > 0 ? new Date(Date.now() - sinceHours * 60 * 60 * 1000) : null;
+  if (cutoffTime) {
+    core.info(`Filtering PRs updated/closed within the last ${sinceHours} hours (since ${cutoffTime.toISOString()})...`);
+  } else {
+    core.info(`Fetching ${prState} pull requests...`);
+  }
+
   let pullRequests = [];
   try {
-    pullRequests = await github.paginate(github.rest.pulls.list, {
-      owner,
-      repo,
-      state: prState,
-      per_page: 100
-    });
+    if (cutoffTime) {
+      let page = 1;
+      let stop = false;
+      while (!stop) {
+        const response = await github.rest.pulls.list({
+          owner,
+          repo,
+          state: prState,
+          sort: 'updated',
+          direction: 'desc',
+          per_page: 100,
+          page
+        });
+        const pageData = Array.isArray(response) ? response : (response && response.data ? response.data : []);
+        if (pageData.length === 0) break;
+        for (const pr of pageData) {
+          const prTime = new Date(pr.closed_at || pr.updated_at || pr.created_at);
+          if (prTime < cutoffTime) {
+            stop = true;
+            break;
+          }
+          pullRequests.push(pr);
+        }
+        if (pageData.length < 100) break;
+        page++;
+      }
+    } else {
+      pullRequests = await github.paginate(github.rest.pulls.list, {
+        owner,
+        repo,
+        state: prState,
+        per_page: 100
+      });
+    }
   } catch (error) {
     if (isRateLimitError(error)) {
       core.warning(`API rate limit exceeded while fetching pull requests: ${error.message}. Stopping retrospective PR labeler.`);
@@ -257,7 +291,7 @@ async function run({ github, context, core, dryRun = false, prState = 'closed' }
     throw error;
   }
 
-  core.info(`Found ${pullRequests.length} ${prState} pull requests. Processing...`);
+  core.info(`Found ${pullRequests.length} ${prState} pull requests matching time criteria. Processing...`);
 
   const rules = loadLabelRules();
 
