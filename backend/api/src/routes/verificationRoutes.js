@@ -6,6 +6,7 @@ import { supabase } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { safeIpKeyGenerator, createStore } from '../middleware/rateLimiter.js';
 import { validateParams, validateBody } from '../middleware/validate.js';
+import logger from '../middleware/logger.js';
 import { verifyOrderParamsSchema, documentCheckSchema } from '../validation/requestSchemas.js';
 import { PolicyError, policy } from '../security/policyEngine.js';
 import digilockerService from '../services/verification/DigilockerService.js';
@@ -172,7 +173,7 @@ router.post('/kyc/upload', upload.single('image'), authenticate, async (req, res
       .eq('driver_id', userId);
 
     if (updateError) {
-      console.warn("Failed to set pending status, but continuing with OCR", updateError);
+      logger.warn({ updateError }, 'Failed to set pending status, but continuing with OCR');
     }
 
     const formData = new FormData();
