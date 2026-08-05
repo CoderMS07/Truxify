@@ -1653,11 +1653,7 @@ router.post('/predict-demand', authenticate, userLimiter, requirePolicy('order:p
  *             schema:
  *               $ref: '#/components/schemas/DriverLocationResponse'
  */
-router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-driver-location', async (req) => {
-  const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id, status');
-  orderValidationService.assertOrderFound(order);
-  return { order };
-})), validateParams(paramIdSchema), async (req, res) => {
+router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-driver-location'), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, customer_id, driver_id, status');
@@ -1726,11 +1722,7 @@ router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, 
  *             schema:
  *               $ref: '#/components/schemas/OrderRouteResponse'
  */
-router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-route', async (req) => {
-  const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id, status');
-  orderValidationService.assertOrderFound(order);
-  return { order };
-})), validateParams(paramIdSchema), async (req, res) => {
+router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-route'), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
 
   try {
@@ -1843,7 +1835,6 @@ async function validateAndScanPodFile(file, label) {
 }
 
 // POST /api/orders/:id/pod
-router.post('/:id/pod', authenticate, requirePolicy('order:upload-pod'), podUpload.fields([{ name: 'signature', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
 // PoD uploads are rate-limited per driver + order: each request may carry up to
 // 20MB and triggers a malware scan, so without a limiter a driver could exhaust
 // storage, RAM (multer memoryStorage), and scan CPU with an unbounded stream.
