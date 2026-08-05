@@ -149,17 +149,6 @@ const hosStatusSchema = z.object({
   status: z.enum(['off_duty', 'on_duty', 'driving', 'resting'])
 });
 
-// Driver role authorization guard middleware
-function requireDriverRole(req, res, next) {
-  if (!req.user) {
-    return res.status(401).json({ error: 'Authentication required for driver access' });
-  }
-  if (req.user.role !== 'driver' && req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Forbidden: Driver role required', role: req.user.role });
-  }
-  next();
-}
-
 function parseIntegerQuery(value) {
   if (value === undefined) return undefined;
   if (!/^\d+$/.test(String(value))) return NaN;
@@ -1410,7 +1399,7 @@ router.get('/earnings/report', authenticate, requirePolicy('driver:view-earnings
 });
 
 
-router.get('/weigh-stations/bypass-status', authenticate, requireDriverRole, async (req, res) => {
+router.get('/weigh-stations/bypass-status', authenticate, requirePolicy('driver:view-stats'), async (req, res) => {
   try {
     const driverId = req.user.id;
     const lat = parseCoordinate(req.query.lat);
@@ -1455,7 +1444,7 @@ router.get('/weigh-stations/bypass-status', authenticate, requireDriverRole, asy
  *       200:
  *         description: Optimized route tasks
  */
-router.get('/ltl/optimize-route', authenticate, userLimiter, requireDriverRole, async (req, res) => {
+router.get('/ltl/optimize-route', authenticate, userLimiter, requirePolicy('driver:view-stats'), async (req, res) => {
   try {
     const lat = parseFloat(req.query.lat);
     const lng = parseFloat(req.query.lng);
@@ -1527,13 +1516,11 @@ router.get('/ltl/optimize-route', authenticate, userLimiter, requireDriverRole, 
 // ============================================================================
 // GET DRIVER ANALYTICS & EARNINGS
 // ============================================================================
-router.get('/:id/earnings', authenticate, userLimiter, requirePolicy('driver:view-earnings'), validateParams(paramIdSchema), async (req, res) => {
+router.get('/:id/earnings', authenticate, userLimiter, requirePolicy('driver:view-earnings', async (req) => {
+  return { profile: { id: req.params.id } };
+}), validateParams(paramIdSchema), async (req, res) => {
   const { id } = req.params;
   const period = req.query.period || 'week';
-
-  if (req.user.role !== 'admin' && req.user.id !== id) {
-    return res.status(403).json({ error: 'Access denied. You can only view your own earnings.' });
-  }
 
   try {
     let cutoff = new Date();
