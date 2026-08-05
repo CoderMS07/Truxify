@@ -61,7 +61,9 @@ export class CircuitBreaker {
     } catch (err) {
       return this.onFailure(err, args);
     } finally {
-      clearTimeout(timer);
+      if (timer) {
+        clearTimeout(timer);
+      }
     }
   }
 
