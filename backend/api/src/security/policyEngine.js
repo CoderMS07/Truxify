@@ -73,6 +73,7 @@ const POLICIES = {
 
   'driver:view-stats':         { roles: [ROLES.DRIVER] },
   'document:upload':           { roles: [ROLES.DRIVER] },
+  'document:view':             { ownership: (u, r) => r?.driverId && (r.driverId === u.id || u.role === ROLES.ADMIN) },
   'driver:toggle-online':      { roles: [ROLES.DRIVER] },
   'driver:update-hos':         { roles: [ROLES.DRIVER] },
   'driver:view-wallet':        { roles: [ROLES.DRIVER] },
