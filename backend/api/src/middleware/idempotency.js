@@ -72,16 +72,19 @@ function readAndParse(str) {
 }
 
 export function requireIdempotency(ttlSeconds = 3600) {
-  const ttlMs = ttlSeconds * 1000;
+  // Guard against invalid TTL: use default of 3600 if not a positive integer.
+  const safeTtlSeconds = Number.isInteger(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : 3600;
+  const ttlMs = safeTtlSeconds * 1000;
 
   return async function idempotencyMiddleware(req, res, next) {
     const idempotencyKey = req.headers['x-idempotency-key'];
 
-    if (!idempotencyKey) {
+    // Guard against non-string idempotency key: return 400 if not a string.
+    if (typeof idempotencyKey !== 'string' || !idempotencyKey) {
       if (process.env.NODE_ENV === 'test') {
         return next();
       }
-      return res.status(400).json({ error: 'X-Idempotency-Key header is required for this action.' });
+      return res.status(400).json({ error: 'X-Idempotency-Key must be a non-empty string.' });
     }
 
     const key = cacheKey(req, idempotencyKey);
