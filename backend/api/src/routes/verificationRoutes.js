@@ -186,7 +186,7 @@ router.post('/kyc/upload', upload.single('image'), authenticate, async (req, res
     const { error: updateError } = await supabase
       .from('driver_details')
       .update({ kyc_status: 'Pending KYC' })
-      .eq('driver_id', userId);
+      .eq('user_id', userId);
 
     if (updateError) {
       logger.warn({ updateError }, 'Failed to set pending status, but continuing with OCR');
@@ -218,14 +218,14 @@ router.post('/kyc/upload', upload.single('image'), authenticate, async (req, res
           kyc_status: 'Verified',
           kyc_doc_number: ocrData.extracted_number
         })
-        .eq('driver_id', userId);
+        .eq('user_id', userId);
 
       if (verifyError) throw verifyError;
     } else {
        const { error: rejectError } = await supabase
         .from('driver_details')
         .update({ kyc_status: 'Rejected' })
-        .eq('driver_id', userId);
+        .eq('user_id', userId);
 
       if (rejectError) throw rejectError;
     }
