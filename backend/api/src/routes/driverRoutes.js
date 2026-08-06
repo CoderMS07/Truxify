@@ -868,7 +868,7 @@ router.patch(
 
       const { data: updated, error: updateError } = await supabase
         .from('route_map_points')
-        .update({ claimed })
+        .update({ is_claimed: claimed })
         .eq('id', id)
         .select('*')
         .maybeSingle();
