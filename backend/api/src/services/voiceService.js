@@ -31,8 +31,8 @@ function trimCache() {
   }
 }
 
-function cacheAudio(id, buffer) {
-  audioCache.set(id, { buffer, timestamp: Date.now() });
+function cacheAudio(id, buffer, userId) {
+  audioCache.set(id, { buffer, userId, timestamp: Date.now() });
   trimCache();
 }
 
@@ -94,7 +94,7 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
     // Generate a dummy silent mp3
     const mockAudio = Buffer.alloc(1000);
     const audioId = crypto.randomUUID();
-    cacheAudio(audioId, mockAudio);
+    cacheAudio(audioId, mockAudio, userId);
 
     return {
       transcript: selected.transcript,
@@ -170,7 +170,7 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
     });
 
     const audioId = crypto.randomUUID();
-    cacheAudio(audioId, Buffer.from(ttsResponse.data));
+    cacheAudio(audioId, Buffer.from(ttsResponse.data), userId);
     audioUrl = `/api/voice/audio/${audioId}`;
   } catch (err) {
     logger.error('ElevenLabs TTS failed:', err.message);
