@@ -521,9 +521,14 @@ router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) 
  */
 router.get('/history', authenticate, userLimiter, requirePolicy('order:view-history'), async (req, res) => {
   try {
-    const cursor = req.query.cursor;
+    const cursorParam = req.query.cursor ?? '1';
+    const cursor = typeof cursorParam === 'string' ? Number(cursorParam) : NaN;
     const limitParam = req.query.limit ?? '10';
     const limit = typeof limitParam === 'string' ? Number(limitParam) : NaN;
+
+    if (!Number.isInteger(cursor) || cursor < 1) {
+      return res.status(400).json({ error: 'cursor must be an integer >= 1' });
+    }
 
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       return res.status(400).json({ error: 'limit must be between 1 and 100' });
