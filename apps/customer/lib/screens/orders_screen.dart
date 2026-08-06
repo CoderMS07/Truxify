@@ -1,5 +1,6 @@
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:lottie/lottie.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:truxify/widgets/order_card.dart';
 import 'package:truxify_shared/truxify_shared.dart';
@@ -446,7 +447,15 @@ class _OrdersScreenState extends State<OrdersScreen>
                           itemBuilder: (context, index) => const ShimmerOrderCard(),
                         )
                       : _filteredActiveOrders.isEmpty
-                          ? Center(child: Text(AppLocalizations.of(context)!.noActiveOrders))
+                          ? Center(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Lottie.asset('packages/truxify_shared/assets/lottie/no_trips.json', width: 200, height: 200),
+                                    Text(AppLocalizations.of(context)!.noActiveOrders, style: const TextStyle(color: Colors.grey, fontSize: 16)),
+                                  ],
+                                ),
+                              )
                           : ListView.separated(
                               padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
                               itemCount: _filteredActiveOrders.length,
