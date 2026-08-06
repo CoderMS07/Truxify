@@ -1572,7 +1572,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final indexes = <int>{};
     for (var step = 1; step <= 3; step++) {
       indexes.add(
-          ((totalSegments * step) / 4).round().clamp(1, totalSegments - 1));
+          ((totalSegments * step) / 4).round().clamp(1, totalSegments - 1).toInt());
     }
 
     return indexes.map((index) => routePoints[index]).toList(growable: false);
