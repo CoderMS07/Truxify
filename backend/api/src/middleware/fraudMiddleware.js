@@ -1,8 +1,8 @@
 import fraudDetection from '../services/fraud/FraudDetectionService.js';
 import logger from './logger.js';
 
-const RISK_THRESHOLD_FLAG = 0.7;
-const RISK_THRESHOLD_BLOCK = 0.9;
+const RISK_REVIEW_THRESHOLD = 0.7;
+const RISK_BLOCK_THRESHOLD = 0.9;
 
 export const fraudDetectionMiddleware = async (req, res, next) => {
   try {
@@ -42,7 +42,7 @@ export const fraudDetectionMiddleware = async (req, res, next) => {
         deviceChanged: req.deviceChanged || false
       });
 
-      if (risk && risk.riskScore > RISK_THRESHOLD_FLAG) {
+      if (risk && risk.riskScore > RISK_REVIEW_THRESHOLD) {
         // Flag for review
         await fraudDetection.addToReviewQueue(
           userId,
@@ -51,7 +51,7 @@ export const fraudDetectionMiddleware = async (req, res, next) => {
         );
 
         // Block high-risk transactions
-        if (risk.riskScore > RISK_THRESHOLD_BLOCK) {
+        if (risk.riskScore > RISK_BLOCK_THRESHOLD) {
           return res.status(403).json({
             error: 'Transaction blocked due to suspicious activity',
             riskScore: risk.riskScore,

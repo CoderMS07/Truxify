@@ -73,6 +73,7 @@ const POLICIES = {
 
   'driver:view-stats':         { roles: [ROLES.DRIVER] },
   'document:upload':           { roles: [ROLES.DRIVER] },
+  'document:view':             { ownership: (u, r) => r?.driverId && (r.driverId === u.id || u.role === ROLES.ADMIN) },
   'driver:toggle-online':      { roles: [ROLES.DRIVER] },
   'driver:update-hos':         { roles: [ROLES.DRIVER] },
   'driver:view-wallet':        { roles: [ROLES.DRIVER] },
@@ -127,8 +128,11 @@ const POLICIES = {
   'demand:view-heatmap':       { roles: [ROLES.DRIVER, ROLES.ADMIN] },
   'liquibase:migrate':         { roles: [ROLES.ADMIN] },
   'liquibase:rollback':        { roles: [ROLES.ADMIN] },
+  'liquibase:status':          { roles: [ROLES.ADMIN] },
+  'liquibase:validate':        { roles: [ROLES.ADMIN] },
 
   'ebpf:manage':               { roles: [ROLES.ADMIN] },
+  'snyk:manage':               { roles: [ROLES.ADMIN] },
 };
 
 export class PolicyEngine {

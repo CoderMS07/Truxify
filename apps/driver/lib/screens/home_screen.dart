@@ -146,6 +146,9 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _showStatusCard = true;
   final TripService _tripService = TripService();
   String? _activeTripId;
+  /// Order id (orders.id UUID) served by the active trip, used for
+  /// order-scoped uploads such as proof of delivery.
+  String? _activeOrderId;
   String _activeTruckLabel = '';
   String _activeTripDistance = '';
   String _activeTripDuration = '';
@@ -700,6 +703,7 @@ class _HomeScreenState extends State<HomeScreen> {
             '';
 
         await prefs.setString('cached_trip_id', tripId);
+        await prefs.setString('cached_order_id', activeTrip['order_id']?.toString() ?? '');
         await prefs.setString('cached_truck_label', truckLabel);
         await prefs.setString('cached_distance', distanceStr);
         await prefs.setString('cached_duration', durationStr);
@@ -719,6 +723,7 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() {
           _isOffline = false;
           _activeTripId = tripId;
+          _activeOrderId = activeTrip['order_id']?.toString();
           _activeTruckLabel = truckLabel;
           _activeTripDistance = distanceStr;
           _activeTripDuration = durationStr;
@@ -755,10 +760,12 @@ class _HomeScreenState extends State<HomeScreen> {
       } else {
         final prefs = await SharedPreferences.getInstance();
         await prefs.remove('cached_trip_id');
+        await prefs.remove('cached_order_id');
         if (mounted) {
           setState(() {
             _isOffline = false;
             _activeTripId = null;
+            _activeOrderId = null;
             _isTripStarted = false;
             _destination = null;
             _routeFuture = null;
@@ -775,6 +782,7 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() {
           _isOffline = true;
           _activeTripId = prefs.getString('cached_trip_id');
+          _activeOrderId = prefs.getString('cached_order_id');
           _activeTruckLabel = prefs.getString('cached_truck_label') ?? '';
           _activeTripDistance = prefs.getString('cached_distance') ?? '';
           _activeTripDuration = prefs.getString('cached_duration') ?? '';
@@ -811,6 +819,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (mounted) {
           setState(() {
             _activeTripId = null;
+            _activeOrderId = null;
             _isTripStarted = false;
             _destination = null;
             _routeFuture = null;
@@ -1563,7 +1572,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final indexes = <int>{};
     for (var step = 1; step <= 3; step++) {
       indexes.add(
-          ((totalSegments * step) / 4).round().clamp(1, totalSegments - 1));
+          ((totalSegments * step) / 4).round().clamp(1, totalSegments - 1).toInt());
     }
 
     return indexes.map((index) => routePoints[index]).toList(growable: false);
@@ -1918,7 +1927,7 @@ class _HomeScreenState extends State<HomeScreen> {
         circles.add(CircleMarker(
           point: ll.LatLng(coords[1], coords[0]),
           // Fill: zone colour with intensity-scaled alpha for depth effect
-          color: zoneColor.withValues(alpha: (intensity * 0.45).clamp(0.08, 0.45)),
+          color: zoneColor.withValues(alpha: (intensity * 0.45).clamp(0.08, 0.45).toDouble()),
           borderColor: zoneColor.withValues(alpha: 0.6),
           borderStrokeWidth: 1.0,
           useRadiusInMeter: true,
@@ -2115,7 +2124,7 @@ class _HomeScreenState extends State<HomeScreen> {
             if (_isTripStarted && _activeTripId != null) ...[
               ElevatedButton.icon(
                 onPressed: () async {
-                  await Navigator.push(context, MaterialPageRoute(builder: (_) => PodCaptureScreen(orderId: _activeTripId!)));
+                  await Navigator.push(context, MaterialPageRoute(builder: (_) => PodCaptureScreen(orderId: _activeOrderId ?? _activeTripId!)));
                   _checkPendingPods();
                 },
                 icon: const Icon(Icons.camera_alt),

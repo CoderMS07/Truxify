@@ -1,5 +1,6 @@
 import logger from '../../middleware/logger.js';
-import { redisClient, supabase, supabaseAdmin } from '../../config/db.js';
+import { redisClient, supabaseAdmin } from '../../config/db.js';
+
 class FraudDetectionService {
   constructor() {
     this.redis = redisClient;
@@ -36,7 +37,7 @@ class FraudDetectionService {
   // ============ Behavioral Fingerprinting ============
   async trackBehavior(userId, eventData) {
     try {
-      if (!supabase) return null;
+      if (!supabaseAdmin) return null;
       const profile = await this.getOrCreateProfile(userId);
       
       // Update behavioral metrics
@@ -97,7 +98,7 @@ class FraudDetectionService {
   }
 
   async getOrCreateProfile(userId) {
-    if (!supabase) return null;
+    if (!supabaseAdmin) return null;
     // Check Redis cache
     const cached = this.redis ? await this.redis.get(`behavior:${userId}`) : null;
     if (cached) {
@@ -108,9 +109,8 @@ class FraudDetectionService {
     const inMemory = this.behavioralProfiles.get(userId);
     if (inMemory) return inMemory;
 
-    // Check database using admin client since users cannot read this table
-    const client = supabaseAdmin || supabase;
-    const { data } = await client
+    // Check database
+    const { data } = await supabaseAdmin
       .from('behavioral_profiles')
       .select('*')
       .eq('user_id', userId)
@@ -141,15 +141,14 @@ class FraudDetectionService {
   }
 
   async _flushPendingUpserts() {
-    if (this.pendingUpserts.size === 0 || !supabase) return;
+    if (this.pendingUpserts.size === 0 || !supabaseAdmin) return;
     
     // Extract records and clear the map for the next batch
     const records = Array.from(this.pendingUpserts.values());
     this.pendingUpserts.clear();
 
     try {
-      const client = supabaseAdmin || supabase;
-      const { error: dbErr } = await client
+      const { error: dbErr } = await supabaseAdmin
         .from('behavioral_profiles')
         .upsert(records, { onConflict: 'user_id' });
 
@@ -326,11 +325,11 @@ class FraudDetectionService {
   }
 
   async getUserConnections(userId) {
-    if (!supabase) return [];
+    if (!supabaseAdmin) return [];
     const safeUserId = this.sanitizeUserId(userId);
     if (!safeUserId) return [];
     // Get all connections (orders, trips, shared routes)
-    const { data: orders, error } = await supabase
+    const { data: orders, error } = await supabaseAdmin
       .from('orders')
       .select('customer_id, driver_id')
       .or(`customer_id.eq.${safeUserId},driver_id.eq.${safeUserId}`);
@@ -362,7 +361,7 @@ class FraudDetectionService {
     const safeIds = userIds.map(id => this.sanitizeUserId(id)).filter(Boolean);
     if (safeIds.length === 0) return {};
 
-    const { data: orders, error } = await supabase
+    const { data: orders, error } = await supabaseAdmin
       .from('orders')
       .select('customer_id, driver_id')
       .or(safeIds.map(id => `customer_id.eq.${id}`).join(',') + ',' + safeIds.map(id => `driver_id.eq.${id}`).join(','));
@@ -601,9 +600,8 @@ class FraudDetectionService {
 
   async storeRiskScore(userId, score, components) {
     try {
-      if (!supabase) return;
-      const client = supabaseAdmin || supabase;
-      await client
+      if (!supabaseAdmin) return;
+      await supabaseAdmin
         .from('fraud_risk_scores')
         .insert([{
           user_id: userId,
@@ -636,9 +634,8 @@ class FraudDetectionService {
   // ============ Auto-Review Queue ============
   async addToReviewQueue(userId, reason, riskScore) {
     try {
-      if (!supabase) return null;
-      const client = supabaseAdmin || supabase;
-      const { data } = await client
+      if (!supabaseAdmin) return null;
+      const { data } = await supabaseAdmin
         .from('fraud_review_queue')
         .insert([{
           user_id: userId,
@@ -659,9 +656,8 @@ class FraudDetectionService {
   }
 
   async getReviewQueue(limit = 50) {
-    if (!supabase) return [];
-    const client = supabaseAdmin || supabase;
-    const { data } = await client
+    if (!supabaseAdmin) return [];
+    const { data } = await supabaseAdmin
       .from('fraud_review_queue')
       .select('*')
       .eq('status', 'pending')
@@ -672,9 +668,8 @@ class FraudDetectionService {
   }
 
   async resolveReview(reviewId, action, notes) {
-    if (!supabase) return null;
-    const client = supabaseAdmin || supabase;
-    const { data } = await client
+    if (!supabaseAdmin) return null;
+    const { data } = await supabaseAdmin
       .from('fraud_review_queue')
       .update({
         status: 'resolved',
@@ -703,9 +698,8 @@ class FraudDetectionService {
   }
 
   async getFraudStats() {
-    if (!supabase) return { total: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0, avgScore: 0 };
-    const client = supabaseAdmin || supabase;
-    const { data: scores } = await client
+    if (!supabaseAdmin) return { total: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0, avgScore: 0 };
+    const { data: scores } = await supabaseAdmin
       .from('fraud_risk_scores')
       .select('risk_score, created_at')
       .order('created_at', { ascending: false })

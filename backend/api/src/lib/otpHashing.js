@@ -12,6 +12,9 @@ import crypto from 'crypto';
  *   and hex-encoded salt.
  */
 export function hashOtp(otp, saltHex) {
+  if (otp === null || otp === undefined || (typeof otp === 'string' && otp.trim() === '')) {
+    throw new TypeError('OTP must be a non-empty value');
+  }
   const salt = saltHex || crypto.randomBytes(16).toString('hex');
   const key = crypto.scryptSync(String(otp), salt, 64);
   return { hash: key.toString('hex'), salt };
