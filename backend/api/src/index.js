@@ -66,6 +66,7 @@ import demandRoutes from './routes/demandRoutes.js'
 // ============================================================================
 import verificationRoutes from './routes/verificationRoutes.js'
 import oracleRoutes from './routes/oracleRoutes.js'
+import blockchainMonitoringRoutes from './routes/blockchainMonitoringRoutes.js'
 
 // ============================================================================
 // 🆕 GEOGRAPHIC SHARDING ROUTES
@@ -139,6 +140,8 @@ import {
   stopDlqWorker,
 } from './workers/dlqWorker.js'
 import { startStaleOrderWorker } from './workers/staleOrderWorker.js'
+import BlockchainMetrics from './services/blockchain/blockchainMetrics.js'
+import EscalationHandler from './services/blockchain/escalationHandler.js'
 import {
   startWithdrawalSettlementWorker,
   stopWithdrawalSettlementWorker
@@ -166,6 +169,12 @@ try {
 // INITIALIZE DISTRIBUTED CACHE MANAGER
 // ============================================================================
 CacheManager.init(redisClient)
+
+// ============================================================================
+// BLOCKCHAIN MONITORING — singletons shared with blockchainMonitoringRoutes
+// ============================================================================
+const blockchainMetrics = new BlockchainMetrics()
+const escalationHandler = new EscalationHandler({})
 
 // ============================================================================
 // STARTUP VALIDATION — crash fast, not at request time
@@ -493,6 +502,18 @@ app.use('/api/webhooks', webhookRoutes)
 app.use('/api/verify', verificationRoutes)
 app.use('/api/oracle', oracleRoutes)
 app.use('/api/webhooks', webhookRoutes)
+
+// ============================================================================
+// 🆕 BLOCKCHAIN MONITORING ROUTES
+// Attach the monitoring services and service-role client per request so the
+// handlers never fall back to the anon-key client (RLS would hide all rows).
+// ============================================================================
+app.use('/api/blockchain', (req, _res, next) => {
+  req.blockchainMetrics = blockchainMetrics
+  req.escalationHandler = escalationHandler
+  req.supabase = supabaseAdmin
+  next()
+}, blockchainMonitoringRoutes)
 
 // 🆕 Oracle Health Check Endpoint
 app.get('/api/oracle/health', (req, res) => {
