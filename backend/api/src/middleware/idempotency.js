@@ -121,7 +121,12 @@ export function requireIdempotency(ttlSeconds = 3600) {
 
             const lockStillHeld = await redisClient.get(lockKey);
             if (!lockStillHeld) {
-              break; // Lock released but cache empty
+              const finalRaw = await redisClient.get(key);
+              const finalCached = finalRaw ? readAndParse(finalRaw) : null;
+              if (finalCached) {
+                return res.status(finalCached.statusCode).json(finalCached.body);
+              }
+              break; // Lock released but cache genuinely empty
             }
 
             retries--;
