@@ -529,6 +529,13 @@ router.get('/history', authenticate, userLimiter, requirePolicy('order:view-hist
       return res.status(400).json({ error: 'limit must be between 1 and 100' });
     }
 
+    if (cursor !== undefined) {
+      const cursorNum = Number(cursor);
+      if (!Number.isInteger(cursorNum) || cursorNum < 1) {
+        return res.status(400).json({ error: 'cursor must be a positive integer' });
+      }
+    }
+
     const result = await orderLifecycleService.getOrderHistory(req.user.id, cursor, limit);
     res.json(result);
   } catch (err) {
