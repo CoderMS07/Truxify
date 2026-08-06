@@ -361,7 +361,7 @@ async function verifyDriverToken(socket, next) {
       return next();
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
 
     if (decoded.role !== "driver") {
       return next(new Error("Forbidden: driver role required"));
@@ -402,7 +402,7 @@ async function verifyCustomerToken(socket, next) {
       return next();
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
 
     if (decoded.role !== "customer") {
       return next(new Error("Forbidden: customer role required"));
