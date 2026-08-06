@@ -188,9 +188,10 @@ describe('trimCache Eviction Logic', () => {
     const now = Date.now();
     audioCache.set('expired_old', { buffer: Buffer.from('old'), timestamp: now - CACHE_TTL_MS - 5000 });
 
-    cacheAudio('new_item', Buffer.from('fresh_data'));
+    cacheAudio('new_item', Buffer.from('fresh_data'), 'user-1');
 
     expect(audioCache.has('expired_old')).toBe(false);
     expect(audioCache.has('new_item')).toBe(true);
+    expect(audioCache.get('new_item').userId).toBe('user-1');
   });
 });
