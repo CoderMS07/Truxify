@@ -1,84 +1,95 @@
 /**
- * Startup configuration validation.
+ * Cache invalidation event definitions.
  *
- * Checks that all required environment variables are present and non-empty
- * before the application starts accepting requests. Fail-fast with a
- * clear error message instead of cryptic runtime errors deep in the call
- * stack.
+ * Every invalidation that must be propagated across instances is
+ * represented as a CacheEvent. Events are serialized to JSON and
+ * published on the namespace-specific Redis Pub/Sub channel.
  *
- * Call validateConfig() early in the startup sequence (before connecting to
- * external services) to ensure the environment is correctly configured.
+ * Event types:
+ *   - INVALIDATE_KEY     : delete a single key
+ *   - INVALIDATE_PATTERN : delete all keys matching a glob
+ *   - INVALIDATE_NAMESPACE : delete all keys in a namespace
+ *   - BUMP_VERSION     : increment version counter, invalidating all versioned keys
+ *   - REFRESH          : re-populate a key (informational, triggers a background reload)
  */
 
+import crypto from 'crypto';
 import logger from '../middleware/logger.js';
 
-/**
- * @typedef {Object} ConfigVar
- * @property {string} name - The environment variable name.
- * @property {string} description - Human-readable description for error messages.
- */
-
-/** @type {ConfigVar[]} */
-const REQUIRED_VARS = [
-  { name: 'SUPABASE_URL', description: 'Supabase project URL' },
-  { name: 'SUPABASE_ANON_KEY', description: 'Supabase anonymous (public) key' },
-  { name: 'SUPABASE_SERVICE_ROLE_KEY', description: 'Supabase service role key (server-only)' },
-];
-
-/** @type {ConfigVar[]} */
-const RECOMMENDED_VARS = [
-  { name: 'REDIS_URL', description: 'Redis connection URL (required for caching and rate limiting)' },
-  { name: 'JWT_SECRET', description: 'JWT signing secret (required for token verification)' },
-  { name: 'SENTRY_DSN', description: 'Sentry DSN for error reporting' },
-];
+export const CacheEventType = Object.freeze({
+  INVALIDATE_KEY: 'INVALIDATE_KEY',
+  INVALIDATE_PATTERN: 'INVALIDATE_PATTERN',
+  INVALIDATE_NAMESPACE: 'INVALIDATE_NAMESPACE',
+  BUMP_VERSION: 'BUMP_VERSION',
+  REFRESH: 'REFRESH',
+});
 
 /**
- * Validate a single environment variable.
- * @param {string} name
- * @returns {boolean} True if the variable is set and non-empty.
- */
-function isSet(name) {
-  return Boolean(process.env[name] && process.env[name].trim().length > 0);
-}
-
-/**
- * Validate the configuration and exit with a clear error if any required
- * variables are missing.
+ * Create a cache invalidation event.
  *
- * @param {Object} [options]
- * @param {boolean} [options.exitOnFailure=true] - Call process.exit(1) on validation failure.
- * @returns {{ valid: boolean, missing: string[], warnings: string[] }}
+ * @param {string} type — one of CacheEventType values
+ * @param {object} opts
+ * @param {string} opts.namespace — target namespace
+ * @param {string} [opts.key] — specific Redis key (for INVALIDATE_KEY)
+ * @param {string} [opts.pattern] — glob pattern (for INVALIDATE_PATTERN)
+ * @param {string} [opts.entityId] — entity identifier
+ * @param {string} [opts.subKey] — sub-entity key
+ * @param {string} [opts.originInstanceId] — ID of the instance that originated the event
+ * @param {number} [opts.timestamp] — event creation time (auto-set if omitted)
+ * @returns {object} serialized event ready for JSON.stringify
  */
-export function validateConfig({ exitOnFailure = true } = {}) {
-  const missing = [];
-
-  for (const { name, description } of REQUIRED_VARS) {
-    if (!isSet(name)) {
-      logger.error(`[config] Required environment variable ${name} (${description}) is not set.`);
-      missing.push(name);
-    }
-  }
-
-  const warnings = [];
-  for (const { name, description } of RECOMMENDED_VARS) {
-    if (!isSet(name)) {
-      logger.warn(`[config] Recommended environment variable ${name} (${description}) is not set. Some features may not work correctly.`);
-      warnings.push(name);
-    }
-  }
-
-  const valid = missing.length === 0;
-
-  if (!valid) {
-    logger.error(`[config] Configuration validation failed. Missing required variables: ${missing.join(', ')}. Set these variables and restart the server.`);
-    if (exitOnFailure) {
-      process.exit(1);
-    }
-  } else {
-    logger.info('[config] Configuration validation passed.');
-  }
-
-  return { valid, missing, warnings };
+export function createCacheEvent(type, opts = {}) {
+  return {
+    id: crypto.randomUUID(),
+    type,
+    namespace: opts.namespace,
+    key: opts.key || null,
+    pattern: opts.pattern || null,
+    entityId: opts.entityId || null,
+    subKey: opts.subKey || null,
+    originInstanceId: opts.originInstanceId || null,
+    timestamp: opts.timestamp || Date.now(),
+  };
 }
 
-export default validateConfig;
+/**
+ * Serialize a cache event to a JSON string for Pub/Sub publishing.
+ *
+ * @param {object} event — as returned by createCacheEvent
+ * @returns {string}
+ */
+export function serializeCacheEvent(event) {
+  return JSON.stringify(event);
+}
+
+/**
+ * Deserialize a JSON string back into a cache event object.
+ * Returns null if parsing fails or payload is structurally invalid.
+ *
+ * @param {string} json
+ * @returns {object|null}
+ */
+export function deserializeCacheEvent(json) {
+  try {
+    const event = JSON.parse(json);
+
+    if (!event || typeof event !== 'object') {
+      logger.warn('[CacheEvent] Deserialization failed: payload is not a valid object.');
+      return null;
+    }
+
+    if (!event.type || !event.namespace) {
+      logger.warn(
+        `[CacheEvent] Deserialization failed: missing required "type" or "namespace" property.`
+      );
+      return null;
+    }
+
+    return event;
+  } catch (err) {
+    logger.warn('[CacheEvent] Deserialization failed:', err?.message);
+    return null;
+  }
+}
+
+export default { CacheEventType, createCacheEvent, serializeCacheEvent, deserializeCacheEvent };
