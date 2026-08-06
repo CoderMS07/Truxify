@@ -11,7 +11,8 @@ async function _publishProfileInvalidation(eventOpts) {
     try {
       const { publishInvalidation } = await import('../cache/CachePublisher.js');
       _publishFn = publishInvalidation;
-    } catch {
+    } catch (err) {
+      logger.warn({ err }, 'Failed to initialize pub/sub publisher — profile invalidation events will not be broadcast.');
       _publishFn = null;
     }
   }
@@ -76,7 +77,8 @@ function logCacheError(operation, error) {
 function getRedisClient() {
   try {
     return db.redisClient ?? null;
-  } catch {
+  } catch (err) {
+    logger.warn({ err }, 'Failed to get Redis client in getRedisClient — falling back to null.');
     return null;
   }
 }
