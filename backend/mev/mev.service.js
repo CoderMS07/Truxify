@@ -36,9 +36,10 @@ class MEVService {
 
     async createCommitment(secret, userId) {
         try {
-            // Hash secret with user address
+            // Hash secret (the exact bytes revealed at release time, so the
+            // on-chain keccak(preimage) == secretHash check can pass)
             const secretHash = ethers.keccak256(
-                ethers.toUtf8Bytes(secret + userId)
+                ethers.toUtf8Bytes(secret)
             );
             
             const tx = await this.escrow.createCommitment(secretHash, {
@@ -72,9 +73,9 @@ class MEVService {
             // Create commitment first
             const commitment = await this.createCommitment(secret, userId);
             
-            // Hash secret for escrow
+            // Hash secret for escrow (same bytes as release reveals: plain secret)
             const secretHash = ethers.keccak256(
-                ethers.toUtf8Bytes(secret + userId)
+                ethers.toUtf8Bytes(secret)
             );
             
             // Create escrow with MEV protection. The contract's createEscrow
