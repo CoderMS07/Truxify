@@ -175,7 +175,7 @@ import {
   recordDepositTx,
   submitEscrowRefund,
   confirmEscrowRefund,
-  escrowRefund,
+  submitEscrowRefund,
 } from '../core/container.js';
 import { getEscrowBookingId } from '../services/escrow.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
@@ -1517,7 +1517,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
         // { txHash: null, bookingId, error } when the submit fails.
         let refundResult;
         try {
-          refundResult = await escrowRefund(order.order_display_id);
+          refundResult = await submitEscrowRefund(order.order_display_id);
         } catch (refundErr) {
           logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
           refundResult = { error: refundErr.message };
