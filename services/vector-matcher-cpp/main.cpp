@@ -35,13 +35,16 @@ struct DriverEmbedding {
     std::vector<float> vector;
 };
 
-// Compute Cosine Similarity between two 64-D vectors
+// Compute Cosine Similarity between two vectors. The loop is bounded by the
+// actual vector lengths so shorter embeddings cannot cause an out-of-bounds
+// read.
 float cosine_similarity(const std::vector<float>& v1, const std::vector<float>& v2) {
     float dot = 0.0f;
     float norm_a = 0.0f;
     float norm_b = 0.0f;
 
-    for (int i = 0; i < EMBEDDING_DIM; ++i) {
+    const size_t dim = std::min<size_t>(EMBEDDING_DIM, std::min(v1.size(), v2.size()));
+    for (size_t i = 0; i < dim; ++i) {
         dot += v1[i] * v2[i];
         norm_a += v1[i] * v1[i];
         norm_b += v2[i] * v2[i];
