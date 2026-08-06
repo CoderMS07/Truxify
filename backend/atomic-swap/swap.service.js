@@ -34,7 +34,7 @@ class AtomicSwapService {
     }
 
     generateSecret() {
-        return crypto.randomBytes(32).toString('hex');
+        return '0x' + crypto.randomBytes(32).toString('hex');
     }
 
     // ============ Swap Operations ============
