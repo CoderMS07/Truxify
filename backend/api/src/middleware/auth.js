@@ -248,12 +248,10 @@ export async function authenticate(req, res, next) {
         error: authError,
       } = await supabase.auth.getUser(token);
       if (authError || !user) {
-        return res
-          .status(401)
-          .json({
-            error: "Invalid or expired Supabase authentication token.",
-            details: authError?.message,
-          });
+        return res.status(401).json({
+          error: "Invalid or expired Supabase authentication token.",
+          details: authError?.message,
+        });
       }
       supabaseUserId = user.id;
       // Bind the profile lookup to the caller's JWT: profiles RLS grants reads
@@ -288,23 +286,18 @@ export async function authenticate(req, res, next) {
         .maybeSingle();
 
       if (error) {
-        return res
-          .status(500)
-          .json({
-            error: "Database query failed verification",
-            details: error.message,
-          });
+        return res.status(500).json({
+          error: "Database query failed verification",
+          details: error.message,
+        });
       }
       userProfile = profile;
     } else {
       // Firebase Verification
       if (!firebaseAdmin) {
-        return res
-          .status(500)
-          .json({
-            error:
-              "Firebase Auth verification is not configured on this server.",
-          });
+        return res.status(500).json({
+          error: "Firebase Auth verification is not configured on this server.",
+        });
       }
       const decodedToken = await firebaseAdmin
         .auth()
@@ -353,12 +346,10 @@ export async function authenticate(req, res, next) {
         .maybeSingle();
 
       if (error) {
-        return res
-          .status(500)
-          .json({
-            error: "Database query failed verification",
-            details: error.message,
-          });
+        return res.status(500).json({
+          error: "Database query failed verification",
+          details: error.message,
+        });
       }
       userProfile = profile;
     }
@@ -478,20 +469,25 @@ export function requireRole(allowedRoles) {
         .json({ error: "Not authenticated: req.user is missing." });
     }
 
-    if (!allowedRoles.includes(req.user.role)) {
+    const userRole =
+      typeof req.user.role === "string" ? req.user.role.trim() : "";
+    if (!allowedRoles.includes(userRole)) {
       const requestId = req.requestId || req.id;
-      logger.warn({
-        event: 'AUTH_DENIAL',
-        action: `requireRole(${allowedRoles.join(',')})`,
-        userId: req.user.id,
-        userRole: req.user.role,
-        allowedRoles,
-        requestId,
-      }, `[Auth] Role denied: user=${req.user.id} role=${req.user.role} not in [${allowedRoles}]`);
+      logger.warn(
+        {
+          event: "AUTH_DENIAL",
+          action: `requireRole(${allowedRoles.join(",")})`,
+          userId: req.user.id,
+          userRole: req.user.role,
+          allowedRoles,
+          requestId,
+        },
+        `[Auth] Role denied: user=${req.user.id} role=${req.user.role} not in [${allowedRoles}]`,
+      );
 
       return res.status(403).json({
-        error: 'Forbidden: Insufficient privileges.',
-        details: `Your account role '${req.user.role}' is not authorized to access this resource.`
+        error: "Forbidden: Insufficient privileges.",
+        details: `Your account role '${req.user.role}' is not authorized to access this resource.`,
       });
     }
 

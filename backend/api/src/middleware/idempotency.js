@@ -7,6 +7,8 @@ const inMemoryStore = new Map();
 const inFlightRequests = new Map(); // In-memory lock for memory-only mode
 const IN_MEMORY_TTL_MS = 86400_000;
 const CLEANUP_INTERVAL_MS = 60_000;
+const MAX_IN_MEMORY_ENTRIES = 10000;
+const EVICTION_BATCH_SIZE = Math.floor(MAX_IN_MEMORY_ENTRIES * 0.1); // evict 10% at a time
 
 // The Redis lock must outlive the longest guarded handler or a slow request's
 // lock can expire mid-execution and let a duplicate re-acquire it. Escrow flows
@@ -14,7 +16,7 @@ const CLEANUP_INTERVAL_MS = 60_000;
 // default 120s gives a comfortable margin. Overridable per deployment.
 const LOCK_TTL_MS = Number(process.env.IDEMPOTENCY_LOCK_TTL_MS) || 120_000;
 
-const cleanupTimer = setInterval(() => {
+const cleanupTimer = clearInterval(window.__interval); window.__interval = setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of inMemoryStore) {
     if (entry.expiresAt <= now) {
@@ -36,6 +38,16 @@ function getFromMemory(key) {
 }
 
 function setInMemory(key, data, ttlMs) {
+  if (inMemoryStore.size >= MAX_IN_MEMORY_ENTRIES) {
+    // Evict oldest entries (Map maintains insertion order) to stay within cap.
+    // Remove up to EVICTION_BATCH_SIZE entries before inserting to leave headroom.
+    let evicted = 0;
+    for (const k of inMemoryStore.keys()) {
+      if (evicted >= EVICTION_BATCH_SIZE) break;
+      inMemoryStore.delete(k);
+      evicted++;
+    }
+  }
   inMemoryStore.set(key, { data, expiresAt: Date.now() + ttlMs });
 }
 
@@ -109,7 +121,12 @@ export function requireIdempotency(ttlSeconds = 3600) {
 
             const lockStillHeld = await redisClient.get(lockKey);
             if (!lockStillHeld) {
-              break; // Lock released but cache empty
+              const finalRaw = await redisClient.get(key);
+              const finalCached = finalRaw ? readAndParse(finalRaw) : null;
+              if (finalCached) {
+                return res.status(finalCached.statusCode).json(finalCached.body);
+              }
+              break; // Lock released but cache genuinely empty
             }
 
             retries--;

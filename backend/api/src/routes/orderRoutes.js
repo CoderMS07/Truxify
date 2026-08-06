@@ -146,7 +146,7 @@ import rateLimit from 'express-rate-limit';
 
 import { bidLimiter, userLimiter, userKeyGenerator, podUploadLimiter, createStore } from '../middleware/rateLimiter.js';
 import { mongoDb, supabase, redisClient, createUserClient } from '../config/db.js';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, requireRole } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { validateDocumentBuffer } from '../lib/documentValidation.js';
 import { scanDocument } from '../lib/malwareScanner.js';
@@ -175,7 +175,7 @@ import {
   recordDepositTx,
   submitEscrowRefund,
   confirmEscrowRefund,
-  escrowRefund,
+  submitEscrowRefund,
 } from '../core/container.js';
 import { getEscrowBookingId } from '../services/escrow.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
@@ -521,12 +521,24 @@ router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) 
  */
 router.get('/history', authenticate, userLimiter, requirePolicy('order:view-history'), async (req, res) => {
   try {
-    const cursor = req.query.cursor;
+    const cursorParam = req.query.cursor ?? '1';
+    const cursor = typeof cursorParam === 'string' ? Number(cursorParam) : NaN;
     const limitParam = req.query.limit ?? '10';
     const limit = typeof limitParam === 'string' ? Number(limitParam) : NaN;
 
+    if (!Number.isInteger(cursor) || cursor < 1) {
+      return res.status(400).json({ error: 'cursor must be an integer >= 1' });
+    }
+
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       return res.status(400).json({ error: 'limit must be between 1 and 100' });
+    }
+
+    if (cursor !== undefined) {
+      const cursorNum = Number(cursor);
+      if (!Number.isInteger(cursorNum) || cursorNum < 1) {
+        return res.status(400).json({ error: 'cursor must be a positive integer' });
+      }
     }
 
     const result = await orderLifecycleService.getOrderHistory(req.user.id, cursor, limit);
@@ -1081,6 +1093,15 @@ router.post(
         return res.status(400).json({ error: 'driver_lat and driver_lng must be valid numbers.' });
       }
 
+      let geofenceRadiusM = 500;
+      if (geofence_radius_m !== undefined && geofence_radius_m !== null && geofence_radius_m !== '') {
+        const parsedRadius = parseFloat(geofence_radius_m);
+        if (!Number.isFinite(parsedRadius) || parsedRadius <= 0) {
+          return res.status(400).json({ error: 'geofence_radius_m must be a finite positive number.' });
+        }
+        geofenceRadiusM = parsedRadius;
+      }
+
       // Verify the order exists and the requesting driver is assigned to it
       const order = await orderValidationService.findOrderByIdOrDisplayId(
         req.params.id,
@@ -1102,7 +1123,7 @@ router.post(
         driverId: req.user.id,
         driverLat: lat,
         driverLng: lng,
-        geofenceRadiusM: geofence_radius_m ? parseFloat(geofence_radius_m) : 500,
+        geofenceRadiusM,
       });
 
       return res.json(result);
@@ -1308,6 +1329,12 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       return res.status(400).json({ error: 'Unable to compute new pricing for the requested drop.', details: pricingErr.message });
     }
 
+    // Rebalance the escrow booking alongside the re-priced total so the
+    // displayed price, the on-chain payout, and any refund all stay in sync.
+    // escrow_amount_wei is the authoritative payout figure (verified against
+    // at deposit time and read on release), so it must track total_amount.
+    const newAmountWei = BigInt(Math.round(pricing.totalAmount * 1e16));
+
     const updates = {
       drop_address,
       drop_lat: Number(drop_lat),
@@ -1316,6 +1343,7 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       toll_estimate: pricing.tollEstimate,
       platform_fee: pricing.platformFee,
       total_amount: pricing.totalAmount,
+      escrow_amount_wei: newAmountWei.toString(),
       updated_at: new Date().toISOString(),
     };
 
@@ -1489,7 +1517,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
         // { txHash: null, bookingId, error } when the submit fails.
         let refundResult;
         try {
-          refundResult = await escrowRefund(order.order_display_id);
+          refundResult = await submitEscrowRefund(order.order_display_id);
         } catch (refundErr) {
           logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
           refundResult = { error: refundErr.message };

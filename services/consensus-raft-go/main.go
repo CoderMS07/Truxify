@@ -605,7 +605,13 @@ func (rn *RaftNode) HandleAppend(w http.ResponseWriter, r *http.Request) {
 	if req.Term == rn.CurrentTerm {
 		rn.Role = Follower
 		rn.LeaderID = req.LeaderID
-		rn.VotedFor = ""
+		// Never clear VotedFor in the current term: a node must vote at most
+		// once per term. Record the acknowledged leader as this term's vote
+		// when none has been cast yet, so a later candidate in the same term
+		// cannot obtain a second vote.
+		if rn.VotedFor == "" || rn.VotedFor == req.LeaderID {
+			rn.VotedFor = req.LeaderID
+		}
 		rn.lastLeaderSeen = time.Now()
 
 		if rn.appendLogFromLeaderLocked(req) {
