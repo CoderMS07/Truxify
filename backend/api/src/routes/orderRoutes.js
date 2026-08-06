@@ -1308,6 +1308,12 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       return res.status(400).json({ error: 'Unable to compute new pricing for the requested drop.', details: pricingErr.message });
     }
 
+    // Rebalance the escrow booking alongside the re-priced total so the
+    // displayed price, the on-chain payout, and any refund all stay in sync.
+    // escrow_amount_wei is the authoritative payout figure (verified against
+    // at deposit time and read on release), so it must track total_amount.
+    const newAmountWei = BigInt(Math.round(pricing.totalAmount * 1e16));
+
     const updates = {
       drop_address,
       drop_lat: Number(drop_lat),
@@ -1316,6 +1322,7 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       toll_estimate: pricing.tollEstimate,
       platform_fee: pricing.platformFee,
       total_amount: pricing.totalAmount,
+      escrow_amount_wei: newAmountWei.toString(),
       updated_at: new Date().toISOString(),
     };
 
