@@ -137,7 +137,11 @@ pub fn hash_data(data: &str) -> String {
 
 #[wasm_bindgen]
 pub fn compress_data(data: &[u8]) -> Vec<u8> {
-    // Simple compression at edge
+    // Simple compression at edge. Empty input must not underflow data.len()-1.
+    if data.is_empty() {
+        return Vec::new();
+    }
+
     let mut compressed = Vec::new();
     let mut count = 1;
     
