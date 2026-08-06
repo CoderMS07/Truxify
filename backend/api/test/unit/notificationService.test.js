@@ -377,4 +377,68 @@ describe('notificationService', () => {
       expect(firebaseSendMock).toHaveBeenCalledTimes(3);
     });
   });
+
+  describe('sendDeliveryOtpNotification — error paths', () => {
+    it('returns success=false when DB insert fails but FCM succeeds', async () => {
+      // Reset mocks
+      supabaseInsertMock.mockReset();
+      firebaseSendMock.mockReset();
+
+      // DB insert fails
+      supabaseInsertMock.mockResolvedValueOnce({ error: { message: 'DB connection error' } });
+      // FCM succeeds
+      firebaseSendMock.mockResolvedValue({ messageId: 'msg_from_fcm' });
+
+      const result = await sendDeliveryOtpNotification(
+        'customer_uuid_001',
+        'ORD-001',
+        '123456'
+      );
+
+      expect(result.success).toBe(true); // FCM succeeded so overall success is true
+      expect(result.fcm.success).toBe(true);
+      expect(supabaseInsertMock).toHaveBeenCalledOnce();
+    });
+
+    it('returns success=false when both DB and FCM fail', async () => {
+      supabaseInsertMock.mockReset();
+      firebaseSendMock.mockReset();
+
+      // DB insert fails
+      supabaseInsertMock.mockRejectedValueOnce(new Error('DB connection error'));
+      // FCM also fails
+      const fcmErr = new Error('FCM unreachable');
+      fcmErr.code = 'messaging/unavailable';
+      firebaseSendMock.mockRejectedValue(fcmErr);
+
+      const result = await sendDeliveryOtpNotification(
+        'customer_uuid_002',
+        'ORD-002',
+        '654321'
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.fcm.success).toBe(false);
+    });
+
+    it('returns success=false when only FCM fails', async () => {
+      supabaseInsertMock.mockReset();
+      firebaseSendMock.mockReset();
+
+      // DB succeeds
+      supabaseInsertMock.mockResolvedValueOnce({ error: null });
+      // FCM fails
+      const fcmErr = new Error('FCM error');
+      firebaseSendMock.mockRejectedValue(fcmErr);
+
+      const result = await sendDeliveryOtpNotification(
+        'customer_uuid_003',
+        'ORD-003',
+        '111222'
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.fcm.success).toBe(false);
+    });
+  });
 });
