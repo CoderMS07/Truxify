@@ -211,7 +211,11 @@ func authorizeGeofence(claims jwtClaims, driverID string) bool {
 // the driver role. On success it returns the authenticated subject (driver id).
 func authenticateDriver(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if bypassAuth {
-		return r.Header.Get("X-Driver-ID"), true
+		sub := r.Header.Get("X-Driver-ID")
+		if sub == "" {
+			sub = "dev-driver"
+		}
+		return sub, true
 	}
 
 	if len(jwtSecret) == 0 {
@@ -233,6 +237,11 @@ func authenticateDriver(w http.ResponseWriter, r *http.Request) (string, bool) {
 
 	if claims.Role != "driver" {
 		http.Error(w, "forbidden: driver role required", http.StatusForbidden)
+		return "", false
+	}
+
+	if claims.Sub == "" {
+		http.Error(w, "invalid token: subject required", http.StatusUnauthorized)
 		return "", false
 	}
 
@@ -436,7 +445,7 @@ func handlePing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if callerID != "" && callerID != ping.DriverID {
+	if callerID != ping.DriverID {
 		http.Error(w, "driver_id does not match authenticated caller", http.StatusForbidden)
 		return
 	}
