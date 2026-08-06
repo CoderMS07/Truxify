@@ -90,7 +90,7 @@ router.post('/telemetry/:id', telemetryHistoryLimiter, authenticate, validatePar
         user_id: load.customer_id,
         title: 'Temperature Alert',
         body: `Your cargo (Load ${loadId}) is out of the safe temperature range. Current temp: ${temperature}°C.`,
-        notif_type: 'cold_chain_alert',
+        notif_type: 'system',
         metadata: {
           load_id: loadId,
           temperature,
