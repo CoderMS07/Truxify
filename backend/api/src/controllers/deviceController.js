@@ -221,9 +221,11 @@ export async function unregisterAllDeviceTokens(userId) {
  */
 export async function getDevicePlatforms(req, res, next) {
   try {
+    const userId = req.user?.id;
     const { data, error } = await supabase
       .from('user_devices')
-      .select('platform');
+      .select('platform')
+      .eq('user_id', userId);
 
     if (error) {
       logger.error('[DeviceController] Failed to query device platforms:', error.message);
