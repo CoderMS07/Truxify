@@ -128,6 +128,7 @@ export const dlqService = {
             await dlqDb()
               .from('webhook_failures')
               .update({ 
+                status: 'pending',
                 retry_count: newRetryCount,
                 next_retry_at: nextRetryAt,
                 error_message: String(procErr.message || procErr).slice(0, 1000),
