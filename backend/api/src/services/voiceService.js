@@ -37,6 +37,10 @@ function cacheAudio(id, buffer) {
 }
 
 async function getBookingContext(bookingId, userId) {
+  if (!userId) {
+    return null;
+  }
+
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const isUuid = uuidRegex.test(bookingId);
 
@@ -49,11 +53,14 @@ async function getBookingContext(bookingId, userId) {
       orderQuery = orderQuery.eq('order_display_id', bookingId);
     }
     
-    if (userId) {
-      orderQuery = orderQuery.or(`customer_id.eq.${userId},driver_id.eq.${userId}`);
+    orderQuery = orderQuery.or(`customer_id.eq.${userId},driver_id.eq.${userId}`);
+
+    const { data: order, error } = await orderQuery.maybeSingle();
+    if (error) {
+      logger.warn('Orders table check failed in voiceService:', error.message);
+      return null;
     }
 
-    const { data: order } = await orderQuery.maybeSingle();
     return order;
   } catch (err) {
     logger.warn('Orders table check failed in voiceService:', err.message);
