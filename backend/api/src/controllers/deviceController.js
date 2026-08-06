@@ -164,20 +164,25 @@ export async function unregisterDeviceToken(req, res, next) {
       return next(new AppError('Failed to unregister device', 500));
     }
 
-    const { error: profileClearError } = await supabase
-      .from('profiles')
-      .update({
-        fcm_token: null,
-        fcm_token_updated_at: new Date().toISOString(),
-      })
-      .eq('id', userId)
-      .eq('fcm_token', fcmToken);
+    const { data: remainingDevices } = await supabase
+      .from('user_devices')
+      .select('fcm_token')
+      .eq('user_id', userId)
+      .not('fcm_token', 'is', null)
+      .limit(1);
 
-    if (profileClearError) {
-      logger.error(
-        '[DeviceController] Device token removed but failed to clear profiles.fcm_token:',
-        profileClearError.message
-      );
+    if ((remainingDevices || []).length === 0) {
+      const { error: profileClearError } = await supabase
+        .from('profiles')
+        .update({ fcm_token: null, fcm_token_updated_at: new Date().toISOString() })
+        .eq('id', userId);
+
+      if (profileClearError) {
+        logger.error(
+          '[DeviceController] No remaining devices but failed to clear profiles.fcm_token:',
+          profileClearError.message
+        );
+      }
     }
 
     return res.json({
