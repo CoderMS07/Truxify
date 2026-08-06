@@ -176,7 +176,7 @@ import {
   submitEscrowRefund,
   confirmEscrowRefund,
 } from '../core/container.js';
-import { getEscrowBookingId } from '../services/escrow.js';
+import { getEscrowBookingId, paisaToMaticWei } from '../services/escrow.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
 import { computeOrderPricing } from '../lib/pricing.js';
 
@@ -430,7 +430,7 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
     // displayed price, the on-chain payout, and any refund all stay in sync.
     // escrow_amount_wei is the authoritative payout figure (verified against
     // at deposit time and read on release), so it must track total_amount.
-    const newAmountWei = BigInt(Math.round(pricing.totalAmount * 1e16));
+    const newAmountWei = BigInt(paisaToMaticWei(pricing.totalAmount));
 
     const updates = {
       drop_address,
