@@ -83,9 +83,11 @@ function getRedisClient() {
 
 /**
  * Validates the shape of a cached profile.
- * 
+ *
  * @param {string} firebaseUid - The expected Firebase UID.
  * @param {object|null} cachedProfile - The cached profile to validate.
+ *   Must have: isActive (boolean), uid (string matching firebaseUid), id (string),
+ *   role (string). Optional: fullName (string|null), phone (string|null).
  * @returns {boolean} True if the cached profile shape is valid, false otherwise.
  */
 export function isValidCachedProfile(firebaseUid, cachedProfile) {
@@ -98,17 +100,35 @@ export function isValidCachedProfile(firebaseUid, cachedProfile) {
   if (typeof cachedProfile.isActive !== 'boolean') {
     return false;
   }
+  // Tombstone (inactive) is valid
   if (cachedProfile.isActive === false) {
-    return true; // Valid tombstone
+    return true;
   }
-  return (
-    cachedProfile.isActive === true &&
-    cachedProfile.uid === firebaseUid &&
-    typeof cachedProfile.id === 'string' &&
-    typeof cachedProfile.role === 'string' &&
-    (cachedProfile.fullName === undefined || cachedProfile.fullName === null || typeof cachedProfile.fullName === 'string') &&
-    (cachedProfile.phone === undefined || cachedProfile.phone === null || typeof cachedProfile.phone === 'string')
-  );
+  // Active profile must have uid matching the expected Firebase UID
+  if (cachedProfile.uid !== firebaseUid) {
+    return false;
+  }
+  if (typeof cachedProfile.id !== 'string' || !cachedProfile.id) {
+    return false;
+  }
+  if (typeof cachedProfile.role !== 'string' || !cachedProfile.role) {
+    return false;
+  }
+  if (
+    cachedProfile.fullName !== undefined &&
+    cachedProfile.fullName !== null &&
+    typeof cachedProfile.fullName !== 'string'
+  ) {
+    return false;
+  }
+  if (
+    cachedProfile.phone !== undefined &&
+    cachedProfile.phone !== null &&
+    typeof cachedProfile.phone !== 'string'
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /**
