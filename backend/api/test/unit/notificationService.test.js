@@ -9,6 +9,7 @@ const firebaseSendMock = vi.fn();
 // Service-role (delivery_otps) mocks — delivery_otps is service-role-write, so
 // all OTP lifecycle calls must flow through supabaseAdmin, never the anon key.
 const adminDeliveryOtpInsertMock = vi.fn().mockResolvedValue({ data: { id: 'otp-uuid-1' }, error: null });
+const adminNotificationInsertMock = vi.fn().mockResolvedValue({ error: null });
 const adminDeliveryOtpSelectMock = vi.fn().mockResolvedValue({ data: null, error: null });
 const adminDeliveryOtpUpdateMock = vi.fn().mockResolvedValue({ data: null, error: null });
 
@@ -49,6 +50,11 @@ vi.mock('../../src/config/db.js', () => ({
   },
   supabaseAdmin: {
     from: table => {
+      if (table === 'notifications') {
+        return {
+          insert: data => adminNotificationInsertMock(table, data)
+        };
+      }
       if (table === 'delivery_otps') {
         return {
           insert: data => ({
@@ -138,8 +144,8 @@ describe('notificationService', () => {
       expect(result.fcm.success).toBe(true);
       expect(result.fcm.messageId).toBe('msg_id_abc');
 
-      expect(supabaseInsertMock).toHaveBeenCalledOnce();
-      const insertArgs = supabaseInsertMock.mock.calls[0][1];
+      expect(adminNotificationInsertMock).toHaveBeenCalledOnce();
+      const insertArgs = adminNotificationInsertMock.mock.calls[0][1];
       expect(insertArgs.user_id).toBe(customerId);
       // OTP is NOT included in the notification body (security fix)
       expect(insertArgs.body).not.toContain(otp);
@@ -160,7 +166,7 @@ describe('notificationService', () => {
         error: null
       });
 
-      supabaseInsertMock.mockResolvedValue({ error: { message: 'DB error' } });
+      adminNotificationInsertMock.mockResolvedValue({ error: { message: 'DB error' } });
       const fcmError = new Error('Firebase error');
       fcmError.code = 'messaging/internal-error';
       firebaseSendMock.mockRejectedValue(fcmError);
@@ -358,7 +364,7 @@ describe('notificationService', () => {
 
       expect(result.success).toBe(true);
       expect(result.fcm.messageId).toBe('msg_id_xyz');
-      expect(supabaseInsertMock).toHaveBeenCalledOnce();
+      expect(adminNotificationInsertMock).toHaveBeenCalledOnce();
     });
 
     it('classifies transient errors and retries', async () => {

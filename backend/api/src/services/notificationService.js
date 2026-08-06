@@ -242,7 +242,7 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
 
   let dbSuccess = false;
   try {
-    const { error } = await supabase.from('notifications').insert({
+    const { error } = await supabaseAdmin.from('notifications').insert({
       user_id: customerId,
       title,
       body,
@@ -286,9 +286,9 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
 
 export async function sendPushNotification(userId, title, body, notifType, metadata = {}) {
   return measureExecution('NotificationService.sendPushNotification', async () => {
-    if (supabase) {
+    if (supabaseAdmin) {
       try {
-        const { error } = await supabase.from('notifications').insert({
+        const { error } = await supabaseAdmin.from('notifications').insert({
           user_id: userId,
           title,
           body,
