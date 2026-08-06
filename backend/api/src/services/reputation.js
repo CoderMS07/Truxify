@@ -107,8 +107,11 @@ async function retryWithBackoff(fn, maxRetries, baseDelayMs) {
       return await fn();
     } catch (err) {
       if (attempt === maxRetries) throw err;
-      logger.warn(`[reputation] Retry ${attempt}/${maxRetries} after ${baseDelayMs * attempt}ms: ${err.message}`);
-      await new Promise(resolve => setTimeout(resolve, baseDelayMs * attempt));
+      // Add ±25% jitter to spread out concurrent retries and prevent thundering herd.
+      const jitter = 0.75 + Math.random() * 0.5; // [0.75, 1.25]
+      const delayMs = Math.round(baseDelayMs * attempt * jitter);
+      logger.warn(`[reputation] Retry ${attempt}/${maxRetries} after ${delayMs}ms (jitter applied): ${err.message}`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
     }
   }
 }
