@@ -168,9 +168,10 @@ class KyberKEM:
         u_compressed = self._compress(u, 10)
         v_compressed = self._compress(v, 4)
         
-        # Derive shared secret
+        # Derive shared secret from the compressed ciphertext so it matches
+        # decapsulate, which hashes the compressed u/v transmitted in the ciphertext
         shared_secret = hashlib.sha256(
-            np.concatenate([u.flatten(), v.flatten()]).tobytes()
+            np.concatenate([u_compressed.flatten(), v_compressed.flatten()]).tobytes()
         ).digest()
         
         ciphertext = {
