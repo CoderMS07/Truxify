@@ -622,6 +622,14 @@ func (rn *RaftNode) HandleAppend(w http.ResponseWriter, r *http.Request) {
 				}
 				rn.CommitIndex = last
 			}
+			// Apply step (Raft §5.3): advance LastApplied up to CommitIndex on
+			// every node, not just the leader, so followers apply the committed
+			// entries they received. Previously only the leader advanced
+			// LastApplied (via advanceCommitIndexLocked), so a follower's
+			// LastApplied stayed at 0 forever while CommitIndex grew.
+			if rn.CommitIndex > rn.LastApplied {
+				rn.LastApplied = rn.CommitIndex
+			}
 			resp.Success = true
 		}
 	}
