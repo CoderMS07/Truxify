@@ -57,8 +57,8 @@ export async function registerDeviceToken(req, res, next) {
     }
 
     const normalizedMetadata = normalizeMetadata(metadata);
-    if (normalizedMetadata.error) {
-      return res.status(400).json({ error: normalizedMetadata.error });
+    if (normalizedMetadata && normalizedMetadata.error && typeof normalizedMetadata.error === 'string') {
+      return res.status(400).json({ success: false, error: normalizedMetadata.error });
     }
 
     const tokenUpdatedAt = new Date().toISOString();
