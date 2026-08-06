@@ -11,6 +11,7 @@ import {
   submitEscrowCancelWithPenalty,
   confirmEscrowRefund,
   getEscrowBookingId,
+  paisaToMaticWei,
 } from '../escrow.js';
 import { computeOrderPricing } from '../../lib/pricing.js';
 import { getRouteEstimate } from '../osrm.js';
@@ -572,7 +573,7 @@ export class OrderLifecycleService {
           throw new DomainError(400, { error: 'Unable to compute new pricing for the requested drop.', details: pricingErr.message });
         }
 
-        const newAmountWei = BigInt(Math.round(pricing.totalAmount * 1e16));
+        const newAmountWei = paisaToMaticWei(pricing.totalAmount);
 
         const updates = {
           drop_address,
