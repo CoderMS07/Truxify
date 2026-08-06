@@ -187,7 +187,7 @@ router.post(
   validateBody(lockPaymentSchema),
   auditLog({ action: 'payment:lock', resourceType: 'escrow' }),
   async (req, res) => {
-    const { order_id, tx_hash, wallet_address } = req.body;
+    const { order_id, tx_hash } = req.body;
     const lockKey = `payment_lock:${order_id}`;
 
     // lockValue holds the owner UUID returned by acquireLock.
@@ -208,7 +208,7 @@ router.post(
       // 1. Fetch order
       const { data: order, error: orderErr } = await orderRepository.findOrderByIdOrDisplayId(
         order_id,
-        'id, order_display_id, customer_id, driver_id, total_amount, escrow_status, escrow_booking_id, wallet_address'
+        'id, order_display_id, customer_id, driver_id, total_amount, escrow_status, escrow_booking_id, deposit_tx_hash'
       );
 
       if (orderErr || !order) {
@@ -241,7 +241,8 @@ router.post(
 
       // 4. Verify the deposit transaction on-chain (or skip if escrow not enabled)
       if (isEscrowEnabled()) {
-        const senderAddress = wallet_address || order.wallet_address;
+        const { data: customerProfile } = await orderRepository.findCustomerWallet(req.user.id);
+        const senderAddress = customerProfile?.polygon_wallet_address ?? null;
         const result = await recordDepositTx(bookingId, tx_hash, senderAddress);
 
         if (result.error) {
@@ -264,12 +265,10 @@ router.post(
         {
           escrow_status: 'funded',
           escrow_booking_id: bookingId,
-          escrow_tx_hash: tx_hash,
+          deposit_tx_hash: tx_hash,
           escrow_deposited_at: new Date().toISOString(),
-          wallet_address: wallet_address || order.wallet_address,
           updated_at: new Date().toISOString(),
-        },
-        [{ op: 'neq', column: 'escrow_status', value: 'funded' }]
+        }
       );
 
       if (updateErr) {
