@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import logger from '../middleware/logger.js';
-import { supabase } from '../config/db.js';
+import { supabaseAdmin } from '../config/db.js';
 import { sendPushNotification } from '../services/notificationService.js';
 import { submitEscrowRefund, confirmEscrowRefund } from '../services/escrow.js';
 import { WorkerTracer } from '../core/telemetry/WorkerTracer.js';
@@ -22,7 +22,7 @@ export const startStaleOrderWorker = () => {
       const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
       // Find all pending orders created more than 24 hours ago
-      const { data: staleOrders, error: fetchError } = await supabase
+      const { data: staleOrders, error: fetchError } = await supabaseAdmin
         .from('orders')
         .select('id, customer_id, order_display_id')
         .eq('status', 'pending')
@@ -99,7 +99,7 @@ async function cancelStaleOrder(staleOrder) {
   try {
     // Re-fetch the order inside the loop with a status filter to close the
     // window between the batch SELECT and the per-order UPDATE.
-    const { data: current, error: refetchErr } = await supabase
+    const { data: current, error: refetchErr } = await supabaseAdmin
       .from('orders')
       .select('id, customer_id, order_display_id, escrow_status, refund_tx_hash, escrow_refund_attempts')
       .eq('id', staleOrder.id)
@@ -140,7 +140,7 @@ async function cancelStaleOrder(staleOrder) {
 
     // Cancel associated load offers (guarded on nothing — the order is now
     // cancelled, so its offers can never be fulfilled).
-    await supabase
+    await supabaseAdmin
       .from('load_offers')
       .update({ status: 'cancelled' })
       .eq('order_display_id', current.order_display_id);
@@ -173,7 +173,7 @@ async function cancelStaleOrder(staleOrder) {
  * @returns {Promise<boolean>} true when the order was actually cancelled
  */
 async function cancelPlain(current) {
-  const { data: cancelled, error: updateErr } = await supabase
+  const { data: cancelled, error: updateErr } = await supabaseAdmin
     .from('orders')
     .update({
       status: 'cancelled',
@@ -209,7 +209,7 @@ async function cancelWithRefund(current, escrowStatus) {
   // Guarded transition: only an order that is STILL pending AND in the exact
   // escrow state we observed may enter refund reconciliation. This is the
   // serialisation point that prevents two workers from double-refunding.
-  const { data: pendingOrder, error: pendingErr } = await supabase
+  const { data: pendingOrder, error: pendingErr } = await supabaseAdmin
     .from('orders')
     .update({
       status: 'cancelled',
@@ -251,7 +251,7 @@ async function cancelWithRefund(current, escrowStatus) {
     }
 
     const refundedAt = new Date().toISOString();
-    const { error: finalErr } = await supabase
+    const { error: finalErr } = await supabaseAdmin
       .from('orders')
       .update({
         status: 'cancelled',
@@ -273,7 +273,7 @@ async function cancelWithRefund(current, escrowStatus) {
   } catch (refundErr) {
     const failedAt = new Date().toISOString();
     const nextEscrowStatus = refundTxHash ? 'refund_pending' : 'refund_failed';
-    await supabase
+    await supabaseAdmin
       .from('orders')
       .update({
         status: 'cancelled',
