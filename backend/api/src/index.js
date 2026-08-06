@@ -46,6 +46,7 @@ import supportRoutes from './routes/supportRoutes.js'
 import profileRoutes from './routes/profileRoutes.js'
 import shipmentRoutes from './routes/shipmentRoutes.js'
 import loadRoutes from './routes/loadRoutes.js'
+import iotRoutes from './routes/iotRoutes.js'
 import deadheadRoutes from './routes/deadheadRoutes.js'
 import truckRoutes from './routes/truckRoutes.js'
 import authRoutes from './routes/authRoutes.js'
@@ -467,6 +468,7 @@ app.use('/api/driver', driverRoutes)
 app.use('/api/earnings', earningsRouter)
 app.use('/api/v1/shipment', shipmentRoutes)
 app.use('/api/loads', loadRoutes)
+app.use('/api/iot', iotRoutes)
 app.use('/api/support', supportRoutes)
 app.use('/api/profile', profileRoutes)
 app.use('/api/users', userRoutes)
