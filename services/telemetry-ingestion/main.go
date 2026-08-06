@@ -381,11 +381,14 @@ func sweepDrivers() {
 	pingRateLimit.Range(func(key, value interface{}) bool {
 		e := value.(*rateEntry)
 		e.mu.Lock()
-		empty := len(e.stamps) == 0
-		e.mu.Unlock()
-		if empty {
+		// Delete under the entry lock: a concurrent allowPing that re-locks
+		// the entry between the emptiness check and the removal would
+		// otherwise lose its timestamps when the entry is deleted, resetting
+		// that driver's 1-second window and allowing bursts above the cap.
+		if len(e.stamps) == 0 {
 			pingRateLimit.Delete(key)
 		}
+		e.mu.Unlock()
 		return true
 	})
 }
