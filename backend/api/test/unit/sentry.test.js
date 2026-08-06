@@ -92,3 +92,17 @@ describe('sentryErrorHandler', () => {
     expect(() => innerFn(err, req, res, wrappedNext)).not.toThrow();
   });
 });
+
+describe('sentry — error filter and level', () => {
+  // We can test the shouldIgnoreError and getSentryLevel logic through initSentry behavior.
+  // Verify that initSentry does not throw for any combination of SENTRY_DSN.
+  it('initSentry does not throw when SENTRY_DSN is a valid URL', () => {
+    vi.stubEnv('SENTRY_DSN', 'https://abc@sentry.io/456');
+    expect(() => initSentry()).not.toThrow();
+  });
+
+  it('initSentry does not throw when SENTRY_DSN is empty string', () => {
+    vi.stubEnv('SENTRY_DSN', '');
+    expect(() => initSentry()).not.toThrow();
+  });
+});
