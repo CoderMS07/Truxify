@@ -287,6 +287,11 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
       const lat = event.payload?.lat !== undefined ? Number(event.payload.lat) : null;
       const lng = event.payload?.lng !== undefined ? Number(event.payload.lng) : null;
 
+      if (lat === null || lng === null || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+        logger.warn('[SyncEngine] Skipping event with invalid coordinates:', { eventId: event.id, lat, lng });
+        return null;
+      }
+
       const safeMetadata = deepSanitize(event.payload, SENSITIVE_FIELDS);
 
       return {
@@ -303,11 +308,15 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
     });
 
     // 3. Bulk Insert / Upsert into the trip_events table
+    // Filter out null records (events with invalid coordinates)
+    const validRecords = recordsToInsert.filter(Boolean);
+
+    // 4. Bulk Insert / Upsert into the trip_events table
     // Upsert ensures that if a specific event ID already exists, it just updates it
     // rather than failing the whole batch.
     const { error: insertError } = await supabase
       .from('trip_events')
-      .upsert(recordsToInsert, { onConflict: 'event_id' });
+      .upsert(validRecords, { onConflict: 'event_id' });
 
     if (insertError) {
       logger.error('[SyncEngine] Bulk Insert Failed:', insertError.message);
