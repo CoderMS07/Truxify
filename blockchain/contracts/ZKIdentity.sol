@@ -10,7 +10,7 @@ interface IVerifier {
         uint[2] memory a,
         uint[2][2] memory b,
         uint[2] memory c,
-        uint[] memory input
+        uint[2] memory input
     ) external view returns (bool);
 }
 
@@ -220,7 +220,7 @@ contract ZKIdentity is Ownable, ReentrancyGuard, Pausable {
     function _verifyZKProof(bytes memory proofData, bytes32 identityHash, bytes32 credentialHash) internal returns (bool) {
         require(proofData.length > 0, "ZKIdentity: Empty proof");
         require(verifierContract != address(0), "ZKIdentity: Verifier not set");
-        uint[] memory input = new uint[](2);
+        uint[2] memory input;
         input[0] = uint(identityHash);
         input[1] = uint(credentialHash);
         return IVerifier(verifierContract).verifyProof(
