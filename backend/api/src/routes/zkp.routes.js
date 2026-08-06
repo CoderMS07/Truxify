@@ -23,6 +23,7 @@ const zkpVerifyLimiter = redisRateLimiter({
   routeKey: 'zkp_verify',
   limit: Number(process.env.ZKP_RATE_LIMIT_MAX) || 5,
   windowMs: Number(process.env.ZKP_RATE_LIMIT_WINDOW_MS) || 60 * 60 * 1000,
+  failClosed: true,
 });
 
 /**

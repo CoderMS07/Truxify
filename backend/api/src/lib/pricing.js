@@ -17,7 +17,7 @@
 
 import logger from '../middleware/logger.js';
 
-function sanitizePrice(value) {
+export function sanitizePrice(value) {
   const num = Number(value);
   return Number.isFinite(num) && num >= 0 ? Math.round(num) : 0;
 }

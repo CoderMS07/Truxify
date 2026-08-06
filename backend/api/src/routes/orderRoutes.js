@@ -145,7 +145,7 @@ import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 
 import { bidLimiter, userLimiter, userKeyGenerator, podUploadLimiter, createStore } from '../middleware/rateLimiter.js';
-import { mongoDb, supabase, redisClient, createUserClient } from '../config/db.js';
+import { mongoDb, supabase, redisClient, createUserClient, supabaseAdmin } from '../config/db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { validateDocumentBuffer } from '../lib/documentValidation.js';
@@ -175,7 +175,6 @@ import {
   recordDepositTx,
   submitEscrowRefund,
   confirmEscrowRefund,
-  submitEscrowRefund,
 } from '../core/container.js';
 import { getEscrowBookingId } from '../services/escrow.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
@@ -462,7 +461,7 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       p_order_display_id: order.order_display_id,
       p_order_updates: updates,
       p_offer_updates: offerUpdates
-    }, req.token ? createUserClient(req.token) : undefined);
+    }, supabaseAdmin);
 
     if (updateErr) {
       logger.error('Order and load offer atomic update failed for change-drop:', updateErr.message);
