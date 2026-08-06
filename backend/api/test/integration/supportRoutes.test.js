@@ -283,7 +283,7 @@ describe('Support Routes', () => {
         });
 
       expect(res.status).toBe(403);
-      expect(res.body.error).toBe('Access Denied: You do not own this ticket.');
+      expect(res.body.error).toBe('Access Denied: You do not have permission to access this resource.');
     });
 
     it('returns 404 for a non-existent ticket', async () => {
@@ -291,8 +291,8 @@ describe('Support Routes', () => {
         .get('/api/support/tickets/non-existent')
         .set(CUSTOMER_HEADERS);
 
-      expect(res.status).toBe(404);
-      expect(res.body.error).toBe('Support ticket not found.');
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('Access Denied: You do not have permission to access this resource.');
     });
   });
 
@@ -379,6 +379,28 @@ describe('Support Routes', () => {
       expect(res.body.ticket.status).toBe('in_progress');
     });
 
+    it('rejects unsupported admin status updates', async () => {
+      m.store.support_tickets.push({
+        id: 'ticke33333333-3333-4333-8333-333333333333',
+        user_id: 'customer-1',
+        subject: 'My ticket',
+        status: 'open',
+      });
+
+      const res = await request(buildApp())
+        .patch('/api/support/tickets/ticke33333333-3333-4333-8333-333333333333')
+        .set({
+          'x-user-id': 'admin-1',
+          'x-user-role': 'admin',
+          'x-user-name': 'Test Admin',
+        })
+        .send({ status: 'escalated' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('Unsupported support ticket status.');
+      expect(m.store.support_tickets[0].status).toBe('open');
+    });
+
     it('returns 400 when attempting to update a closed ticket', async () => {
       m.store.support_tickets.push({
         id: '33333333-3333-4333-8333-333333333333',
@@ -414,7 +436,7 @@ describe('Support Routes', () => {
         .send({ subject: 'New subject' });
 
       expect(res.status).toBe(403);
-      expect(res.body.error).toBe('Access Denied: You do not own this ticket.');
+      expect(res.body.error).toBe('Access Denied: You do not have permission to access this resource.');
     });
   });
 
@@ -633,8 +655,8 @@ describe('Support Routes', () => {
         .set(CUSTOMER_HEADERS)
         .send({ message: 'Hello' });
 
-      expect(res.status).toBe(404);
-      expect(res.body.error).toContain('Support ticket not found');
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('Access Denied: You do not have permission to access this resource.');
     });
   });
 

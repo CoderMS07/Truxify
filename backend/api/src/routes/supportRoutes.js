@@ -629,7 +629,12 @@ router.patch('/tickets/:id', authenticate, userLimiter, requirePolicy('ticket:up
     }
 
     if (status !== undefined) {
-      const normalizedStatus = status.toLowerCase().trim();
+      const statusResult = parseTicketStatus(status);
+      if (statusResult.error) {
+        return res.status(400).json({ error: statusResult.error });
+      }
+
+      const normalizedStatus = statusResult.value;
       const USER_ALLOWED_STATUSES = ['closed'];
       if (req.user.role !== 'admin' && normalizedStatus !== ticket.status) {
         if (!USER_ALLOWED_STATUSES.includes(normalizedStatus)) {
