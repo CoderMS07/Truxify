@@ -183,7 +183,7 @@ export async function processDocumentExpiryBatch() {
         };
 
         try {
-          await sendPushNotification(doc.user_id, title, body, 'document_expiry', metadata);
+          await sendPushNotification(doc.user_id, title, body, 'document', metadata);
           totalNotificationsSent++;
           logger.info(`[document-expiry] Sent ${window.label} expiry alert for ${docLabel} (doc: ${doc.id}) to user ${doc.user_id}`);
         } catch (err) {
