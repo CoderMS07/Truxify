@@ -579,7 +579,7 @@ app.get('/api/fraud/health', (req, res) => {
 // ============================================================================
 // 🆕 ZK-PROOFS FOR DRIVER KYC ROUTES
 // ============================================================================
-app.use('/api', zkpRoutes)
+app.use('/api/zkp', zkpRoutes)
 
 // 🆕 ZK-Proof Health Check Endpoint
 app.get('/api/zkp/health', (req, res) => {
