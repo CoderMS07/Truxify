@@ -117,8 +117,12 @@ class DIDService {
             );
             const receipt = await tx.wait();
 
+            const blockTimestamp = Math.floor(Date.now() / 1000);
             const credentialId = ethers.keccak256(
-                ethers.toUtf8Bytes(`${Date.now()}:${this.wallet.address}:${subject}:${credentialType}`)
+                ethers.solidityPacked(
+                    ["uint256", "address", "address", "string"],
+                    [blockTimestamp, this.wallet.address, subject, credentialType]
+                )
             );
 
             await this.identityWallet.addCredential(credentialId);
