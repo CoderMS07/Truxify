@@ -175,7 +175,7 @@ import {
   recordDepositTx,
   submitEscrowRefund,
   confirmEscrowRefund,
-  escrowRefund,
+  submitEscrowRefund,
 } from '../core/container.js';
 import { getEscrowBookingId } from '../services/escrow.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
@@ -1443,7 +1443,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
       if (acceptErr) {
         logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
         try {
-          await escrowRefund(order.order_display_id);
+          await submitEscrowRefund(order.order_display_id);
         } catch (refundErr) {
           logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
         }

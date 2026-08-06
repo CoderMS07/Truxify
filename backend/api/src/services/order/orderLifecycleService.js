@@ -5,7 +5,7 @@ import { acquireLock, releaseLock } from '../../lib/redisLock.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 import { supabaseAdmin } from '../../config/db.js';
 import {
-  escrowRefund,
+  submitEscrowRefund,
   recordDepositTx,
   submitEscrowRefund,
   submitEscrowCancelWithPenalty,
@@ -921,7 +921,7 @@ export class OrderLifecycleService {
           if (acceptErr) {
             logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
             try {
-              await escrowRefund(order.order_display_id);
+              await submitEscrowRefund(order.order_display_id);
             } catch (refundErr) {
               logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
             }
