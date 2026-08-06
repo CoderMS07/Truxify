@@ -28,9 +28,9 @@ function calculateRetryBackoff(attempt) {
 }
 
 async function getUserFcmToken(userId) {
-  if (!supabase) return null;
+  if (!supabaseAdmin) return null;
   try {
-    const { data, error } = await supabase.from('profiles').select('fcm_token').eq('id', userId).maybeSingle();
+    const { data, error } = await supabaseAdmin.from('profiles').select('fcm_token').eq('id', userId).maybeSingle();
     if (error || !data?.fcm_token) return null;
     return data.fcm_token;
   } catch (err) {
@@ -40,9 +40,9 @@ async function getUserFcmToken(userId) {
 }
 
 async function clearInvalidToken(userId) {
-  if (!supabase) return;
+  if (!supabaseAdmin) return;
   try {
-    await supabase
+    await supabaseAdmin
       .from('profiles')
       .update({
         fcm_token: null,
