@@ -28,7 +28,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _setupSupabaseChannel() {
-    final orderId = widget.trip.id;
+    final orderId = widget.trip.id.replaceFirst(RegExp(r'^TX-'), '');
     _channel = Supabase.instance.client.channel('chat_$orderId');
 
     _channel!
