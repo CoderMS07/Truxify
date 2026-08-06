@@ -29,6 +29,23 @@ class AtomicSwapService {
 
     // ============ Hash Lock Generation ============
 
+    // Derive the swap id from the swap-opened event emitted in the receipt,
+    // falling back to the transaction hash. The previously used
+    // getSwapCount()/getCrossChainSwapCount() are not part of the ABI.
+    async extractSwapId(receipt) {
+        for (const log of receipt.logs || []) {
+            const parsed = this.swap.interface.parseLog(log);
+            if (parsed && /swap/i.test(parsed.name) && parsed.args.length > 0) {
+                const id = parsed.args[0];
+                if (id && typeof id.toString === 'function') {
+                    return id.toString();
+                }
+                return String(id);
+            }
+        }
+        return receipt.hash;
+    }
+
     generateHashLock(secret) {
         return ethers.keccak256(ethers.toUtf8Bytes(secret));
     }
@@ -56,7 +73,7 @@ class AtomicSwapService {
             );
             const receipt = await tx.wait();
 
-            const swapId = await this.swap.getSwapCount();
+            const swapId = await this.extractSwapId(receipt);
 
             await this.storeSwap({
                 swapId,
@@ -147,7 +164,7 @@ class AtomicSwapService {
             );
             const receipt = await tx.wait();
 
-            const swapId = await this.swap.getCrossChainSwapCount();
+            const swapId = await this.extractSwapId(receipt);
 
             await this.storeCrossChainSwap({
                 swapId,
