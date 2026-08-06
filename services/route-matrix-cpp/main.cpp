@@ -50,6 +50,10 @@ double haversine_km(double lat1, double lon1, double lat2, double lon2) {
                std::cos(lat1 * M_PI / 180.0) * std::cos(lat2 * M_PI / 180.0) *
                std::sin(dLon / 2.0) * std::sin(dLon / 2.0);
 
+    // Floating-point rounding can push `a` marginally above 1.0 for
+    // near-identical or antipodal pairs; clamp so sqrt(1.0 - a) stays finite.
+    a = std::min(1.0, a);
+
     double c = 2.0 * std::atan2(std::sqrt(a), std::sqrt(1.0 - a));
     return R * c;
 }
