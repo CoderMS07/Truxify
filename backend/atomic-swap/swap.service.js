@@ -19,6 +19,8 @@ class AtomicSwapService {
             'function refundCrossChainSwap(uint256 swapId) external',
             'function getSwap(uint256 swapId) external view returns (tuple(uint256,address,address,address,uint256,bytes32,uint256,bool,bool,uint256,bytes32))',
             'function getCrossChainSwap(uint256 swapId) external view returns (tuple(uint256,uint256,uint256,address,address,address,uint256,bytes32,uint256,bool,bool,bytes32,bytes32))',
+            'function getSwapCount() external view returns (uint256)',
+            'function getCrossChainSwapCount() external view returns (uint256)',
             'function isHashLockUsed(bytes32 hashLock) external view returns (bool)'
         ];
 
