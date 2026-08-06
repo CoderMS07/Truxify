@@ -232,7 +232,7 @@ contract MEVProtectedEscrow is Ownable, ReentrancyGuard, Pausable {
     function getMEVProtectionLevel(uint256 escrowId) external view returns (uint256) {
         Escrow storage escrow = escrows[escrowId];
         if (escrow.customer == address(0)) return 0;
-        if (block.number > escrow.createdAt + flashbotsProtection) return 2;
+        if (block.timestamp > escrow.createdAt + flashbotsProtection) return 2;
         return 1;
     }
 
