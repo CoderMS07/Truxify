@@ -465,6 +465,7 @@ app.use('/api/driver', driverRoutes)
 // content-type enforcement, fraud detection and the /api rate limiter.
 // Registering it earlier silently bypasses every one of them.
 app.use('/api/earnings', earningsRouter)
+app.use('/api/routes', routeRoutes)
 app.use('/api/v1/shipment', shipmentRoutes)
 app.use('/api/loads', loadRoutes)
 app.use('/api/support', supportRoutes)
