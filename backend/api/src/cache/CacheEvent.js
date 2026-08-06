@@ -6,7 +6,7 @@
  * published on the namespace-specific Redis Pub/Sub channel.
  *
  * Event types:
- *   - INVALIDATE_KEY   : delete a single key
+ *   - INVALIDATE_KEY     : delete a single key
  *   - INVALIDATE_PATTERN : delete all keys matching a glob
  *   - INVALIDATE_NAMESPACE : delete all keys in a namespace
  *   - BUMP_VERSION     : increment version counter, invalidating all versioned keys
@@ -43,12 +43,12 @@ export function createCacheEvent(type, opts = {}) {
     id: crypto.randomUUID(),
     type,
     namespace: opts.namespace,
-    key: opts.key || null,
-    pattern: opts.pattern || null,
-    entityId: opts.entityId || null,
-    subKey: opts.subKey || null,
-    originInstanceId: opts.originInstanceId || null,
-    timestamp: opts.timestamp || Date.now(),
+    key: opts.key ?? null,
+    pattern: opts.pattern ?? null,
+    entityId: opts.entityId ?? null,
+    subKey: opts.subKey ?? null,
+    originInstanceId: opts.originInstanceId ?? null,
+    timestamp: opts.timestamp ?? Date.now(),
   };
 }
 
