@@ -21,16 +21,16 @@ vi.mock('../../src/services/escrow.js', async () => {
     recordDepositTx: vi.fn(),
     escrowDeposit: vi.fn(),
     escrowRelease: vi.fn(),
-    escrowRefund: vi.fn(),
+    submitEscrowRefund: vi.fn(),
     submitEscrowRefund: vi.fn(),
     confirmEscrowRefund: vi.fn(),
     // Mirrors the real implementation's escrow:<id> booking id derivation
-    bookingIdFromUuid: vi.fn((orderId) => `escrow:${orderId}`),
+    getEscrowBookingId: vi.fn((orderId) => `escrow:${orderId}`),
   };
 });
 
 const { default: orderRouter } = await import('../../src/routes/orderRoutes.js');
-const { buildDepositTx: mockBuildDepositTx, recordDepositTx: mockRecordDepositTx, escrowDeposit: mockEscrowDeposit, escrowRefund: mockEscrowRefund } = await import('../../src/services/escrow.js');
+const { buildDepositTx: mockBuildDepositTx, recordDepositTx: mockRecordDepositTx, escrowDeposit: mockEscrowDeposit, submitEscrowRefund: mockEscrowRefund } = await import('../../src/services/escrow.js');
 
 function buildApp() {
   const app = express();
@@ -731,6 +731,30 @@ describe('Bid Routes', () => {
 
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('Order is not in funding state');
+    });
+
+    it('POST /:id/confirm-deposit returns 409 for an order cancelled in funding state', async () => {
+      m.store.orders.push({
+        id: 'order-1',
+        customer_id: 'customer-1',
+        order_display_id: 'OD1',
+        status: 'cancelled',
+        escrow_booking_id: 'escrow:OD1',
+        escrow_status: 'funding',
+      });
+
+      const app = buildApp();
+      const res = await request(app)
+        .post('/api/orders/order-1/confirm-deposit')
+        .set(CUSTOMER)
+        .send({ txHash: '0x' + '1'.repeat(64) });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('Order is already cancelled. Cannot confirm deposit.');
+
+      const order = m.store.orders.find(o => o.id === 'order-1');
+      expect(order.escrow_status).toBe('funding');
+      expect(mockRecordDepositTx).not.toHaveBeenCalled();
     });
 
     it('POST /:id/confirm-deposit returns 422 if recordDepositTx fails', async () => {

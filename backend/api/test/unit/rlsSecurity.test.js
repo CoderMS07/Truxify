@@ -41,13 +41,16 @@ const ALL_TABLES = [
   'regions',
   'webhook_failures',
   'tracking_tokens',
+  'behavioral_profiles',
+  'fraud_risk_scores',
+  'fraud_review_queue',
 ];
 
 // Tables with RLS policies in the main RLS migration (20240101000000_rls.sql).
-// user_devices, driver_documents, webhook_failures, and tracking_tokens have
-// RLS in their own individual migrations.
+// user_devices, driver_documents, webhook_failures, tracking_tokens, and the
+// fraud tables have RLS in their own individual migrations.
 const MAIN_RLS_TABLES = ALL_TABLES.filter(
-  (t) => !['user_devices', 'driver_documents', 'webhook_failures', 'tracking_tokens'].includes(t)
+  (t) => !['user_devices', 'driver_documents', 'webhook_failures', 'tracking_tokens', 'behavioral_profiles', 'fraud_risk_scores', 'fraud_review_queue'].includes(t)
 );
 
 describe('RLS Migration (20240101000000_rls.sql)', () => {
@@ -361,6 +364,63 @@ describe('Service-level RPC calls carry an authenticated client (issue #5737)', 
   });
 });
 
+describe('Fraud tables RLS (issue #6334)', () => {
+  let migrationContent;
+  let serviceContent;
+
+  beforeAll(async () => {
+    const migrationPath = path.resolve(__dirname, '../../../../supabase/migrations/20260805140000_harden_fraud_tables_rls.sql');
+    migrationContent = await fs.readFile(migrationPath, 'utf8');
+    const servicePath = path.resolve(__dirname, '../../src/services/fraud/FraudDetectionService.js');
+    serviceContent = await fs.readFile(servicePath, 'utf8');
+  });
+
+  it.each([
+    'behavioral_profiles_authenticated_all',
+    'fraud_risk_scores_authenticated_all',
+    'fraud_review_queue_authenticated_all',
+  ])('drops the wide-open authenticated FOR ALL USING(true) policy: %s', (policy) => {
+    expect(migrationContent).toMatch(new RegExp(`DROP POLICY IF EXISTS ${policy} ON`, 'i'));
+    expect(migrationContent).not.toMatch(new RegExp(`CREATE POLICY ${policy}`, 'i'));
+  });
+
+  const policyName = (table) => table.replace(/_/g, ' ');
+
+  it.each([
+    'behavioral_profiles',
+    'fraud_risk_scores',
+    'fraud_review_queue',
+  ])('grants admin-only SELECT on %s via get_profile_id() and profiles.role, without auth.uid()', (table) => {
+    const adminSelect = new RegExp(
+      `CREATE POLICY "Admins can read ${policyName(table)}"[\\s\\S]*?FOR SELECT[\\s\\S]*?profiles\\.id = get_profile_id\\(\\)[\\s\\S]*?profiles\\.role = 'admin'`,
+      'i'
+    );
+    expect(adminSelect.test(migrationContent)).toBe(true);
+    expect(migrationContent).not.toMatch(/auth\.uid\(\)/);
+  });
+
+  it.each([
+    'behavioral_profiles',
+    'fraud_risk_scores',
+    'fraud_review_queue',
+  ])('restricts writes on %s to service_role and denies authenticated UPDATE/DELETE', (table) => {
+    const serviceWrite = new RegExp(
+      `CREATE POLICY "Service role can write ${policyName(table)}"[\\s\\S]*?FOR ALL[\\s\\S]*?TO service_role`,
+      'i'
+    );
+    expect(serviceWrite.test(migrationContent)).toBe(true);
+    expect(migrationContent).toMatch(new RegExp(`No updates on ${policyName(table)}"[\\s\\S]*?FOR UPDATE[\\s\\S]*?USING \\(false\\)`, 'i'));
+    expect(migrationContent).toMatch(new RegExp(`No deletes on ${policyName(table)}"[\\s\\S]*?FOR DELETE[\\s\\S]*?USING \\(false\\)`, 'i'));
+  });
+
+  it('FraudDetectionService persists through the service-role admin client, never the anon client', () => {
+    expect(serviceContent).toMatch(/import \{ redisClient, supabaseAdmin \} from '\.\.\/\.\.\/config\/db\.js';/);
+    expect(serviceContent).toMatch(/!supabaseAdmin\b/);
+    expect(serviceContent).not.toMatch(/\bsupabase\s*\.\s*from/);
+    expect(serviceContent).not.toMatch(/\bsupabase\s*\)/);
+  });
+});
+
 describe('complete_trip_tx — authorization is not NULL-bypassable and is service-role-only (issue #6332)', () => {
   let content;
 
@@ -406,7 +466,7 @@ describe('Secure Fraud Tables RLS (20260805174232_secure_fraud_tables_rls.sql)',
     expect(/CREATE POLICY "Admins can read behavioral_profiles"/i.test(content)).toBe(true);
     expect(/CREATE POLICY "Admins can read fraud_risk_scores"/i.test(content)).toBe(true);
     expect(/CREATE POLICY "Admins can read fraud_review_queue"/i.test(content)).toBe(true);
-    
+
     // Ensure they restrict to admin role
     expect(/profiles\.role = 'admin'/i.test(content)).toBe(true);
   });

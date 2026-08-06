@@ -146,7 +146,7 @@ import rateLimit from 'express-rate-limit';
 
 import { bidLimiter, userLimiter, userKeyGenerator, podUploadLimiter, createStore } from '../middleware/rateLimiter.js';
 import { mongoDb, supabase, redisClient, createUserClient } from '../config/db.js';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, requireRole } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { validateDocumentBuffer } from '../lib/documentValidation.js';
 import { scanDocument } from '../lib/malwareScanner.js';
@@ -175,7 +175,7 @@ import {
   recordDepositTx,
   submitEscrowRefund,
   confirmEscrowRefund,
-  escrowRefund,
+  submitEscrowRefund,
 } from '../core/container.js';
 import { getEscrowBookingId } from '../services/escrow.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
@@ -521,12 +521,24 @@ router.get('/load-offers/en-route', authenticate, userLimiter, async (req, res) 
  */
 router.get('/history', authenticate, userLimiter, requirePolicy('order:view-history'), async (req, res) => {
   try {
-    const cursor = req.query.cursor;
+    const cursorParam = req.query.cursor ?? '1';
+    const cursor = typeof cursorParam === 'string' ? Number(cursorParam) : NaN;
     const limitParam = req.query.limit ?? '10';
     const limit = typeof limitParam === 'string' ? Number(limitParam) : NaN;
 
+    if (!Number.isInteger(cursor) || cursor < 1) {
+      return res.status(400).json({ error: 'cursor must be an integer >= 1' });
+    }
+
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       return res.status(400).json({ error: 'limit must be between 1 and 100' });
+    }
+
+    if (cursor !== undefined) {
+      const cursorNum = Number(cursor);
+      if (!Number.isInteger(cursorNum) || cursorNum < 1) {
+        return res.status(400).json({ error: 'cursor must be a positive integer' });
+      }
     }
 
     const result = await orderLifecycleService.getOrderHistory(req.user.id, cursor, limit);
@@ -1081,6 +1093,15 @@ router.post(
         return res.status(400).json({ error: 'driver_lat and driver_lng must be valid numbers.' });
       }
 
+      let geofenceRadiusM = 500;
+      if (geofence_radius_m !== undefined && geofence_radius_m !== null && geofence_radius_m !== '') {
+        const parsedRadius = parseFloat(geofence_radius_m);
+        if (!Number.isFinite(parsedRadius) || parsedRadius <= 0) {
+          return res.status(400).json({ error: 'geofence_radius_m must be a finite positive number.' });
+        }
+        geofenceRadiusM = parsedRadius;
+      }
+
       // Verify the order exists and the requesting driver is assigned to it
       const order = await orderValidationService.findOrderByIdOrDisplayId(
         req.params.id,
@@ -1102,7 +1123,7 @@ router.post(
         driverId: req.user.id,
         driverLat: lat,
         driverLng: lng,
-        geofenceRadiusM: geofence_radius_m ? parseFloat(geofence_radius_m) : 500,
+        geofenceRadiusM,
       });
 
       return res.json(result);
@@ -1165,7 +1186,7 @@ router.post(
         'total_amount, order_display_id'
       );
       const amountInr = orderForAmount?.total_amount
-        ? (order.total_amount / 100).toFixed(0)
+        ? (orderForAmount.total_amount / 100).toFixed(0)
         : null;
 
       if (escrowUpdateFailed) {
@@ -1184,7 +1205,7 @@ router.post(
         payment_released: true,
         escrow_status: 'released',
         amount_inr: amountInr,
-        order_display_id: order?.order_display_id,
+        order_display_id: orderForAmount?.order_display_id,
       });
     } catch (err) {
       if (err instanceof DomainError) {
@@ -1308,6 +1329,12 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       return res.status(400).json({ error: 'Unable to compute new pricing for the requested drop.', details: pricingErr.message });
     }
 
+    // Rebalance the escrow booking alongside the re-priced total so the
+    // displayed price, the on-chain payout, and any refund all stay in sync.
+    // escrow_amount_wei is the authoritative payout figure (verified against
+    // at deposit time and read on release), so it must track total_amount.
+    const newAmountWei = BigInt(Math.round(pricing.totalAmount * 1e16));
+
     const updates = {
       drop_address,
       drop_lat: Number(drop_lat),
@@ -1316,6 +1343,7 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       toll_estimate: pricing.tollEstimate,
       platform_fee: pricing.platformFee,
       total_amount: pricing.totalAmount,
+      escrow_amount_wei: newAmountWei.toString(),
       updated_at: new Date().toISOString(),
     };
 
@@ -1343,11 +1371,8 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
       return res.status(500).json({ error: 'Failed to update order atomically.', details: updateErr.message });
     }
 
-    try {
-      await orderRepository.insertTimelineEntry({ order_display_id: order.order_display_id, milestone: 'Drop Changed', milestone_time: new Date().toISOString(), completed: true, sort_order: 25 });
-    } catch (timelineErr) {
-      logger.warn('Failed to update timeline for change-drop:', timelineErr.message);
-    }
+    // Single canonical writer for the drop-change event. OrderTimelineService
+    // is the only path that inserts into order_timeline for this milestone.
     await orderTimelineService.insertDropChangedEvent(order.order_display_id);
 
     await expireDeliveryOtps(order.id);
@@ -1454,7 +1479,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
   }
 
   try {
-    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet, pending_bid_acceptance');
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, status, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet, pending_bid_acceptance');
     orderValidationService.assertOrderFound(order);
     orderValidationService.assertCustomerOwnership(order, req.user.id);
     orderValidationService.assertEscrowState(order, ['funding'], 'Order is not in funding state');
@@ -1492,7 +1517,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
         // { txHash: null, bookingId, error } when the submit fails.
         let refundResult;
         try {
-          refundResult = await escrowRefund(order.order_display_id);
+          refundResult = await submitEscrowRefund(order.order_display_id);
         } catch (refundErr) {
           logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
           refundResult = { error: refundErr.message };
@@ -1653,11 +1678,7 @@ router.post('/predict-demand', authenticate, userLimiter, requirePolicy('order:p
  *             schema:
  *               $ref: '#/components/schemas/DriverLocationResponse'
  */
-router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-driver-location', async (req) => {
-  const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id, status');
-  orderValidationService.assertOrderFound(order);
-  return { order };
-})), validateParams(paramIdSchema), async (req, res) => {
+router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-driver-location'), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, customer_id, driver_id, status');
@@ -1726,11 +1747,7 @@ router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, 
  *             schema:
  *               $ref: '#/components/schemas/OrderRouteResponse'
  */
-router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-route', async (req) => {
-  const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id, status');
-  orderValidationService.assertOrderFound(order);
-  return { order };
-})), validateParams(paramIdSchema), async (req, res) => {
+router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-route'), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
 
   try {
@@ -1843,7 +1860,6 @@ async function validateAndScanPodFile(file, label) {
 }
 
 // POST /api/orders/:id/pod
-router.post('/:id/pod', authenticate, requirePolicy('order:upload-pod'), podUpload.fields([{ name: 'signature', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
 // PoD uploads are rate-limited per driver + order: each request may carry up to
 // 20MB and triggers a malware scan, so without a limiter a driver could exhaust
 // storage, RAM (multer memoryStorage), and scan CPU with an unbounded stream.

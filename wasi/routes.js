@@ -83,7 +83,7 @@ router.post('/wasi/http', wasiActionLimiter, async (req, res) => {
 // Time operations
 router.get('/wasi/time', async (req, res) => {
     try {
-        const instanceId = req.query.instanceId;
+        const { instanceId } = req.query;
         const time = await wasiRuntime.getTime(instanceId);
         const timeMs = await wasiRuntime.getTimeMs(instanceId);
         res.json({ success: true, data: { time, timeMs } });
@@ -96,7 +96,7 @@ router.get('/wasi/time', async (req, res) => {
 // System operations
 router.get('/wasi/system', async (req, res) => {
     try {
-        const instanceId = req.query.instanceId;
+        const { instanceId } = req.query;
         const pid = await wasiRuntime.getProcessId(instanceId);
         const cwd = await wasiRuntime.getCurrentDir(instanceId);
         res.json({ success: true, data: { pid, cwd } });
