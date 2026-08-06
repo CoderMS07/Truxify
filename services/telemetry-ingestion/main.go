@@ -302,17 +302,27 @@ func allowGeofence(driverID string) bool {
 	return true
 }
 
-// pruneGeofenceRateEntries removes empty rate entries once the tracker grows
+// pruneGeofenceRateEntries removes expired rate entries once the tracker grows
 // beyond its cap, keeping the in-memory map bounded.
 func pruneGeofenceRateEntries() {
+	cutoff := time.Now().Add(-time.Second)
 	geofenceRateLimit.Range(func(key, value interface{}) bool {
 		e := value.(*rateEntry)
 		e.mu.Lock()
+		kept := e.stamps[:0]
+		for _, t := range e.stamps {
+			if t.After(cutoff) {
+				kept = append(kept, t)
+			}
+		}
+		e.stamps = kept
 		empty := len(e.stamps) == 0
 		e.mu.Unlock()
+
 		if empty {
-			geofenceRateLimit.Delete(key)
-			atomic.AddUint64(&geofenceRateTracked, ^uint64(0))
+			if _, loaded := geofenceRateLimit.LoadAndDelete(key); loaded {
+				atomic.AddUint64(&geofenceRateTracked, ^uint64(0))
+			}
 		}
 		return true
 	})
