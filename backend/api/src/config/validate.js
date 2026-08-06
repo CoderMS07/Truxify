@@ -24,6 +24,8 @@ export const CacheEventType = Object.freeze({
   REFRESH: 'REFRESH',
 });
 
+const VALID_EVENT_TYPES = new Set(Object.values(CacheEventType));
+
 /**
  * Create a cache invalidation event.
  *
@@ -39,6 +41,43 @@ export const CacheEventType = Object.freeze({
  * @returns {object} serialized event ready for JSON.stringify
  */
 export function createCacheEvent(type, opts = {}) {
+  // 1. Validate event type
+  if (!type || !VALID_EVENT_TYPES.has(type)) {
+    const validTypes = Array.from(VALID_EVENT_TYPES).join(', ');
+    throw new Error(
+      `Invalid cache event type "${type}". Must be one of: ${validTypes}`
+    );
+  }
+
+  // 2. Validate options argument
+  if (!opts || typeof opts !== 'object') {
+    throw new Error('Options argument (opts) must be an object.');
+  }
+
+  // 3. Validate required namespace option
+  if (typeof opts.namespace !== 'string' || !opts.namespace.trim()) {
+    throw new Error(
+      'Option "namespace" is required and must be a non-empty string.'
+    );
+  }
+
+  // 4. Type-specific field validations
+  if (type === CacheEventType.INVALIDATE_KEY) {
+    if (typeof opts.key !== 'string' || !opts.key.trim()) {
+      throw new Error(
+        `Option "key" is required for event type "${CacheEventType.INVALIDATE_KEY}".`
+      );
+    }
+  }
+
+  if (type === CacheEventType.INVALIDATE_PATTERN) {
+    if (typeof opts.pattern !== 'string' || !opts.pattern.trim()) {
+      throw new Error(
+        `Option "pattern" is required for event type "${CacheEventType.INVALIDATE_PATTERN}".`
+      );
+    }
+  }
+
   return {
     id: crypto.randomUUID(),
     type,
@@ -64,7 +103,7 @@ export function serializeCacheEvent(event) {
 
 /**
  * Deserialize a JSON string back into a cache event object.
- * Returns null if parsing fails or payload is structurally invalid.
+ * Returns null if parsing fails, structure is invalid, or event type is unrecognized.
  *
  * @param {string} json
  * @returns {object|null}
@@ -81,6 +120,14 @@ export function deserializeCacheEvent(json) {
     if (!event.type || !event.namespace) {
       logger.warn(
         `[CacheEvent] Deserialization failed: missing required "type" or "namespace" property.`
+      );
+      return null;
+    }
+
+    // Validate event.type against supported enum values
+    if (!VALID_EVENT_TYPES.has(event.type)) {
+      logger.warn(
+        `[CacheEvent] Deserialization failed: unrecognized event type "${event.type}".`
       );
       return null;
     }
