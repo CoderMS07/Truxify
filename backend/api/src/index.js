@@ -22,8 +22,9 @@ import securityHeaderDuplicates from './middleware/securityHeaderDuplicates.js';
 import cookieSecurityValidator from './middleware/cookieSecurityValidator.js';
 import maintenancePhotoRoutes from './routes/maintenancePhotoRoutes.js'
 
-import { closeDbConnections, waitForMongoDb, validateConfig, redisClient } from './config/db.js'
+import { closeDbConnections, waitForMongoDb, validateConfig, redisClient, supabaseAdmin } from './config/db.js'
 import { orderRepository } from './core/container.js'
+import { OrderRepository } from './repositories/orderRepository.js'
 import { CacheManager } from './cache/CacheManager.js'
 import { closeWebSocketServer, initWebSocketServer, __testing as wsTesting } from './sockets/tracker.js'
 import { initLocationServer, closeLocationServer } from './sockets/locationServer.js'
@@ -657,9 +658,15 @@ server.listen(PORT, () => {
   logger.info(`🆕 ZK-Proof KYC Verification enabled with contract: ${process.env.KYC_VERIFIER_CONTRACT || 'not-deployed'}`)
 
 
-  startEscrowRefundReconciliation(orderRepository)
+  // Reconciliation workers sweep `orders` for stuck funding/refund states.
+  // They must run with the service-role client: the anon client has no RLS
+  // read access to `orders`, so an anon-backed repository would silently no-op.
+  const escrowReconciliationOrderRepository = supabaseAdmin
+    ? new OrderRepository(supabaseAdmin)
+    : orderRepository;
+  startEscrowRefundReconciliation(escrowReconciliationOrderRepository)
   startEscrowReleaseReconciliation()
-  startEscrowFundingReconciliation(orderRepository)
+  startEscrowFundingReconciliation(escrowReconciliationOrderRepository)
   startReputationReconciliation(orderRepository)
   startDlqWorker()
   startStaleOrderWorker()
