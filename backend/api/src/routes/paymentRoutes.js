@@ -26,7 +26,7 @@ import { requireIdempotency } from '../middleware/idempotency.js';
 import { acquireLock, releaseLock, LockAcquisitionError } from '../lib/redisLock.js';
 import { auditLog } from '../middleware/auditLog.js';
 import logger from '../middleware/logger.js';
-import { orderRepository } from '../core/container.js';
+import { orderRepository, orderValidationService } from '../core/container.js';
 import { supabase } from '../config/db.js';
 import {
   recordDepositTx,
@@ -104,12 +104,17 @@ router.post(
     try {
       const { order_id } = req.body;
 
-      const { data: order, error } = await orderRepository.findOrderByIdOrDisplayId(
-        order_id,
-        'id, order_display_id, customer_id, total_amount, escrow_status, status'
-      );
+      let order;
+      try {
+        order = await orderValidationService.findOrderByIdOrDisplayId(
+          order_id,
+          'id, order_display_id, customer_id, total_amount, escrow_status, status'
+        );
+      } catch (err) {
+        return res.status(500).json({ error: 'Failed to fetch order.' });
+      }
 
-      if (error || !order) {
+      if (!order) {
         return res.status(404).json({ error: 'Order not found.' });
       }
 
@@ -206,12 +211,17 @@ router.post(
       }
 
       // 1. Fetch order
-      const { data: order, error: orderErr } = await orderRepository.findOrderByIdOrDisplayId(
-        order_id,
-        'id, order_display_id, customer_id, driver_id, total_amount, escrow_status, escrow_booking_id, wallet_address'
-      );
+      let order;
+      try {
+        order = await orderValidationService.findOrderByIdOrDisplayId(
+          order_id,
+          'id, order_display_id, customer_id, driver_id, total_amount, escrow_status, escrow_booking_id, wallet_address'
+        );
+      } catch (err) {
+        return res.status(500).json({ error: 'Failed to fetch order.' });
+      }
 
-      if (orderErr || !order) {
+      if (!order) {
         return res.status(404).json({ error: 'Order not found.' });
       }
 
@@ -312,9 +322,9 @@ router.post(
       return res.status(500).json({ error: 'Internal Server Error' });
 
     } finally {
-      if (lockAcquired) {
+      if (lockValue) {
         try {
-          await releaseLock(lockKey);
+          await releaseLock(lockKey, lockValue);
         } catch (releaseErr) {
           logger.error(
             { err: releaseErr, lockKey },
@@ -338,12 +348,17 @@ router.get(
   validateParams(orderIdParamSchema),
   async (req, res) => {
     try {
-      const { data: order, error } = await orderRepository.findOrderByIdOrDisplayId(
-        req.params.orderId,
-        'id, order_display_id, customer_id, driver_id, escrow_status, escrow_booking_id, escrow_deposited_at, escrow_released_at, total_amount, status'
-      );
+      let order;
+      try {
+        order = await orderValidationService.findOrderByIdOrDisplayId(
+          req.params.orderId,
+          'id, order_display_id, customer_id, driver_id, escrow_status, escrow_booking_id, escrow_deposited_at, escrow_released_at, total_amount, status'
+        );
+      } catch (err) {
+        return res.status(500).json({ error: 'Failed to fetch order.' });
+      }
 
-      if (error || !order) {
+      if (!order) {
         return res.status(404).json({ error: 'Order not found.' });
       }
 

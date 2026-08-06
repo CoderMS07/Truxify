@@ -43,6 +43,22 @@ export async function flushSentry(timeoutMs = 2000) {
   }
 }
 
+export function sentryRequestHandler() {
+  if (typeof Sentry.Handlers?.requestHandler === 'function') {
+    return Sentry.Handlers.requestHandler();
+  }
+  return (req, res, next) => next();
+}
+
+export function captureException(err) {
+  if (process.env.SENTRY_DSN) {
+    Sentry.captureException(err);
+  }
+}
+
 export function sentryErrorHandler() {
+  if (typeof Sentry.Handlers?.errorHandler === 'function') {
+    return Sentry.Handlers.errorHandler();
+  }
   return Sentry.expressErrorHandler();
 }
