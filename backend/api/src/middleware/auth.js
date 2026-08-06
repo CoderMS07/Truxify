@@ -462,6 +462,8 @@ export function requireRole(allowedRoles) {
     );
   }
 
+  const sanitizedAllowedRoles = allowedRoles.map(r => typeof r === "string" ? r.trim() : r);
+
   return (req, res, next) => {
     if (!req.user) {
       return res
@@ -471,18 +473,18 @@ export function requireRole(allowedRoles) {
 
     const userRole =
       typeof req.user.role === "string" ? req.user.role.trim() : "";
-    if (!allowedRoles.includes(userRole)) {
+    if (!sanitizedAllowedRoles.includes(userRole)) {
       const requestId = req.requestId || req.id;
       logger.warn(
         {
           event: "AUTH_DENIAL",
-          action: `requireRole(${allowedRoles.join(",")})`,
+          action: `requireRole(${sanitizedAllowedRoles.join(",")})`,
           userId: req.user.id,
           userRole: req.user.role,
-          allowedRoles,
+          allowedRoles: sanitizedAllowedRoles,
           requestId,
         },
-        `[Auth] Role denied: user=${req.user.id} role=${req.user.role} not in [${allowedRoles}]`,
+        `[Auth] Role denied: user=${req.user.id} role=${req.user.role} not in [${sanitizedAllowedRoles.join(",")}]`,
       );
 
       return res.status(403).json({
