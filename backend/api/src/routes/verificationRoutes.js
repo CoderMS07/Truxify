@@ -8,6 +8,7 @@ import { safeIpKeyGenerator, createStore } from '../middleware/rateLimiter.js';
 import { validateParams, validateBody } from '../middleware/validate.js';
 import logger from '../middleware/logger.js';
 import { verifyOrderParamsSchema, documentCheckSchema } from '../validation/requestSchemas.js';
+import { scanDocument } from '../lib/malwareScanner.js';
 import { PolicyError, policy } from '../security/policyEngine.js';
 import digilockerService from '../services/verification/DigilockerService.js';
 
@@ -173,7 +174,29 @@ router.post('/digilocker/verify', digilockerLimiter, authenticate, async (req, r
   }
 });
 
-const upload = multer({ storage: multer.memoryStorage() });
+const KYC_MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const KYC_ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png'];
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: KYC_MAX_FILE_SIZE },
+  fileFilter: (_req, file, cb) => {
+    if (KYC_ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image/jpeg and image/png files are allowed for KYC uploads'));
+    }
+  },
+});
+
+async function validateAndScanKycFile(file) {
+  const scanResult = await scanDocument(file.buffer, file.originalname);
+  if (!scanResult.clean) {
+    const err = new Error('KYC file failed malware scanning.');
+    err.status = 422;
+    throw err;
+  }
+}
 
 router.post('/kyc/upload', upload.single('image'), authenticate, async (req, res) => {
   try {
@@ -181,6 +204,8 @@ router.post('/kyc/upload', upload.single('image'), authenticate, async (req, res
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No image uploaded' });
     }
+
+    await validateAndScanKycFile(req.file);
 
     // Set status to pending
     const { error: updateError } = await supabase
