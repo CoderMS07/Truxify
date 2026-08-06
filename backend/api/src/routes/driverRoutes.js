@@ -868,7 +868,7 @@ router.patch(
 
       const { data: updated, error: updateError } = await supabase
         .from('route_map_points')
-        .update({ claimed })
+        .update({ is_claimed: claimed })
         .eq('id', id)
         .select('*')
         .maybeSingle();
@@ -1445,10 +1445,10 @@ router.get('/weigh-stations/bypass-status', authenticate, requirePolicy('driver:
  */
 router.get('/ltl/optimize-route', authenticate, userLimiter, requirePolicy('driver:view-stats'), async (req, res) => {
   try {
-    const lat = parseFloat(req.query.lat);
-    const lng = parseFloat(req.query.lng);
+    const lat = parseCoordinate(req.query.lat);
+    const lng = parseCoordinate(req.query.lng);
 
-    if (Number.isNaN(lat) || Number.isNaN(lng)) {
+    if (!hasValidCoordinates(lat, lng)) {
       return res.status(400).json({ error: 'Valid lat and lng query parameters are required.' });
     }
 

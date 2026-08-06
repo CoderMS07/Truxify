@@ -278,6 +278,16 @@ export async function buildDepositTx (orderDisplayId, driverWalletAddress, amoun
   });
 }
 
+/**
+ * Wait for an on-chain deposit transaction to be confirmed and verify its details.
+ *
+ * @param {string} bookingId
+ * @param {string} txHash
+ * @param {string|null} expectedSenderAddress
+ * @param {string|null} expectedDriverAddress
+ * @param {string|null} expectedAmountWei
+ * @returns {Promise<{txHash?: string, bookingId?: string, error?: string, alreadyFunded?: boolean}>}
+ */
 export async function recordDepositTx (bookingId, txHash, expectedSenderAddress = null, expectedDriverAddress = null, expectedAmountWei = null) {
   return measureExecution('EscrowService.recordDepositTx', async () => {
   if (!escrowContract) {
@@ -511,6 +521,15 @@ export async function confirmEscrowRefund (txHash) {
   });
 }
 
+/**
+ * Lock payment in escrow for a specific booking.
+ *
+ * @param {string} orderDisplayId
+ * @param {string} customerWalletAddress
+ * @param {string} driverWalletAddress
+ * @param {string} amountWei
+ * @returns {Promise<{txHash: string|null, bookingId: string, error?: string}>}
+ */
 export async function escrowLockPayment(orderDisplayId, customerWalletAddress, driverWalletAddress, amountWei) {
   return measureExecution('EscrowService.escrowLockPayment', async () => {
     const bookingId = getEscrowBookingId(orderDisplayId);
@@ -540,10 +559,14 @@ export async function escrowLockPayment(orderDisplayId, customerWalletAddress, d
   });
 }
 
-export function bookingIdFromUuid (orderId) {
-  return getEscrowBookingId(orderId)
-}
 
+/**
+ * Submit an escrow cancellation with a penalty fee awarded to the driver.
+ *
+ * @param {string} orderDisplayId
+ * @param {string|bigint} driverFeeWei
+ * @returns {Promise<{txHash: string|null, bookingId: string, error?: string, waitForConfirmation?: Function}>}
+ */
 export async function submitEscrowCancelWithPenalty (orderDisplayId, driverFeeWei) {
   return measureExecution('EscrowService.submitEscrowCancelWithPenalty', async () => {
     const bookingId = getEscrowBookingId(orderDisplayId)
@@ -574,13 +597,6 @@ export async function submitEscrowCancelWithPenalty (orderDisplayId, driverFeeWe
   })
 }
 
-export async function releaseEscrowFunds (orderDisplayId) {
-  return escrowRelease(orderDisplayId)
-}
-
-export async function escrowRefund (orderDisplayId) {
-  return submitEscrowRefund(orderDisplayId)
-}
 
 /**
  * Submit an escrow dispute raise and return its hash before confirmation.
