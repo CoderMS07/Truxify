@@ -18,6 +18,20 @@ export class CircuitBreaker {
     this.failureCount = 0;
     this.successCount = 0;
     this.nextAttempt = Date.now();
+    this._halfOpenTimer = null;
+  }
+
+  _scheduleHalfOpen() {
+    if (this._halfOpenTimer) {
+      clearTimeout(this._halfOpenTimer);
+    }
+    this._halfOpenTimer = setTimeout(() => {
+      if (this.state === CircuitState.OPEN) {
+        this.state = CircuitState.HALF_OPEN;
+        logger.info(`[CircuitBreaker:${this.name}] Transitioned from OPEN to HALF_OPEN via scheduled timer`);
+      }
+      this._halfOpenTimer = null;
+    }, this.resetTimeoutMs);
   }
 
   getState() {
@@ -29,6 +43,10 @@ export class CircuitBreaker {
   }
 
   reset() {
+    if (this._halfOpenTimer) {
+      clearTimeout(this._halfOpenTimer);
+      this._halfOpenTimer = null;
+    }
     this.state = CircuitState.CLOSED;
     this.failureCount = 0;
     this.successCount = 0;
@@ -83,6 +101,7 @@ export class CircuitBreaker {
     if (this.state === CircuitState.HALF_OPEN || this.failureCount >= this.failureThreshold) {
       this.state = CircuitState.OPEN;
       this.nextAttempt = Date.now() + this.resetTimeoutMs;
+      this._scheduleHalfOpen();
       logger.warn(`[CircuitBreaker:${this.name}] Circuit opened until ${new Date(this.nextAttempt).toISOString()}`);
     }
 
