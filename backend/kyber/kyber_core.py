@@ -176,8 +176,9 @@ class KyberKEM:
         u_compressed = self._compress(u, 10)
         v_compressed = self._compress(v, 4)
         
-        # Derive shared secret
-        shared_secret = self._derive_secret(u, v)
+        # Derive shared secret from the compressed ciphertext so it matches
+        # decapsulate, which hashes the compressed u/v transmitted in the ciphertext
+        shared_secret = self._derive_secret(u_compressed, v_compressed)
         
         ciphertext = {
             'u': u_compressed.tolist(),
