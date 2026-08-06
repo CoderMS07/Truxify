@@ -603,7 +603,7 @@ export class OrderLifecycleService {
           p_order_display_id: order.order_display_id,
           p_order_updates: updates,
           p_offer_updates: offerUpdates
-        }, userClient ?? supabaseAdmin);
+        }, supabaseAdmin);
 
         if (updateErr) {
           throw new DomainError(500, {
