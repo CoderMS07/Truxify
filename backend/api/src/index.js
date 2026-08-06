@@ -50,6 +50,7 @@ import deadheadRoutes from './routes/deadheadRoutes.js'
 import truckRoutes from './routes/truckRoutes.js'
 import authRoutes from './routes/authRoutes.js'
 import routeRoutes from './routes/routeRoutes.js'
+import iotRoutes from './routes/iotRoutes.js'
 import healthRoutes from './routes/healthRoutes.js'
 import adminRoutes from './routes/adminRoutes.js'
 import lookupRoutes from './routes/lookupRoutes.js'
@@ -66,6 +67,11 @@ import demandRoutes from './routes/demandRoutes.js'
 // ============================================================================
 import verificationRoutes from './routes/verificationRoutes.js'
 import oracleRoutes from './routes/oracleRoutes.js'
+import blockchainMonitoringRoutes from './routes/blockchainMonitoringRoutes.js'
+import { BlockchainMetrics, EscalationHandler } from './services/blockchain/index.js';
+
+const blockchainMetrics = new BlockchainMetrics();
+const escalationHandler = new EscalationHandler();
 
 // ============================================================================
 // 🆕 GEOGRAPHIC SHARDING ROUTES
@@ -481,6 +487,8 @@ app.use('/api/v1/admin', adminRoutes)
 app.use('/api/v1/admin/audit-logs', auditRoutes)
 app.use('/api/voice', voiceRoutes)
 app.use('/api/demand-heatmap', demandRoutes)
+app.use('/api/routes', routeRoutes)
+app.use('/api/iot', iotRoutes)
 
 // ============================================================================
 // WEBHOOK ROUTES
@@ -492,6 +500,11 @@ app.use('/api/webhooks', webhookRoutes)
 // ============================================================================
 app.use('/api/verify', verificationRoutes)
 app.use('/api/oracle', oracleRoutes)
+app.use('/api/blockchain', (req, _res, next) => {
+  req.blockchainMetrics = blockchainMetrics;
+  req.escalationHandler = escalationHandler;
+  next();
+}, blockchainMonitoringRoutes)
 app.use('/api/webhooks', webhookRoutes)
 
 // 🆕 Oracle Health Check Endpoint
