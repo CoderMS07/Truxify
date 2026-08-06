@@ -67,6 +67,7 @@ contract AtomicSwap is ReentrancyGuard {
         require(msg.sender == swap.sender, "Only sender can refund");
 
         swap.refunded = true;
+        usedHashLocks[swap.hashLock] = false;
         (bool sent, ) = swap.sender.call{value: swap.amount}("");
         require(sent, "Refund transfer failed");
 
