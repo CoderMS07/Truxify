@@ -116,7 +116,7 @@ import { setupSwagger } from './config/swagger.js'
 import { correlationIdMiddleware } from './middleware/correlationId.js'
 import { requestCacheMiddleware } from './middleware/requestCacheMiddleware.js'
 import { requireJsonContent } from './middleware/contentType.js'
-import { initSentry, flushSentry, sentryErrorHandler } from './middleware/sentry.js'
+import { initSentry, flushSentry, sentryRequestHandler, captureException, sentryErrorHandler } from './middleware/sentry.js'
 import {
   startEscrowRefundReconciliation,
   stopEscrowRefundReconciliation
@@ -295,6 +295,7 @@ validateEscrowSetup().then((valid) => {
 
 const app = express()
 const server = http.createServer(app)
+app.use(sentryRequestHandler());
 app.use(headerSizeMonitor);
 // Trust proxy required for rate-limiting behind load balancers/Docker.
 // TRUST_PROXY env var allows each deployment to set the correct proxy count:
@@ -765,6 +766,8 @@ process.on('uncaughtException', async (err) => {
 
 process.on('unhandledRejection', async (reason) => {
   logger.error({ reason }, 'Unhandled promise rejection')
+  captureException(reason)
+  await flushSentry(2000)
   await shutdown('unhandledRejection')
 })
 
