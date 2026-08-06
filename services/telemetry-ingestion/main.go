@@ -386,16 +386,19 @@ func sweepDrivers() {
 	})
 
 	pingRateLimit.Range(func(key, value interface{}) bool {
-		e := value.(*rateEntry)
-		e.mu.Lock()
-		// Stamps are appended in order and pruned oldest-first, so the last
-		// stamp is the driver's most recent activity. Entries are aged out
-		// once they go quiet for a full driverTTL, not only when empty.
-		stale := true
-		if len(e.stamps) > 0 {
-			stale = now.Sub(e.stamps[len(e.stamps)-1]) > driverTTL
-		}
-		e.mu.Unlock()
+		pingRateLimit.Range(func(key, value interface{}) bool {
+				e := value.(*rateEntry)
+				e.mu.Lock()
+				if len(e.stamps) > 0 {
+						if now.Sub(e.stamps[len(e.stamps)-1]) <= driverTTL {
+								e.mu.Unlock()
+								return true
+						}
+				}
+				e.mu.Unlock()
+				pingRateLimit.Delete(key)
+				return true
+		})
 		if stale {
 			pingRateLimit.Delete(key)
 		}
