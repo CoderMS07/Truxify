@@ -144,7 +144,7 @@ import multer from 'multer';
 import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 
-import { bidLimiter, userLimiter, userKeyGenerator, podUploadLimiter, createStore } from '../middleware/rateLimiter.js';
+import { bidLimiter, userLimiter, userKeyGenerator, podUploadLimiter, createStore, verifyDeliveryLimiter, resendOtpLimiter, changeDropLimiter, predictDemandLimiter, telemetryLimiter } from '../middleware/rateLimiter.js';
 import { mongoDb, supabase, redisClient, createUserClient, supabaseAdmin } from '../config/db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
