@@ -51,12 +51,7 @@ export async function registerDeviceToken(req, res, next) {
 
     const tokenErr = validateFcmToken(fcmToken);
     if (tokenErr) {
-      return res.status(400).json(
-        errorResponse(
-          'VALIDATION_ERROR',
-          tokenErr
-        )
-      );
+      return res.status(400).json({ error: tokenErr });
     }
 
     const platErr = validatePlatform(platform);
