@@ -103,7 +103,7 @@ export function serializeCacheEvent(event) {
 
 /**
  * Deserialize a JSON string back into a cache event object.
- * Returns null if parsing fails or payload is structurally invalid.
+ * Returns null if parsing fails, structure is invalid, or event type is unrecognized.
  *
  * @param {string} json
  * @returns {object|null}
@@ -120,6 +120,14 @@ export function deserializeCacheEvent(json) {
     if (!event.type || !event.namespace) {
       logger.warn(
         `[CacheEvent] Deserialization failed: missing required "type" or "namespace" property.`
+      );
+      return null;
+    }
+
+    // Validate event.type against supported enum values
+    if (!VALID_EVENT_TYPES.has(event.type)) {
+      logger.warn(
+        `[CacheEvent] Deserialization failed: unrecognized event type "${event.type}".`
       );
       return null;
     }
