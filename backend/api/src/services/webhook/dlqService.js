@@ -127,11 +127,12 @@ export const dlqService = {
             const nextRetryAt = new Date(Date.now() + nextBackoffMin * 60000).toISOString();
             await dlqDb()
               .from('webhook_failures')
-              .update({ 
+              .update({
+                status: 'pending',
                 retry_count: newRetryCount,
                 next_retry_at: nextRetryAt,
                 error_message: String(procErr.message || procErr).slice(0, 1000),
-                updated_at: new Date().toISOString()
+                updated_at: new Date().toISOString(),
               })
               .eq('id', event.id);
           }
