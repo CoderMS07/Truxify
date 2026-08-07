@@ -136,13 +136,14 @@ class CacheManager {
 
     await batch.commit(noResult: true);
   }
+  set databaseForTesting(Database? db) => _database = db;
 
   Future<List<Map<String, dynamic>>> getOrders({bool activeOnly = false, int limit = 20}) async {
     final db = await open();
     final rows = await db.query(
       'orders',
       orderBy: 'updated_at DESC',
-      limit: limit,
+      limit: activeOnly ? null : limit,
     );
 
     final results = <Map<String, dynamic>>[];
@@ -174,7 +175,8 @@ class CacheManager {
         'in_transit',
         'arriving'
       };
-      return results.where((item) => activeStatuses.contains(item['status'])).toList();
+      final filtered = results.where((item) => activeStatuses.contains(item['status'])).toList();
+      return filtered.length > limit ? filtered.sublist(0, limit) : filtered;
     }
 
     return results;
