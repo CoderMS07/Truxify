@@ -624,7 +624,7 @@ export class DeliveryVerificationService {
             resolvedDriverIdForPush,
             "✅ Payment Released",
             `Payment Released ✓ ${amountInr} credited for order ${order.order_display_id}`,
-            "payment_released",
+            "payment",
             {
               order_display_id: order.order_display_id,
               release_tx_hash: releaseTxHash || "",
