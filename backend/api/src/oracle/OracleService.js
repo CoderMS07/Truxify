@@ -1,6 +1,7 @@
 import { supabase } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { verifyDeliveryOtpHash } from '../services/notificationService.js';
+import { DeliveryVerificationService } from '../services/order/deliveryVerificationService.js';
 
 const DELIVERY_COMPLETED_STATUSES = new Set([
   'delivered',
