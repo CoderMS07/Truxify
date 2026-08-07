@@ -257,7 +257,6 @@ export class DeliveryVerificationService {
             `[DeliveryVerificationService] Delivery OTP notification failed for order ${orderDisplayId} — FCM error: ${notifResult.fcm?.error || "unknown"}`,
           );
           await this.orderRepository.updateOrder(orderId, {
-            notification_failed: true,
             updated_at: new Date().toISOString(),
           });
         }
