@@ -154,11 +154,16 @@ export function paisaToMaticWei(paisa) {
   if (!Number.isFinite(amount) || amount < 0) {
     throw new RangeError(`Invalid paisa amount: ${paisa}`);
   }
-  const matic = amount * ESCROW_MATIC_PER_PAISA;
-  if (matic > MAX_ESCROW_MATIC) {
+  const paisaBigInt = BigInt(Math.floor(amount));
+  const rateWeiBigInt = ethers.parseEther(ESCROW_MATIC_PER_PAISA.toString());
+  const wei = paisaBigInt * rateWeiBigInt;
+  const maxWei = ethers.parseEther(MAX_ESCROW_MATIC.toString());
+
+  if (wei > maxWei) {
+    const matic = amount * ESCROW_MATIC_PER_PAISA;
     throw new RangeError(`Deposit ${matic} MATIC exceeds safety cap of ${MAX_ESCROW_MATIC} MATIC (${paisa} paisa @ ${ESCROW_MATIC_PER_PAISA} MATIC/paisa)`);
   }
-  return ethers.parseEther(matic.toFixed(18));
+  return wei;
 }
 
 /**
