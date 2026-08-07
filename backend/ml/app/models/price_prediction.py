@@ -1,9 +1,8 @@
+import asyncio
 import logging
 import math
 import os
-import threading
-import time
-import requests
+import httpx
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -26,36 +25,6 @@ MODEL_NAME = "price_forecast"
 # such a model exists.
 MIN_REAL_SAMPLES = 100
 DEFAULT_FUEL_PRICE = 105.0
-
-# Weather lookups are cached briefly so repeated price predictions for the same
-# corridor do not hit the upstream every time (and so a failing upstream does not
-# stall every request). A failed lookup is cached as 1.0 for a short window to
-# act as a circuit-broken fallback.
-_WEATHER_CACHE: Dict[str, float] = {}
-_WEATHER_CACHE_TS: Dict[str, float] = {}
-_WEATHER_CACHE_TTL = 600.0
-_WEATHER_FALLBACK_TTL = 30.0
-_WEATHER_CACHE_LOCK = threading.Lock()
-
-
-def _cached_weather_multiplier(city: str) -> float:
-    """Return a cached weather multiplier for ``city`` or None when stale."""
-    with _WEATHER_CACHE_LOCK:
-        cached = _WEATHER_CACHE.get(city)
-        if cached is None:
-            return None
-        ttl = _WEATHER_CACHE_TTL if cached > 1.0 else _WEATHER_FALLBACK_TTL
-        if time.monotonic() - _WEATHER_CACHE_TS.get(city, 0) <= ttl:
-            return cached
-        _WEATHER_CACHE.pop(city, None)
-        _WEATHER_CACHE_TS.pop(city, None)
-        return None
-
-
-def _cache_weather_multiplier(city: str, multiplier: float) -> None:
-    with _WEATHER_CACHE_LOCK:
-        _WEATHER_CACHE[city] = multiplier
-        _WEATHER_CACHE_TS[city] = time.monotonic()
 
 TRUCK_TYPE_ENCODING: Dict[str, int] = {
     "light_truck": 0,
@@ -281,40 +250,45 @@ def _parse_trip_row(row: dict) -> Optional[dict]:
     }
 
 
-def _get_weather_multiplier(city: str) -> float:
-    """Fetch weather for a city and return a price multiplier.
-
-    Runs on a worker thread (see the async endpoint in ``main.py`` which
-    offloads ``predict_price`` with ``asyncio.to_thread``), so the blocking
-    ``requests`` call never stalls the FastAPI event loop. Results are cached
-    briefly and failures fall back to a neutral multiplier of 1.0.
-    """
+async def _get_weather_multiplier_async(client: httpx.AsyncClient, city: str) -> float:
+    """Async fetch weather for a city and return a price multiplier."""
     if not city:
         return 1.0
-    cached = _cached_weather_multiplier(city)
-    if cached is not None:
-        return cached
     api_key = os.environ.get("OPENWEATHERMAP_API_KEY")
     if not api_key:
         return 1.0
     try:
         url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}"
-        response = requests.get(url, timeout=2.0)
+        response = await client.get(url, timeout=2.0)
         if response.status_code == 200:
             weather_main = response.json().get("weather", [{}])[0].get("main", "").lower()
             if weather_main in ["rain", "snow", "thunderstorm", "extreme", "squall", "tornado"]:
-                multiplier = 1.2
+                return 1.2
             elif weather_main in ["drizzle", "mist", "fog", "haze", "dust", "sand", "ash"]:
-                multiplier = 1.1
-            else:
-                multiplier = 1.0
-            _cache_weather_multiplier(city, multiplier)
-            return multiplier
+                return 1.1
     except Exception as e:
         logger.warning("Weather API failed for %s: %s", city, e)
-    # Circuit-broken fallback: cache the neutral multiplier so a flaky upstream
-    # does not stall every subsequent prediction for this city.
-    _cache_weather_multiplier(city, 1.0)
+    return 1.0
+
+
+def _get_weather_multiplier(city: str) -> float:
+    """Synchronous wrapper for backward compatibility and non-async callers."""
+    if not city:
+        return 1.0
+    api_key = os.environ.get("OPENWEATHERMAP_API_KEY")
+    if not api_key:
+        return 1.0
+    try:
+        url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}"
+        response = httpx.get(url, timeout=2.0)
+        if response.status_code == 200:
+            weather_main = response.json().get("weather", [{}])[0].get("main", "").lower()
+            if weather_main in ["rain", "snow", "thunderstorm", "extreme", "squall", "tornado"]:
+                return 1.2
+            elif weather_main in ["drizzle", "mist", "fog", "haze", "dust", "sand", "ash"]:
+                return 1.1
+    except Exception as e:
+        logger.warning("Weather API failed for %s: %s", city, e)
     return 1.0
 
 
@@ -496,10 +470,15 @@ def predict_price(
 
     origin_city = _city_from_address(route_origin)
     destination_city = _city_from_address(route_destination)
-    weather_multiplier = max(
-        _get_weather_multiplier(origin_city),
-        _get_weather_multiplier(destination_city)
-    )
+    # Fetch weather for both cities in parallel without blocking the event loop
+    async def fetch_weather():
+        async with httpx.AsyncClient() as client:
+            origin_mult, dest_mult = await asyncio.gather(
+                _get_weather_multiplier_async(client, origin_city),
+                _get_weather_multiplier_async(client, destination_city),
+            )
+            return max(origin_mult, dest_mult)
+    weather_multiplier = asyncio.run(fetch_weather())
     predicted *= weather_multiplier
 
     return {
