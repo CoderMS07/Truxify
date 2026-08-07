@@ -315,9 +315,6 @@ describe('osrm - getRouteEstimate', () => {
 describe('osrm - getRouteEstimate edge cases', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    fetch.mockReset();
-    mockRedis.get.mockReset();
-    mockRedis.set.mockReset();
   });
 
   it('returns null for null input', async () => {
