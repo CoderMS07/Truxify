@@ -144,7 +144,7 @@ import multer from 'multer';
 import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 
-import { bidLimiter, userLimiter, userKeyGenerator, podUploadLimiter, createStore } from '../middleware/rateLimiter.js';
+import { bidLimiter, userLimiter, userKeyGenerator, podUploadLimiter, createStore, verifyDeliveryLimiter, resendOtpLimiter, changeDropLimiter, predictDemandLimiter, telemetryLimiter } from '../middleware/rateLimiter.js';
 import { mongoDb, supabase, redisClient, createUserClient, supabaseAdmin } from '../config/db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
@@ -291,12 +291,15 @@ router.post(
         : null;
 
       if (escrowUpdateFailed) {
-        logger.warn(`[confirm-otp] escrowUpdateFailed for order ${req.params.id} — reconciliation required`);
+        logger.warn(
+          '[confirm-otp] Escrow payout requires reconciliation.',
+          { orderId: req.params.id, driverId: req.user.id }
+        );
         return res.status(202).json({
-          message: 'Delivery confirmed. Escrow payout is pending reconciliation — your payment will be credited shortly.',
+          message: 'Delivery confirmed. Payout is pending reconciliation.',
           payment_released: false,
+          escrow_status: 'released',
           reconciliation_required: true,
-          escrow_status: 'release_pending_reconciliation',
           amount_inr: amountInr,
         });
       }
@@ -434,7 +437,7 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
     // displayed price, the on-chain payout, and any refund all stay in sync.
     // escrow_amount_wei is the authoritative payout figure (verified against
     // at deposit time and read on release), so it must track total_amount.
-    const newAmountWei = paisaToMaticWei(pricing.totalAmount);
+    const newAmountWei = BigInt(paisaToMaticWei(pricing.totalAmount));
 
     const updates = {
       drop_address,
@@ -779,7 +782,10 @@ router.post('/predict-demand', authenticate, userLimiter, requirePolicy('order:p
  *             schema:
  *               $ref: '#/components/schemas/DriverLocationResponse'
  */
-router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-driver-location'), validateParams(paramIdSchema), async (req, res) => {
+router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-driver-location', async (req) => {
+  const { data: order } = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id');
+  return { order };
+}), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, customer_id, driver_id, status');
@@ -848,7 +854,10 @@ router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, 
  *             schema:
  *               $ref: '#/components/schemas/OrderRouteResponse'
  */
-router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-route'), validateParams(paramIdSchema), async (req, res) => {
+router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-route', async (req) => {
+  const { data: order } = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id');
+  return { order };
+}), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
 
   try {
