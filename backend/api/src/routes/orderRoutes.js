@@ -176,7 +176,7 @@ import {
   submitEscrowRefund,
   confirmEscrowRefund,
 } from '../core/container.js';
-import { getEscrowBookingId } from '../services/escrow.js';
+import { getEscrowBookingId, paisaToMaticWei } from '../services/escrow.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
 import { computeOrderPricing } from '../lib/pricing.js';
 
@@ -216,6 +216,30 @@ router.post('/api/deliveries/:id/geofence-confirm', async (req, res) => {
       lat,
       lng,
     }, 'Driver geofence confirm attempt');
+
+    const result = await orderLifecycleService.deliveryVerification.geofenceAutoConfirm({
+      orderId: req.params.id,
+      driverId: req.user.id,
+      driverLat: lat,
+      driverLng: lng,
+      geofenceRadiusM,
+    });
+
+      'id, driver_id, customer_id',
+    );
+    orderValidationService.assertOrderFound(order);
+    orderValidationService.assertDriverAssignment(order, req.user.id);
+
+    logger.info(
+      {
+        event: 'GEOFENCE_CONFIRM_ATTEMPT',
+        orderId: req.params.id,
+        driverId: req.user.id,
+        lat,
+        lng,
+      },
+      'Driver geofence confirm attempt',
+    );
 
     const result = await orderLifecycleService.deliveryVerification.geofenceAutoConfirm({
       orderId: req.params.id,
@@ -314,6 +338,50 @@ const deliveryVerificationMiddleware = [
   validateParams(paramIdSchema),
   validateBody(verifyDeliverySchema),
 ];
+  async (req, res) => {
+    try {
+      const order = await orderValidationService.findOrderByIdOrDisplayId(
+        req.params.id,
+        'id, driver_id, customer_id'
+      );
+      orderValidationService.assertOrderFound(order);
+      orderValidationService.assertDriverAssignment(order, req.user.id);
+
+      logger.info({
+        event: 'CONFIRM_OTP_ATTEMPT',
+        orderId: req.params.id,
+        driverId: req.user.id,
+      }, 'Driver OTP confirm attempt');
+
+      const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(
+        req.params.id,
+        req.user.id,
+        req.body.otp,
+        req.token ? createUserClient(req.token) : undefined
+      );
+
+      // Fetch the released amount to include in the response
+      const orderForAmount = await orderValidationService.findOrderByIdOrDisplayId(
+        req.params.id,
+        'total_amount, order_display_id'
+      );
+      const amountInr = orderForAmount?.total_amount
+        ? (orderForAmount.total_amount / 100).toFixed(0)
+        : null;
+
+      if (escrowUpdateFailed) {
+        logger.warn(
+          '[confirm-otp] Escrow payout requires reconciliation.',
+          { orderId: req.params.id, driverId: req.user.id }
+        );
+        return res.status(202).json({
+          message: 'Delivery confirmed. Payout is pending reconciliation.',
+          payment_released: false,
+          escrow_status: 'released',
+          reconciliation_required: true,
+          amount_inr: amountInr,
+        });
+      }
 
 router.post('/:id/confirm-otp', deliveryVerificationMiddleware, handleDeliveryVerification);
 router.post('/:id/verify-delivery', deliveryVerificationMiddleware, handleDeliveryVerification);
@@ -434,7 +502,7 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
     // displayed price, the on-chain payout, and any refund all stay in sync.
     // escrow_amount_wei is the authoritative payout figure (verified against
     // at deposit time and read on release), so it must track total_amount.
-    const newAmountWei = BigInt(Math.round(pricing.totalAmount * 1e16));
+    const newAmountWei = BigInt(paisaToMaticWei(pricing.totalAmount));
 
     const updates = {
       drop_address,
@@ -779,7 +847,10 @@ router.post('/predict-demand', authenticate, userLimiter, requirePolicy('order:p
  *             schema:
  *               $ref: '#/components/schemas/DriverLocationResponse'
  */
-router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-driver-location'), validateParams(paramIdSchema), async (req, res) => {
+router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-driver-location', async (req) => {
+  const { data: order } = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id');
+  return { order };
+}), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, customer_id, driver_id, status');
@@ -848,7 +919,10 @@ router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, 
  *             schema:
  *               $ref: '#/components/schemas/OrderRouteResponse'
  */
-router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-route'), validateParams(paramIdSchema), async (req, res) => {
+router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-route', async (req) => {
+  const { data: order } = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id');
+  return { order };
+}), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
 
   try {
