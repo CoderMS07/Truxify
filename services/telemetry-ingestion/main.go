@@ -49,15 +49,20 @@ var (
 	activeDrivers       sync.Map
 	geofenceRateLimit   sync.Map
 	geofenceRateTracked uint64
-	pingRateLimit       sync.Map
-	serviceStartTime    = time.Now()
-	jwtSecret           []byte
-	bypassAuth          bool
-	driverTTL           = 5 * time.Minute
-	maxActiveDrivers    = 100000
-	maxPingsPerSec      = 10
-	maxGeofencePerSec   = 10
-	maxRateTracked      = 100000
+	// geofenceOrder tracks geofence rate-limit entries in insertion order so
+	// the oldest entry can be evicted when the map exceeds maxRateTracked,
+	// without scanning the whole map per insert.
+	geofenceOrder   []*rateEntry
+	geofenceOrderMu sync.Mutex
+	pingRateLimit   sync.Map
+	serviceStartTime = time.Now()
+	jwtSecret        []byte
+	bypassAuth       bool
+	driverTTL        = 5 * time.Minute
+	maxActiveDrivers = 100000
+	maxPingsPerSec   = 10
+	maxGeofencePerSec = 10
+	maxRateTracked    = 100000
 )
 
 // driverEntry is a cached ping plus its last-seen time so stale drivers can be evicted.
@@ -68,8 +73,9 @@ type driverEntry struct {
 
 // rateEntry holds a sliding window of request timestamps for one driver.
 type rateEntry struct {
-	mu     sync.Mutex
-	stamps []time.Time
+	mu       sync.Mutex
+	stamps   []time.Time
+	driverID string
 }
 
 // jwtClaims holds the subset of JWT claims the telemetry service needs.
@@ -290,9 +296,12 @@ func validatePing(ping *TelemetryPing) error {
 
 // allowGeofence enforces a per-driver sliding-window rate limit.
 func allowGeofence(driverID string) bool {
-	v, loaded := geofenceRateLimit.LoadOrStore(driverID, &rateEntry{})
+	v, loaded := geofenceRateLimit.LoadOrStore(driverID, &rateEntry{driverID: driverID})
 	if !loaded {
 		atomic.AddUint64(&geofenceRateTracked, 1)
+		geofenceOrderMu.Lock()
+		geofenceOrder = append(geofenceOrder, v.(*rateEntry))
+		geofenceOrderMu.Unlock()
 	}
 	e := v.(*rateEntry)
 
@@ -315,15 +324,41 @@ func allowGeofence(driverID string) bool {
 	e.stamps = append(e.stamps, time.Now())
 	e.mu.Unlock()
 
-	// Opportunistically shed empty tracking entries so the map stays bounded.
+	// Enforce the hard bound: once the map exceeds maxRateTracked, evict the
+	// oldest tracked entries regardless of whether they still have timestamps.
+	// This runs only when a new entry pushes the tracker over the cap and
+	// evicts at most the overflow amount, keeping memory bounded without
+	// scanning the whole map on every insert.
 	if !loaded && atomic.LoadUint64(&geofenceRateTracked) > uint64(maxRateTracked) {
-		pruneGeofenceRateEntries()
+		evictGeofenceOverflow()
 	}
 
 	return true
 }
 
-// pruneGeofenceRateEntries removes expired rate entries once the tracker grows
+// evictGeofenceOverflow removes the oldest geofence rate-limit entries (in
+// insertion order) until the tracker is back under maxRateTracked.
+func evictGeofenceOverflow() {
+	for atomic.LoadUint64(&geofenceRateTracked) > uint64(maxRateTracked) {
+		geofenceOrderMu.Lock()
+		if len(geofenceOrder) == 0 {
+			geofenceOrderMu.Unlock()
+			return
+		}
+		e := geofenceOrder[0]
+		geofenceOrder = geofenceOrder[1:]
+		geofenceOrderMu.Unlock()
+
+		// Only evict the entry if it is still the exact entry that was queued;
+		// the same driver may have re-created an entry since it was ordered.
+		if cur, ok := geofenceRateLimit.Load(e.driverID); ok && cur.(*rateEntry) == e {
+			geofenceRateLimit.Delete(e.driverID)
+			atomic.AddUint64(&geofenceRateTracked, ^uint64(0))
+		}
+	}
+}
+
+// pruneGeofenceRateEntries removes empty rate entries once the tracker grows
 // beyond its cap, keeping the in-memory map bounded.
 func pruneGeofenceRateEntries() {
 	cutoff := time.Now().Add(-time.Second)
