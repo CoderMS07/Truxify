@@ -10,8 +10,8 @@ import { GpsLog } from '../models/GpsLog.js';
 import { ebpfLoader } from '../../../../ebpf/loader.js';
 
 const TELEMETRY_SCHEMA = {
-  lat: { type: 'number', required: false, min: -90, max: 90 },
-  lng: { type: 'number', required: false, min: -180, max: 180 },
+  lat: { type: 'number', required: true, min: -90, max: 90 },
+  lng: { type: 'number', required: true, min: -180, max: 180 },
   latitude: { type: 'number', required: false, min: -90, max: 90 },
   longitude: { type: 'number', required: false, min: -180, max: 180 },
   driver_id: { type: 'string', required: false, minLen: 1, maxLen: 64 },
@@ -751,6 +751,11 @@ export async function handleLocationPing(ws, data, req) {
   const lat = data.lat !== undefined ? data.lat : data.latitude;
   const lng = data.lng !== undefined ? data.lng : data.longitude;
 
+  // Reject frames with null or undefined coordinates before validation
+  if (lat === null || lat === undefined || lng === null || lng === undefined) {
+    return ws.send(JSON.stringify({ error: 'Invalid telemetry payload.', details: ['lat and lng are required'] }));
+  }
+
   // Fix 3 + dead-code fix: run the payload through the schema validator/
   const normalizedForValidation = {
     lat,
@@ -773,6 +778,17 @@ export async function handleLocationPing(ws, data, req) {
   if (validationErrors) {
     return ws.send(JSON.stringify({ error: 'Invalid telemetry payload', details: validationErrors }));
   }
+
+  // Cross-field validation: require at least one complete coordinate pair.
+  const hasLatLng = data.lat !== undefined && data.lng !== undefined;
+  const hasLatLong = data.latitude !== undefined && data.longitude !== undefined;
+  if (!hasLatLng && !hasLatLong) {
+    return ws.send(JSON.stringify({
+      error: 'Invalid telemetry payload',
+      details: ['At least one coordinate pair (lat+lng or latitude+longitude) is required.']
+    }));
+  }
+
   const sanitized = sanitizeTelemetryData(data);
   Object.assign(data, sanitized);
 
@@ -896,7 +912,7 @@ export async function handleLocationPing(ws, data, req) {
     coordinates: [sanitized.lng, sanitized.lat]
   },
   speed_kmh: sanitized.speed ?? 0,
-  bearing_deg: sanitized.heading ?? 0,
+  bearing_deg: sanitized.bearing ?? 0,
     timestamp: deviceTime || new Date(),
     pinged_at: deviceTime || new Date(),
     buffered_at: new Date(),
@@ -916,7 +932,7 @@ export async function handleLocationPing(ws, data, req) {
       const redisKey = `driver:location:${driver_id}`;
       await redisClient.set(
         redisKey,
-        JSON.stringify({ latitude: sanitized.lat, longitude: sanitized.lng, speed: sanitized.speed ?? 0, bearing: sanitized.heading ?? 0, updated_at: new Date(serverNow) }),
+        JSON.stringify({ latitude: sanitized.lat, longitude: sanitized.lng, speed: sanitized.speed ?? 0, bearing: sanitized.bearing ?? 0, updated_at: new Date(serverNow) }),
         'EX',
         120
       );
@@ -936,7 +952,7 @@ export async function handleLocationPing(ws, data, req) {
       lat,
       lng,
       speed: speed || 0,
-      heading: bearing || 0,
+      heading: sanitized.bearing ?? 0,
       timestamp: deviceTime || new Date(serverNow),
       metadata: {
         order_id: orderUUID || null,
@@ -956,7 +972,7 @@ export async function handleLocationPing(ws, data, req) {
       latitude: sanitized.lat,
       longitude: sanitized.lng,
       speed: sanitized.speed ?? 0,
-      bearing: sanitized.heading ?? 0,
+      bearing: sanitized.bearing ?? 0,
       timestamp: new Date(serverNow)
     }
   });

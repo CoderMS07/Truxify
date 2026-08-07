@@ -82,12 +82,12 @@ export function createCacheEvent(type, opts = {}) {
     id: crypto.randomUUID(),
     type,
     namespace: opts.namespace,
-    key: opts.key || null,
-    pattern: opts.pattern || null,
-    entityId: opts.entityId || null,
-    subKey: opts.subKey || null,
-    originInstanceId: opts.originInstanceId || null,
-    timestamp: opts.timestamp || Date.now(),
+    key: opts.key ?? null,
+    pattern: opts.pattern ?? null,
+    entityId: opts.entityId ?? null,
+    subKey: opts.subKey ?? null,
+    originInstanceId: opts.originInstanceId ?? null,
+    timestamp: opts.timestamp ?? Date.now(),
   };
 }
 
@@ -103,7 +103,7 @@ export function serializeCacheEvent(event) {
 
 /**
  * Deserialize a JSON string back into a cache event object.
- * Returns null if parsing fails.
+ * Returns null if parsing fails or payload contains invalid event structure.
  *
  * @param {string} json
  * @returns {object|null}
@@ -111,17 +111,24 @@ export function serializeCacheEvent(event) {
 export function deserializeCacheEvent(json) {
   try {
     const event = JSON.parse(json);
-    if (!event || !event.type || !event.namespace) return null;
+
+    if (!event || typeof event !== 'object') return null;
+
+    if (!event.namespace || typeof event.namespace !== 'string') {
+      logger.warn('[CacheEvent] Deserialization failed: missing or invalid namespace.');
+      return null;
+    }
+
+    if (!event.type || !VALID_EVENT_TYPES.has(event.type)) {
+      logger.warn(`[CacheEvent] Deserialization failed: unrecognized event type "${event.type}".`);
+      return null;
+    }
+
     return event;
   } catch (err) {
-    logger.warn("[CacheEvent] Deserialization failed:", err?.message);
+    logger.warn({ err }, '[CacheEvent] Deserialization failed: invalid JSON.');
     return null;
   }
 }
 
-export default {
-  CacheEventType,
-  createCacheEvent,
-  serializeCacheEvent,
-  deserializeCacheEvent,
-};
+export default { CacheEventType, createCacheEvent, serializeCacheEvent, deserializeCacheEvent };
