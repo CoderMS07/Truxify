@@ -372,14 +372,16 @@ func pruneGeofenceRateEntries() {
 			}
 		}
 		e.stamps = kept
-		empty := len(e.stamps) == 0
-		e.mu.Unlock()
-
-		if empty {
-			if _, loaded := geofenceRateLimit.LoadAndDelete(key); loaded {
-				atomic.AddUint64(&geofenceRateTracked, ^uint64(0))
-			}
+		// Delete under the entry lock: a concurrent allowGeofence that
+		// re-locks the entry between the emptiness check and the removal
+		// would otherwise lose its timestamps when the entry is deleted,
+		// resetting that driver's 1-second window and allowing bursts
+		// above the cap.
+		if len(e.stamps) == 0 {
+			geofenceRateLimit.Delete(key)
+			atomic.AddUint64(&geofenceRateTracked, ^uint64(0))
 		}
+		e.mu.Unlock()
 		return true
 	})
 }
