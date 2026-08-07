@@ -230,16 +230,20 @@ export async function unregisterAllDeviceTokens(userId) {
  */
 export async function getDevicePlatforms(req, res, next) {
   try {
-    const { data, error } = await supabase
-      .from('user_devices')
-      .select('platform');
+    const checks = await Promise.all(
+      VALID_PLATFORMS.map(async (platform) => {
+        const { data, error } = await supabase
+          .from('user_devices')
+          .select('platform')
+          .eq('platform', platform)
+          .limit(1);
 
-    if (error) {
-      logger.error('[DeviceController] Failed to query device platforms:', error.message);
-      return next(new AppError('Failed to retrieve platforms', 500));
-    }
+        if (error) throw error;
+        return data && data.length > 0 ? platform : null;
+      })
+    );
 
-    const platforms = [...new Set((data || []).map((d) => d.platform).filter(Boolean))];
+    const platforms = checks.filter(Boolean);
     return res.json({ platforms });
   } catch (err) {
     logger.error('[DeviceController] Unexpected error in getDevicePlatforms:', err.message);
