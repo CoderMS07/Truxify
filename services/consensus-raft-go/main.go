@@ -415,8 +415,8 @@ func (rn *RaftNode) sendHeartbeats() {
 				rn.matchIndex[res.url] = newMatch
 				rn.nextIndex[res.url] = newMatch + 1
 			}
-		} else if rn.nextIndex[res.url] > 1 {
-			// Log inconsistency: back off and retry from an earlier prefix.
+		} else if rn.nextIndex[res.url] > 1 && res.request.PrevLogIndex+1 == rn.nextIndex[res.url] {
+			// Log inconsistency: back off and retry from an earlier prefix if probe matches current nextIndex.
 			rn.nextIndex[res.url]--
 		}
 	}

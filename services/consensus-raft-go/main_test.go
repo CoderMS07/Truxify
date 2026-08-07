@@ -351,6 +351,63 @@ func TestOutofOrderAppendResponseDoesNotRegressMatchIndex(t *testing.T) {
 	}
 }
 
+// TestStaleFailureResponseDoesNotRegressNextIndex verifies that an out-of-order
+// failure response arriving after nextIndex has already advanced leaves nextIndex unchanged.
+func TestStaleFailureResponseDoesNotRegressNextIndex(t *testing.T) {
+	bypassAuth = true
+	defer func() { bypassAuth = false }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/raft/append" {
+			time.Sleep(50 * time.Millisecond)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(AppendEntriesResponse{Term: 1, Success: false})
+		}
+	}))
+	defer server.Close()
+
+	now := time.Now()
+	leader := NewRaftNode("node1", []string{"node2"}, []string{server.URL})
+	leader.Log = []LogEntry{
+		{Index: 1, Term: 1, Command: "CREATED", OrderID: "ord-1", Timestamp: now},
+		{Index: 2, Term: 1, Command: "DISPATCHED", OrderID: "ord-1", Timestamp: now},
+		{Index: 3, Term: 1, Command: "IN_TRANSIT", OrderID: "ord-1", Timestamp: now},
+	}
+	leader.Role = Leader
+	leader.CurrentTerm = 1
+	leader.nextIndex = map[string]uint64{server.URL: 2}
+	leader.matchIndex = map[string]uint64{server.URL: 1}
+
+	// Launch sendHeartbeats asynchronously probing index 2
+	done := make(chan bool)
+	go func() {
+		leader.sendHeartbeats()
+		done <- true
+	}()
+
+	// While RPC is in flight, simulate successful advancement of nextIndex to 4
+	time.Sleep(10 * time.Millisecond)
+	leader.mu.Lock()
+	leader.nextIndex[server.URL] = 4
+	leader.matchIndex[server.URL] = 3
+	leader.mu.Unlock()
+
+	<-done
+
+	leader.mu.Lock()
+	next := leader.nextIndex[server.URL]
+	match := leader.matchIndex[server.URL]
+	leader.mu.Unlock()
+
+	if next != 4 {
+		t.Errorf("expected nextIndex to remain unchanged at 4 when stale failure arrives, got %d", next)
+	}
+	if match != 3 {
+		t.Errorf("expected matchIndex to remain 3, got %d", match)
+	}
+}
+
+
 // TestHandleVoteResetsElectionTimer verifies that granting a vote updates lastLeaderSeen.
 func TestHandleVoteResetsElectionTimer(t *testing.T) {
 	bypassAuth = true
