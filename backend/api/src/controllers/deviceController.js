@@ -61,7 +61,6 @@ export async function registerDeviceToken(req, res, next) {
       return res.status(400).json({ error: normalizedMetadata.error });
     }
 
-    const tokenUpdatedAt = new Date().toISOString();
     const { data: existingDevice, error: lookupError } = await supabase
       .from('user_devices')
       .select('user_id')
@@ -75,53 +74,21 @@ export async function registerDeviceToken(req, res, next) {
 
     const previousUserId = existingDevice?.user_id;
 
-    const { error } = await supabase.from('user_devices').upsert(
-      {
-        user_id: userId,
-        fcm_token: fcmToken,
-        platform: platform || 'android',
-        metadata: normalizedMetadata
-      },
-      { onConflict: 'fcm_token' }
-    );
+    const { error } = await // All three operations (upsert user_devices, clear previous owner's profile,
+    // sync current user's profile) run inside a single Postgres transaction via
+    // the register_device_token RPC so a partial failure rolls everything back
+    // and leaves no orphaned or desynchronized records.
+    const { error: rpcError } = await supabase.rpc('register_device_token', {
+      p_user_id:      userId,
+      p_fcm_token:    fcmToken,
+      p_platform:     platform || 'android',
+      p_metadata:     normalizedMetadata,
+      p_prev_user_id: previousUserId ?? null,
+    });
 
-    if (error) {
-      logger.error('[DeviceController] Failed to register device token in database:', error.message);
+    if (rpcError) {
+      logger.error('[DeviceController] register_device_token RPC failed:', rpcError.message);
       return next(new AppError('Failed to register device', 500));
-    }
-
-    if (previousUserId && previousUserId !== userId) {
-      const { error: staleProfileError } = await supabase
-        .from('profiles')
-        .update({
-          fcm_token: null,
-          fcm_token_updated_at: tokenUpdatedAt,
-        })
-        .eq('id', previousUserId)
-        .eq('fcm_token', fcmToken);
-
-      if (staleProfileError) {
-        logger.error(
-          '[DeviceController] Device token saved but failed to clear previous profiles.fcm_token:',
-          staleProfileError.message
-        );
-      }
-    }
-
-    const { error: profileSyncError } = await supabase
-      .from('profiles')
-      .update({
-        fcm_token: fcmToken,
-        fcm_token_updated_at: tokenUpdatedAt,
-      })
-      .eq('id', userId);
-
-    if (profileSyncError) {
-      logger.error(
-        '[DeviceController] Device token saved but failed to sync profiles.fcm_token:',
-        profileSyncError.message
-      );
-      return next(new AppError('Failed to sync device token to profile', 500));
     }
 
     return res.json({
