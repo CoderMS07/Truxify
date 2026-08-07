@@ -1,10 +1,17 @@
 import { supabase } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { verifyDeliveryOtpHash } from '../services/notificationService.js';
+import { DeliveryVerificationService } from '../services/order/deliveryVerificationService.js';
 
 const DELIVERY_COMPLETED_STATUSES = new Set([
   'delivered',
   'payment_released',
+]);
+
+const DELIVERY_IN_PROGRESS_STATUSES = new Set([
+  'picked_up',
+  'in_transit',
+  'arriving',
 ]);
 
 class OracleService {
@@ -128,7 +135,7 @@ class OracleService {
       }
 
       return {
-        confirmed: DELIVERY_COMPLETED_STATUSES.has(order.status),
+        confirmed: DELIVERY_IN_PROGRESS_STATUSES.has(order.status),
         provider: 'StatusVerifier',
         timestamp: new Date().toISOString(),
       };
