@@ -176,9 +176,60 @@ import {
   submitEscrowRefund,
   confirmEscrowRefund,
 } from '../core/container.js';
+import { getEscrowBookingId, resolveExpectedDepositAmount, paisaToMaticWei } from '../services/escrow.js';
 import { getEscrowBookingId, paisaToMaticWei } from '../services/escrow.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
 import { computeOrderPricing } from '../lib/pricing.js';
+
+const verifyDeliveryLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'test' ? 1000 : 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || 'unknown',
+  store: createStore('rl:verify-delivery:'),
+  message: { error: 'Too many delivery verification attempts. Please try again later.' },
+});
+
+const predictDemandLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: process.env.NODE_ENV === 'test' ? 1000 : 10,
+  keyGenerator: (req) => req.user?.id || 'unauthenticated',
+  store: createStore('rl:predict-demand:'),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many demand prediction requests. Please try again later.' },
+});
+
+const telemetryLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: process.env.NODE_ENV === 'test' ? 1000 : 30,
+  keyGenerator: userKeyGenerator,
+  store: createStore('rl:telemetry:'),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many telemetry requests. Please try again later.' },
+});
+
+const resendOtpLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: process.env.NODE_ENV === 'test' ? 1000 : 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || 'unknown',
+  store: createStore('rl:resend-otp:'),
+  message: { error: 'Too many OTP resend requests. Please try again later.' },
+});
+
+const changeDropLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: process.env.NODE_ENV === 'test' ? 1000 : 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || 'unknown',
+  store: createStore('rl:change-drop:'),
+  message: { error: 'Too many drop change requests. Please try again later.' },
+});
 
 const router = express.Router();
 
@@ -192,6 +243,9 @@ router.post('/api/deliveries/:id/geofence-confirm', async (req, res) => {
     return res.status(400).json({ error: 'Invalid driver_lat or driver_lng' });
   }
 
+  const geofenceRadiusM = geofence_radius_m !== undefined ? parseFloat(geofence_radius_m) : undefined;
+  if (geofenceRadiusM !== undefined && (!Number.isFinite(geofenceRadiusM) || geofenceRadiusM <= 0)) {
+    return res.status(400).json({ error: 'Invalid geofence_radius_m' });
   let geofenceRadiusM;
   if (geofence_radius_m !== undefined) {
     geofenceRadiusM = parseFloat(geofence_radius_m);
@@ -204,6 +258,19 @@ router.post('/api/deliveries/:id/geofence-confirm', async (req, res) => {
     // Verify the order exists and the requesting driver is assigned to it
     const order = await orderValidationService.findOrderByIdOrDisplayId(
       req.params.id,
+      'id, driver_id, customer_id'
+    );
+    orderValidationService.assertOrderFound(order);
+    orderValidationService.assertDriverAssignment(order, req.user.id);
+
+    logger.info({
+      event: 'GEOFENCE_CONFIRM_ATTEMPT',
+      orderId: req.params.id,
+      driverId: req.user.id,
+      lat,
+      lng,
+    }, 'Driver geofence confirm attempt');
+
       'id, driver_id, customer_id',
     );
     orderValidationService.assertOrderFound(order);
@@ -236,6 +303,8 @@ router.post('/api/deliveries/:id/geofence-confirm', async (req, res) => {
     logger.error('[geofence-confirm] Exception:', err.message);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
+}
+);
 });
 
 // ============================================================================
@@ -436,6 +505,9 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
     // Rebalance the escrow booking alongside the re-priced total so the
     // displayed price, the on-chain payout, and any refund all stay in sync.
     // escrow_amount_wei is the authoritative payout figure (verified against
+    // at deposit time and on release), so it must track total_amount using the
+    // same canonical paisa→wei conversion the rest of the escrow pipeline uses.
+    const newAmountWei = paisaToMaticWei(pricing.totalAmount);
     // at deposit time and read on release), so it must track total_amount.
     const newAmountWei = BigInt(paisaToMaticWei(pricing.totalAmount));
 
@@ -664,12 +736,22 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
       ).catch((err) => logger.error(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
     };
 
+    // Resolve the authoritative expected deposit amount for this order and
+    // cross-check it against the server-written bid context. This must happen
+    // BEFORE any client-supplied value is trusted: the on-chain deposit is
+    // only accepted if it matches the amount the app actually recorded.
+    const resolvedAmount = resolveExpectedDepositAmount(order);
+    if (resolvedAmount.error) {
+      return res.status(422).json({ error: resolvedAmount.error, code: resolvedAmount.code });
+    }
+    const expectedAmountWei = resolvedAmount.expectedAmountWei;
+
     const result = await recordDepositTx(
       bookingId,
       txHash,
       customerWallet,
       order.escrow_driver_wallet ?? null,
-      order.escrow_amount_wei ?? null
+      expectedAmountWei
     );
 
     if (result.alreadyFunded) {
@@ -687,7 +769,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
     }
 
     if (result.error) {
-      return res.status(422).json({ error: result.error });
+      return res.status(422).json({ error: result.error, code: result.code });
     }
 
     const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
