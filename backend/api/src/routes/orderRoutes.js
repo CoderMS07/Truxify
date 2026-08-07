@@ -173,7 +173,6 @@ import {
   deliveryVerificationService,
   buildDepositTx,
   recordDepositTx,
-  submitEscrowRefund,
   confirmEscrowRefund,
   escrowRefund,
 } from '../core/container.js';
