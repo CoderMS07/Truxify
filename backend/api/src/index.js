@@ -46,11 +46,11 @@ import supportRoutes from './routes/supportRoutes.js'
 import profileRoutes from './routes/profileRoutes.js'
 import shipmentRoutes from './routes/shipmentRoutes.js'
 import loadRoutes from './routes/loadRoutes.js'
+import iotRoutes from './routes/iotRoutes.js'
 import deadheadRoutes from './routes/deadheadRoutes.js'
 import truckRoutes from './routes/truckRoutes.js'
 import authRoutes from './routes/authRoutes.js'
 import routeRoutes from './routes/routeRoutes.js'
-import iotRoutes from './routes/iotRoutes.js'
 import healthRoutes from './routes/healthRoutes.js'
 import adminRoutes from './routes/adminRoutes.js'
 import lookupRoutes from './routes/lookupRoutes.js'
@@ -68,10 +68,6 @@ import demandRoutes from './routes/demandRoutes.js'
 import verificationRoutes from './routes/verificationRoutes.js'
 import oracleRoutes from './routes/oracleRoutes.js'
 import blockchainMonitoringRoutes from './routes/blockchainMonitoringRoutes.js'
-import { BlockchainMetrics, EscalationHandler } from './services/blockchain/index.js';
-
-const blockchainMetrics = new BlockchainMetrics();
-const escalationHandler = new EscalationHandler();
 
 // ============================================================================
 // 🆕 GEOGRAPHIC SHARDING ROUTES
@@ -145,6 +141,8 @@ import {
   stopDlqWorker,
 } from './workers/dlqWorker.js'
 import { startStaleOrderWorker } from './workers/staleOrderWorker.js'
+import BlockchainMetrics from './services/blockchain/blockchainMetrics.js'
+import EscalationHandler from './services/blockchain/escalationHandler.js'
 import {
   startWithdrawalSettlementWorker,
   stopWithdrawalSettlementWorker
@@ -172,6 +170,12 @@ try {
 // INITIALIZE DISTRIBUTED CACHE MANAGER
 // ============================================================================
 CacheManager.init(redisClient)
+
+// ============================================================================
+// BLOCKCHAIN MONITORING — singletons shared with blockchainMonitoringRoutes
+// ============================================================================
+const blockchainMetrics = new BlockchainMetrics()
+const escalationHandler = new EscalationHandler({})
 
 // ============================================================================
 // STARTUP VALIDATION — crash fast, not at request time
@@ -471,8 +475,10 @@ app.use('/api/driver', driverRoutes)
 // content-type enforcement, fraud detection and the /api rate limiter.
 // Registering it earlier silently bypasses every one of them.
 app.use('/api/earnings', earningsRouter)
+app.use('/api/routes', routeRoutes)
 app.use('/api/v1/shipment', shipmentRoutes)
 app.use('/api/loads', loadRoutes)
+app.use('/api/iot', iotRoutes)
 app.use('/api/support', supportRoutes)
 app.use('/api/profile', profileRoutes)
 app.use('/api/users', userRoutes)
@@ -506,6 +512,18 @@ app.use('/api/blockchain', (req, _res, next) => {
   next();
 }, blockchainMonitoringRoutes)
 app.use('/api/webhooks', webhookRoutes)
+
+// ============================================================================
+// 🆕 BLOCKCHAIN MONITORING ROUTES
+// Attach the monitoring services and service-role client per request so the
+// handlers never fall back to the anon-key client (RLS would hide all rows).
+// ============================================================================
+app.use('/api/blockchain', (req, _res, next) => {
+  req.blockchainMetrics = blockchainMetrics
+  req.escalationHandler = escalationHandler
+  req.supabase = supabaseAdmin
+  next()
+}, blockchainMonitoringRoutes)
 
 // 🆕 Oracle Health Check Endpoint
 app.get('/api/oracle/health', (req, res) => {
@@ -683,7 +701,7 @@ server.listen(PORT, () => {
   startEscrowFundingReconciliation(escrowReconciliationOrderRepository)
   startReputationReconciliation(orderRepository)
   startDlqWorker()
-  startStaleOrderWorker()
+  startStaleOrderWorker(escrowReconciliationOrderRepository)
   startDocumentExpiryWorker()
   startWithdrawalSettlementWorker()
 
