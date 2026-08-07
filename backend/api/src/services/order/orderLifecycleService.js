@@ -895,8 +895,6 @@ export class OrderLifecycleService {
 
         const { error: updateErr } = await this.orderRepository.updateOrder(orderId, {
           escrow_status: 'funded',
-          deposit_tx_hash: result.txHash,
-          escrow_deposited_at: new Date().toISOString(),
         });
 
         if (updateErr) {
