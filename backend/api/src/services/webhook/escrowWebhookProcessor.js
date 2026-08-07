@@ -21,7 +21,7 @@ async function findOrderByIdOrDisplayId(orderId) {
     throw new Error('Missing orderId in escrow webhook payload');
   }
 
-  const columns = 'id, order_display_id, driver_id, escrow_status, release_tx_hash, refund_tx_hash';
+  const columns = 'id, order_display_id, driver_id, escrow_status, release_tx_hash';
 
   if (UUID_REGEX.test(orderId)) {
     const { data, error } = await db
@@ -100,7 +100,6 @@ async function handleBookingCancelled(payload) {
     .from('orders')
     .update({
       escrow_status: 'refunded',
-      refund_tx_hash: payload.txHash || order.refund_tx_hash || null,
       updated_at: now,
     })
     .eq('id', order.id)
@@ -127,7 +126,6 @@ async function handleWithdrawalSettled(payload) {
     .from('orders')
     .update({
       escrow_status: isRefund ? 'refunded' : 'released',
-      [isRefund ? 'refund_tx_hash' : 'release_tx_hash']: txHash || order.release_tx_hash || order.refund_tx_hash || null,
       escrow_released_at: isRefund ? undefined : now,
       escrow_release_error: isRefund ? undefined : null,
       updated_at: now,
