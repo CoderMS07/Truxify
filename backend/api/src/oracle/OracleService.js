@@ -1,6 +1,7 @@
 import { supabase } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { verifyDeliveryOtpHash } from '../services/notificationService.js';
+import { DeliveryVerificationService } from '../services/order/deliveryVerificationService.js';
 
 // Statuses that indicate a delivery is currently in progress and therefore
 // eligible for verification. Terminal states ('delivered', 'payment_released')
@@ -99,11 +100,30 @@ class OracleService {
     }
 
     try {
-      const verification = await DeliveryVerificationService.assertDriverAtDropoff(orderId, gpsCoordinates);
+      const { data: order, error: orderErr } = await this.supabase
+        .from('orders')
+        .select('id, driver_id, drop_lat, drop_lng')
+        .eq('id', orderId)
+        .maybeSingle();
+
+      if (orderErr || !order) {
+        return {
+          confirmed: false,
+          provider: 'GPSVerifier',
+          reason: orderErr?.message || 'Order not found',
+          timestamp: new Date().toISOString(),
+        };
+      }
+
+      // assertDriverAtDropoff(order, radiusM) resolves when the assigned
+      // driver's latest telemetry is fresh and inside the drop-off geofence;
+      // it throws a DomainError otherwise (missing/stale/out-of-range data).
+      const deliveryVerifier = new DeliveryVerificationService();
+      await deliveryVerifier.assertDriverAtDropoff(order);
+
       return {
-        confirmed: verification.success || verification.isValid === true,
+        confirmed: true,
         provider: 'GPSVerifier',
-        reason: verification.reason || null,
         timestamp: new Date().toISOString(),
       };
     } catch (error) {
