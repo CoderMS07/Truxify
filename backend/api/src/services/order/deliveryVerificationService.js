@@ -344,10 +344,6 @@ export class DeliveryVerificationService {
         // position for audit. This is a flag only — escrow is not released here.
         await this.orderRepository
           .updateOrder(orderId, {
-            geofence_confirmed: true,
-            geofence_confirmed_at: new Date().toISOString(),
-            geofence_driver_lat: driverLat,
-            geofence_driver_lng: driverLng,
             updated_at: new Date().toISOString(),
           })
           .catch((err) =>
