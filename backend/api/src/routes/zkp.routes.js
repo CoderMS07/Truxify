@@ -1,8 +1,9 @@
-const { authenticate } = require('../middleware/auth.middleware');
 import express from 'express';
+import { authenticate } from '../middleware/auth.js';
 import zkpService from '../services/zkp/zkp.service.js';
 import { LockAcquisitionError } from '../lib/redisLock.js';
 import { redisRateLimiter } from '../middleware/redisRateLimiter.js';
+import { authenticate } from '../middleware/auth.js';
 import logger from '../middleware/logger.js';
 
 const router = express.Router();
@@ -23,6 +24,7 @@ const zkpVerifyLimiter = redisRateLimiter({
   routeKey: 'zkp_verify',
   limit: Number(process.env.ZKP_RATE_LIMIT_MAX) || 5,
   windowMs: Number(process.env.ZKP_RATE_LIMIT_WINDOW_MS) || 60 * 60 * 1000,
+  failClosed: true,
 });
 
 /**
