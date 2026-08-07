@@ -1,7 +1,9 @@
 import express from 'express';
+import { authenticate } from '../middleware/auth.js';
 import zkpService from '../services/zkp/zkp.service.js';
 import { LockAcquisitionError } from '../lib/redisLock.js';
 import { redisRateLimiter } from '../middleware/redisRateLimiter.js';
+import { authenticate } from '../middleware/auth.js';
 import logger from '../middleware/logger.js';
 
 const router = express.Router();
@@ -22,6 +24,7 @@ const zkpVerifyLimiter = redisRateLimiter({
   routeKey: 'zkp_verify',
   limit: Number(process.env.ZKP_RATE_LIMIT_MAX) || 5,
   windowMs: Number(process.env.ZKP_RATE_LIMIT_WINDOW_MS) || 60 * 60 * 1000,
+  failClosed: true,
 });
 
 /**
@@ -43,7 +46,7 @@ const zkpVerifyLimiter = redisRateLimiter({
  *   zkpVerifyLimiter caps each user to 5 attempts/hour (sliding window).
  *   Excess requests receive 429 before reaching the blockchain layer.
  */
-router.post('/verify', zkpVerifyLimiter, async (req, res) => {
+router.post('/verify', authenticate, zkpVerifyLimiter, async (req, res) => {
   try {
     const {
       userId,
@@ -97,7 +100,7 @@ router.post('/verify', zkpVerifyLimiter, async (req, res) => {
  * GET /zkp/status/:userId
  * Returns the KYC verification status for a driver.
  */
-router.get('/status/:userId', async (req, res) => {
+router.get('/status/:userId', authenticate, async (req, res) => {
   try {
     const { userId } = req.params;
     const verified = await zkpService.isVerified(userId);
@@ -112,7 +115,7 @@ router.get('/status/:userId', async (req, res) => {
  * GET /zkp/stats
  * Returns aggregate KYC verification counts.
  */
-router.get('/stats', async (req, res) => {
+router.get('/stats', authenticate, async (req, res) => {
   try {
     const stats = await zkpService.getVerificationStats();
     return res.status(200).json({ success: true, ...stats });

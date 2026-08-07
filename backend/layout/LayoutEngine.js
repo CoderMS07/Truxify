@@ -101,3 +101,5 @@ class LayoutEngine {
                 this.isProcessing = false;
             }
         }).catch(err => console.error(err));
+    }
+}
