@@ -79,7 +79,7 @@ export async function registerDeviceToken(req, res, next) {
 
     const previousUserId = existingDevice?.user_id;
 
-    const { error } = await // All three operations (upsert user_devices, clear previous owner's profile,
+    // All three operations (upsert user_devices, clear previous owner's profile,
     // sync current user's profile) run inside a single Postgres transaction via
     // the register_device_token RPC so a partial failure rolls everything back
     // and leaves no orphaned or desynchronized records.
@@ -144,20 +144,25 @@ export async function unregisterDeviceToken(req, res, next) {
       });
     }
 
-    const { error: profileClearError } = await supabase
-      .from('profiles')
-      .update({
-        fcm_token: null,
-        fcm_token_updated_at: new Date().toISOString(),
-      })
-      .eq('id', userId)
-      .eq('fcm_token', fcmToken);
+    const { data: remainingDevices } = await supabase
+      .from('user_devices')
+      .select('fcm_token')
+      .eq('user_id', userId)
+      .not('fcm_token', 'is', null)
+      .limit(1);
 
-    if (profileClearError) {
-      logger.error(
-        '[DeviceController] Device token removed but failed to clear profiles.fcm_token:',
-        profileClearError.message
-      );
+    if ((remainingDevices || []).length === 0) {
+      const { error: profileClearError } = await supabase
+        .from('profiles')
+        .update({ fcm_token: null, fcm_token_updated_at: new Date().toISOString() })
+        .eq('id', userId);
+
+      if (profileClearError) {
+        logger.error(
+          '[DeviceController] No remaining devices but failed to clear profiles.fcm_token:',
+          profileClearError.message
+        );
+      }
     }
 
     return res.json({
