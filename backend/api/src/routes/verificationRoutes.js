@@ -9,7 +9,7 @@ import { validateParams, validateBody } from '../middleware/validate.js';
 import logger from '../middleware/logger.js';
 import { verifyOrderParamsSchema, documentCheckSchema } from '../validation/requestSchemas.js';
 import { PolicyError, policy } from '../security/policyEngine.js';
-import digilockerService from '../services/verification/DigilockerService.js';
+import digilockerService from '../services/digilockerService.js';
 import { validateDocumentBuffer, DocumentValidationError } from '../lib/documentValidation.js';
 import { scanDocument, MalwareScanError } from '../lib/malwareScanner.js';
 
