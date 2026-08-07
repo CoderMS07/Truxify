@@ -15,9 +15,9 @@ class TokenizationService {
             'function createTradeOrder(uint256 assetId, uint256 amount, uint256 price, string memory orderType) external',
             'function executeTradeOrder(uint256 assetId, uint256 orderIndex) external payable',
             'function cancelTradeOrder(uint256 assetId, uint256 orderIndex) external',
-            'function getTradeOrders(uint256 assetId) external view returns (tuple(uint256,uint256,address,address,uint256,uint256,string,bool,uint256,uint256)[])',
+            'function getTradeOrders(uint256 assetId) external view returns (tuple(uint256,uint256,address,address,uint256,uint256,uint256,string,bool,uint256,uint256)[])',
             'function getAsset(uint256 assetId) external view returns (tuple(uint256,string,string,string,uint256,uint256,uint256,uint256,address,bool,string,uint256,uint256))',
-            'function getFractionalOwnership(uint256 assetId, address owner) external view returns (tuple(address,uint256,uint256,uint256))',
+            'function getFractionalOwnership(uint256 assetId, address owner) external view returns (tuple(address,uint256,uint256,uint256,uint256))',
             'function getTotalAssets() external view returns (uint256)',
             'function getTotalTradeOrders() external view returns (uint256)'
         ];
@@ -185,9 +185,9 @@ class TokenizationService {
                 seller: order[2],
                 buyer: order[3],
                 amount: ethers.formatEther(order[4]),
-                price: ethers.formatEther(order[5]),
-                orderType: order[6],
-                isActive: order[7]
+                price: ethers.formatEther(order[6]),
+                orderType: order[7],
+                isActive: order[8]
             };
         } catch (error) {
             logger.error('Failed to get trade order:', error);
@@ -265,7 +265,8 @@ class TokenizationService {
                 owner: ownership[0],
                 tokenId: ownership[1].toString(),
                 amount: ethers.formatEther(ownership[2]),
-                purchasedAt: ownership[3].toString()
+                backedTokens: ethers.formatEther(ownership[3]),
+                purchasedAt: ownership[4].toString()
             };
         } catch (error) {
             logger.error('Fractional ownership fetch failed:', error);
