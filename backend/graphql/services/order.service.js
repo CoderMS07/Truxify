@@ -51,7 +51,7 @@ const ORDER_STATUS_TO_DB = {
     IN_TRANSIT: 'in_transit',
     COMPLETED: 'delivered',
     CANCELLED: 'cancelled',
-    DISPUTED: 'cancelled',
+    DISPUTED: 'disputed',
 };
 
 function toDbStatus(status) {
