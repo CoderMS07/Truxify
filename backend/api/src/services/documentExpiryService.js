@@ -1,4 +1,4 @@
-import { supabase, supabaseAdmin, redisClient } from '../config/db.js';
+import { supabaseAdmin, redisClient } from '../config/db.js';
 import { sendPushNotification } from './notificationService.js';
 import logger from '../middleware/logger.js';
 import crypto from 'crypto';
