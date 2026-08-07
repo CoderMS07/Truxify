@@ -226,22 +226,7 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
   }
 
   try {
-    // 1. Check Idempotency (Prevent double processing)
-    // We check if this exact batch has already been processed recently.
-    const { data: existingBatch } = await supabase
-      .from('processed_batches')
-      .select('id')
-      .eq('idempotency_key', idempotencyKey)
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    if (existingBatch) {
-      logger.info('[SyncEngine] Ignored duplicate batch:', idempotencyKey);
-      // Return 202 Accepted so the Flutter app marks them as synced locally
-      return res.status(202).json({ error: 'Batch already processed.' });
-    }
-
-    // 2. Validate per-event-type payloads and strip sensitive fields
+    // 1. Validate per-event-type payloads and strip sensitive fields
     for (const event of events) {
       const result = validateEventPayload(event.type, event.payload || {});
       if (!result.success) {
@@ -253,8 +238,10 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
       }
     }
 
-    // 2b. Ownership check: events may only be attached to trips (orders) the
+    // 2. Ownership check: events may only be attached to trips (orders) the
     // caller owns or is assigned to. Never trust a client-supplied trip_id.
+    // This runs BEFORE the idempotency short-circuit below, otherwise a
+    // replayed batch would return 202 and skip authorization entirely.
     if (req.user.role !== 'admin') {
       const tripIds = [...new Set(events.map(event => event.trip_id).filter(Boolean))];
 
@@ -281,6 +268,21 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
           }
         }
       }
+    }
+
+    // 3. Check Idempotency (Prevent double processing)
+    // We check if this exact batch has already been processed recently.
+    const { data: existingBatch } = await supabase
+      .from('processed_batches')
+      .select('id')
+      .eq('idempotency_key', idempotencyKey)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (existingBatch) {
+      logger.info('[SyncEngine] Ignored duplicate batch:', idempotencyKey);
+      // Return 202 Accepted so the Flutter app marks them as synced locally
+      return res.status(202).json({ error: 'Batch already processed.' });
     }
 
     const recordsToInsert = events.map(event => {
