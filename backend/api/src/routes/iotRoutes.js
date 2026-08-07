@@ -57,8 +57,8 @@ router.post('/telemetry/:id', telemetryHistoryLimiter, authenticate, validatePar
       return res.status(400).json({ error: 'Load does not require refrigeration' });
     }
 
-    if (req.user.role !== 'admin' && load.customer_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied for this load' });
+    if (req.user.role !== 'admin' && req.user.role !== 'iot_device') {
+      return res.status(403).json({ error: 'Access denied: IoT device authorization required' });
     }
 
     // Insert telemetry (service-role client: RLS only permits service_role to
