@@ -7,7 +7,7 @@ const SENTRY_ERROR_FILTERS = [
   { code: 'ETIMEDOUT', level: 'warn' },
 ];
 
-function shouldIgnoreError(err) {
+export function shouldIgnoreError(err) {
   return SENTRY_ERROR_FILTERS.some(f => err.code === f.code);
 }
 
