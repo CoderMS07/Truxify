@@ -1,3 +1,12 @@
+
+class EscrowAmountMismatchError extends Error {
+  constructor(expectedWei, actualWei) {
+    super(`Escrow deposit amount mismatch: expected ${expectedWei} Wei, received ${actualWei} Wei.`);
+    this.name = 'EscrowAmountMismatchError';
+    this.code = 'ESCROW_AMOUNT_MISMATCH';
+  }
+}
+
 /**
  * Polygon Blockchain — Escrow Payment Service
  *
@@ -645,3 +654,17 @@ export async function submitEscrowResolveDisputeTimeout (orderDisplayId) {
 }
 export const lockPayment = escrowLockPayment;
 
+
+
+async function verifyOnChainEscrowBalance(bookingId, expectedWei) {
+  const bookingOnChain = await escrowContract.bookings(bookingId);
+  const onChainAmountBN = BigInt(bookingOnChain.amount.toString());
+  const expectedWeiBN = BigInt(expectedWei);
+  return {
+    valid: onChainAmountBN >= expectedWeiBN,
+    onChainAmount: onChainAmountBN.toString(),
+    expectedAmount: expectedWeiBN.toString()
+  };
+}
+
+module.exports.verifyOnChainEscrowBalance = verifyOnChainEscrowBalance;
