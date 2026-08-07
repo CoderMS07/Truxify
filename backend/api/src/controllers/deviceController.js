@@ -223,7 +223,8 @@ export async function getDevicePlatforms(req, res, next) {
   try {
     const { data, error } = await supabase
       .from('user_devices')
-      .select('platform');
+      .select('platform')
+      .eq('user_id', req.user.id);
 
     if (error) {
       logger.error('[DeviceController] Failed to query device platforms:', error.message);
