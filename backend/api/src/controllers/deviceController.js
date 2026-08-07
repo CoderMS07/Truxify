@@ -17,16 +17,23 @@ function validatePlatform(platform) {
   return VALID_PLATFORMS.includes(platform) ? null : `Platform must be one of: ${VALID_PLATFORMS.join(', ')}`;
 }
 
+/**
+ * Normalizes and validates metadata payload.
+ * Returns an explicit result structure so user payload keys (e.g. { error: "..." }) 
+ * are not confused with validation failures.
+ */
 function normalizeMetadata(metadata) {
-  if (metadata === undefined || metadata === null) return {};
+  if (metadata === undefined || metadata === null) {
+    return { data: {}, error: null };
+  }
   if (typeof metadata !== 'object' || Array.isArray(metadata)) {
-    return { error: 'metadata must be an object' };
+    return { data: null, error: 'metadata must be an object' };
   }
   const prototype = Object.getPrototypeOf(metadata);
   if (prototype !== Object.prototype && prototype !== null) {
-    return { error: 'metadata must be an object' };
+    return { data: null, error: 'metadata must be an object' };
   }
-  return metadata;
+  return { data: metadata, error: null };
 }
 
 /**
@@ -56,9 +63,11 @@ export async function registerDeviceToken(req, res, next) {
       return next(new ValidationError(platErr));
     }
 
-    const normalizedMetadata = normalizeMetadata(metadata);
-    if (normalizedMetadata.error) {
-      return res.status(400).json({ error: normalizedMetadata.error });
+    const { data: normalizedMetadata, error: metadataErr } = normalizeMetadata(metadata);
+    if (metadataErr) {
+      return res.status(400).json(
+        errorResponse('VALIDATION_ERROR', metadataErr)
+      );
     }
 
     const tokenUpdatedAt = new Date().toISOString();
