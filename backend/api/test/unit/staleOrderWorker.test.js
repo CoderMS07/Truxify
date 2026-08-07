@@ -13,6 +13,7 @@ vi.mock('../../src/config/db.js', () => ({
   supabase: {},
   supabaseAdmin: {},
   redisClient: {},
+  supabaseAdmin: null,
 }));
 
 vi.mock('../../src/services/notificationService.js', () => ({
