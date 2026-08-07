@@ -132,7 +132,7 @@ export const dlqService = {
                 retry_count: newRetryCount,
                 next_retry_at: nextRetryAt,
                 error_message: String(procErr.message || procErr).slice(0, 1000),
-                updated_at: new Date().toISOString()
+                updated_at: new Date().toISOString(),
               })
               .eq('id', event.id);
           }
