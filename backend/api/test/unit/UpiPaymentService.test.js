@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { describe, it, expect, vi } from 'vitest';
 import UpiPaymentService from '../../src/services/payment/UpiPaymentService.js';
 
@@ -11,6 +12,9 @@ describe('UpiPaymentService', () => {
       const amount = 500;
       const upiId = 'driver@upi';
       
+      const randomUUIDSpy = vi.spyOn(crypto, 'randomUUID');
+      const randomIntSpy = vi.spyOn(crypto, 'randomInt');
+      
       const result = await UpiPaymentService.processDriverPayout(upiId, amount);
       
       expect(result).toBeDefined();
@@ -18,16 +22,18 @@ describe('UpiPaymentService', () => {
       expect(result.processed_at).toBeDefined();
       
       // Check payout_id format (pout_ + UUIDv4)
-      // UUIDv4 format: 8-4-4-4-12 hex digits
-      expect(result.payout_id).toMatch(/^pout_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+      // UUIDv4 format: 8-4-4-4-12 hex digits with version 4 and variant 8, 9, a, or b
+      expect(result.payout_id).toMatch(/^pout_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
       
       // Check utr format (12-digit number)
       expect(result.utr).toMatch(/^\d{12}$/);
       
-      // Verify values are sufficiently random (entropy check)
-      const result2 = await UpiPaymentService.processDriverPayout(upiId, amount);
-      expect(result.payout_id).not.toBe(result2.payout_id);
-      expect(result.utr).not.toBe(result2.utr);
+      // Verify crypto methods are invoked for identifier generation
+      expect(randomUUIDSpy).toHaveBeenCalled();
+      expect(randomIntSpy).toHaveBeenCalledWith(100000000000, 1000000000000);
+      
+      randomUUIDSpy.mockRestore();
+      randomIntSpy.mockRestore();
     });
   });
 
