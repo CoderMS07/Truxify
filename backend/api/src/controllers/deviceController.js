@@ -18,13 +18,13 @@ function validatePlatform(platform) {
 }
 
 function normalizeMetadata(metadata) {
-  if (metadata === undefined || metadata === null) return {};
+  if (metadata === undefined || metadata === null) return null;
   if (typeof metadata !== 'object' || Array.isArray(metadata)) {
-    return { error: 'metadata must be an object' };
+    return null;
   }
   const prototype = Object.getPrototypeOf(metadata);
   if (prototype !== Object.prototype && prototype !== null) {
-    return { error: 'metadata must be an object' };
+    return null;
   }
   return metadata;
 }
@@ -57,8 +57,8 @@ export async function registerDeviceToken(req, res, next) {
     }
 
     const normalizedMetadata = normalizeMetadata(metadata);
-    if (normalizedMetadata.error) {
-      return res.status(400).json({ error: normalizedMetadata.error });
+    if (normalizedMetadata === null) {
+      return res.status(400).json({ error: 'metadata must be a plain object' });
     }
 
     const tokenUpdatedAt = new Date().toISOString();
