@@ -121,6 +121,7 @@ export async function unregisterDeviceToken(req, res, next) {
     const tokenErr = validateFcmToken(fcmToken);
     if (tokenErr) {
       return res.status(400).json({
+        success: false,
         error: tokenErr
       });
     }
