@@ -329,10 +329,16 @@ export class DeliveryVerificationService {
         // The release gate must never be satisfied by self-reported coordinates.
         // assertDriverAtDropoff() proves physical presence using only telemetry
         // that was authenticated at ingestion and bound to this driver/order.
-        await this.assertDriverAtDropoff(
-          order,
-          geofenceRadiusM ?? DELIVERY_GEOFENCE_RADIUS_KM * 1000,
-        );
+        // The radius is clamped to the server default so a client-supplied
+        // NaN/negative/oversized value can never bypass the distance check.
+        const maxRadiusM = DELIVERY_GEOFENCE_RADIUS_KM * 1000;
+        const radiusM =
+          geofenceRadiusM != null &&
+          Number.isFinite(geofenceRadiusM) &&
+          geofenceRadiusM > 0
+            ? Math.min(geofenceRadiusM, maxRadiusM)
+            : maxRadiusM;
+        await this.assertDriverAtDropoff(order, radiusM);
 
         // Record the geofence confirmation and the (non-authoritative) claimed
         // position for audit. This is a flag only — escrow is not released here.
@@ -461,57 +467,8 @@ export class DeliveryVerificationService {
         let releaseTxHash = null;
         let escrowAlreadyReleased = false;
 
-        // 1. Execute Blockchain Release FIRST to fail-safe if network errors occur
-        if (
-          order.escrow_status === "funded" ||
-          order.escrow_status === "release_failed"
-        ) {
-          try {
-            const releaseResult = await this.escrowReleaseFn(
-              order.order_display_id,
-            );
-            if (releaseResult.txHash) {
-              releaseTxHash = releaseResult.txHash;
-            } else if (releaseResult.alreadyReleased) {
-              escrowAlreadyReleased = true;
-            } else {
-              throw new Error("Escrow release returned no transaction hash");
-            }
-          } catch (releaseErr) {
-            logger.error(
-              "[escrow] Blockchain release failed for order",
-              orderId,
-              ":",
-              releaseErr.message,
-            );
-            throw new DomainError(503, {
-              error:
-                "Blockchain escrow release failed. Payment cannot be processed. Please retry.",
-              retryable: true,
-            });
-          }
-
-          // Persist the confirmed release outcome immediately so a later
-          // complete_trip_tx failure is recoverable: escrow_status becomes
-          // 'released' before the RPC runs, so the SQL gate no longer blocks
-          // retries with a NULL release hash.
-          if (releaseTxHash || escrowAlreadyReleased) {
-            const { error: persistReleaseErr } =
-              await this.orderRepository.updateOrder(orderId, {
-                escrow_status: "released",
-                escrow_release_error: null,
-                escrow_released_at: new Date().toISOString(),
-                release_tx_hash: releaseTxHash,
-              });
-
-            if (persistReleaseErr) {
-              logger.error(
-                "[escrow] Release confirmed but persistence failed:",
-                persistReleaseErr.message,
-              );
-            }
-          }
-        } else if (order.escrow_status === "released") {
+        // 1. Database and Trip State Verification/Execution First
+        if (order.escrow_status === "released") {
           // Release was confirmed in a previous attempt — reuse the persisted hash.
           releaseTxHash = order.release_tx_hash || null;
         } else {
