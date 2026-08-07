@@ -53,6 +53,7 @@ vi.mock('../src/services/escrow.js', () => ({
   getEscrowBookingId: vi.fn(),
   // Canonical default-rate conversion: 0.000004 MATIC/paisa → 4e12 wei/paisa.
   paisaToMaticWei: (paisa) => BigInt(Math.round(Number(paisa))) * 4000000000000n,
+  paisaToMaticWei: vi.fn((paisa) => BigInt(Math.round(paisa * 4e12))),
 }));
 
 vi.mock('../src/services/osrm.js', () => ({
@@ -127,6 +128,9 @@ describe('changeDrop escrow rebalance (issue #5825)', () => {
     // canonical conversion as the rest of the escrow pipeline
     // (wei = rounded_paisa × 4e12 for the default 0.000004 MATIC/paisa rate).
     expect(escrow_amount_wei).toBe(String(BigInt(Math.round(Number(total_amount))) * 4000000000000n));
+    // escrow payout figure must track the advertised total via the canonical
+    // paisa -> wei converter (wei = paisa * 4e12, see escrow.js paisaToMaticWei).
+    expect(escrow_amount_wei).toBe(BigInt(Math.round(total_amount * 4e12)).toString());
   });
 
   it('rejects change-drop once escrow funding has started or completed', async () => {
@@ -183,5 +187,6 @@ describe('RPC/route persist escrow_amount_wei (issue #5825)', () => {
     );
     expect(changeDropSection).toContain('escrow_amount_wei: newAmountWei.toString()');
     expect(changeDropSection).toContain('paisaToMaticWei(pricing.totalAmount)');
+    expect(changeDropSection).toContain('BigInt(paisaToMaticWei(pricing.totalAmount))');
   });
 });

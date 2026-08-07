@@ -302,8 +302,8 @@ export class OrderLifecycleService {
   async submitBid(loadOfferId, driverId, bidAmount) {
     return measureExecution('OrderLifecycleService.submitBid', async () => {
       const lockKey = `lock:submitBid:${driverId}:${loadOfferId}`;
-      const acquired = await acquireLock(lockKey, 5000);
-      if (!acquired) throw new DomainError(409, { error: 'Duplicate bid submission in progress.' });
+      const lockValue = await acquireLock(lockKey, 5000);
+      if (!lockValue) throw new DomainError(409, { error: 'Duplicate bid submission in progress.' });
 
       try {
         const { data: offer, error: offerErr } = await this.orderRepository.findLoadOfferById(loadOfferId, 'id, status, customer_id');
@@ -342,7 +342,7 @@ export class OrderLifecycleService {
 
         return { message: 'Bid submitted successfully.', bid };
       } finally {
-        await releaseLock(lockKey);
+        await releaseLock(lockKey, lockValue);
       }
     });
   }
@@ -580,6 +580,7 @@ export class OrderLifecycleService {
         // total_amount using the same canonical paisa→wei conversion the rest
         // of the escrow pipeline uses.
         const newAmountWei = paisaToMaticWei(pricing.totalAmount);
+        const newAmountWei = BigInt(paisaToMaticWei(pricing.totalAmount));
 
         const updates = {
           drop_address,
