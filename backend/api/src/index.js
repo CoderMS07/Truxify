@@ -666,7 +666,7 @@ server.listen(PORT, () => {
     ? new OrderRepository(supabaseAdmin)
     : orderRepository;
   startEscrowRefundReconciliation(escrowReconciliationOrderRepository)
-  startEscrowReleaseReconciliation()
+  startEscrowReleaseReconciliation(escrowReconciliationOrderRepository)
   startEscrowFundingReconciliation(escrowReconciliationOrderRepository)
   startReputationReconciliation(orderRepository)
   startDlqWorker()
