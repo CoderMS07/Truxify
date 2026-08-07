@@ -1577,6 +1577,179 @@ router.get('/:id/earnings', authenticate, userLimiter, requirePolicy('driver:vie
   }
 });
 
+// ============================================================================
+// Driver Profile & Availability & Truck endpoints
+// ============================================================================
+
+router.get('/profile', authenticate, userLimiter, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // 1. Fetch base profile
+    const { data: profile, error: profileErr } = await supabase
+      .from('profiles')
+      .select('id, full_name, phone, email')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (profileErr || !profile) {
+      return res.status(404).json({ error: 'Driver profile not found.' });
+    }
+
+    // 2. Fetch driver details
+    const { data: details, error: detailsErr } = await supabase
+      .from('driver_details')
+      .select('rating, total_trips, completion_rate, is_online, kyc_status, truck_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    // 3. Fetch truck details if assigned
+    let truck = null;
+    if (details && details.truck_id) {
+      const { data: truckData } = await supabase
+        .from('trucks')
+        .select('*')
+        .eq('id', details.truck_id)
+        .maybeSingle();
+      truck = truckData;
+    }
+
+    // 4. Fetch documents and map their status
+    const { data: docs } = await supabase
+      .from('driver_documents')
+      .select('document_type, status, is_govt_verified')
+      .eq('driver_id', userId);
+
+    const docMap = {
+      rc_book: 'Missing',
+      driving_licence: 'Missing',
+      insurance: 'Missing'
+    };
+
+    if (docs && docs.length > 0) {
+      for (const d of docs) {
+        if (d.is_govt_verified) {
+          docMap[d.document_type] = 'Verified (Digilocker)';
+        } else if (d.status === 'approved' || d.status === 'pending_review') {
+          docMap[d.document_type] = 'Uploaded';
+        }
+      }
+    }
+
+    res.json({
+      profile,
+      driverDetails: details || { rating: 0, total_trips: 0, is_online: false, kyc_status: 'Unverified' },
+      truck,
+      documents: docMap
+    });
+  } catch (err) {
+    logger.error('Driver profile fetch error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+router.patch('/availability', authenticate, userLimiter, async (req, res) => {
+  try {
+    const { available } = req.body;
+    if (typeof available !== 'boolean') {
+      return res.status(400).json({ error: 'available field must be a boolean.' });
+    }
+
+    const { data: details, error } = await supabase
+      .from('driver_details')
+      .update({ is_online: available, updated_at: new Date().toISOString() })
+      .eq('user_id', req.user.id)
+      .select('is_online')
+      .maybeSingle();
+
+    if (error) {
+      return res.status(500).json({ error: 'Failed to update availability.', details: error.message });
+    }
+
+    res.json({
+      success: true,
+      isOnline: details?.is_online || false
+    });
+  } catch (err) {
+    logger.error('Driver availability update error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+router.put('/truck', authenticate, userLimiter, async (req, res) => {
+  try {
+    const { type, capacityWeight, capacityVolume, registrationNumber } = req.body;
+
+    if (!type || !registrationNumber) {
+      return res.status(400).json({ error: 'type and registrationNumber are required.' });
+    }
+
+    // Check if driver has an existing truck assigned
+    const { data: details, error: detailsErr } = await supabase
+      .from('driver_details')
+      .select('truck_id')
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+
+    if (detailsErr) {
+      return res.status(500).json({ error: 'Failed to retrieve driver details.' });
+    }
+
+    let truckId = details?.truck_id;
+    let truckData;
+
+    if (truckId) {
+      // Update existing truck
+      const { data, error } = await supabase
+        .from('trucks')
+        .update({
+          truck_type: type,
+          capacity_weight_tonnes: capacityWeight || 0,
+          capacity_volume_m3: capacityVolume || 0,
+          registration_number: registrationNumber,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', truckId)
+        .select('*')
+        .single();
+
+      if (error) return res.status(500).json({ error: 'Failed to update truck.' });
+      truckData = data;
+    } else {
+      // Create new truck
+      const { data, error } = await supabase
+        .from('trucks')
+        .insert({
+          truck_type: type,
+          capacity_weight_tonnes: capacityWeight || 0,
+          capacity_volume_m3: capacityVolume || 0,
+          registration_number: registrationNumber,
+          is_active: true
+        })
+        .select('*')
+        .single();
+
+      if (error) return res.status(500).json({ error: 'Failed to create truck.' });
+      truckData = data;
+      truckId = data.id;
+
+      // Update driver details with new truck ID
+      await supabase
+        .from('driver_details')
+        .update({ truck_id: truckId, updated_at: new Date().toISOString() })
+        .eq('user_id', req.user.id);
+    }
+
+    res.json({
+      success: true,
+      truck: truckData
+    });
+  } catch (err) {
+    logger.error('Driver truck update error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
 export default router;
 
 // Resolves #2051: Composite indexes added for 2dsphere queries
