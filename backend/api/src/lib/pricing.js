@@ -162,8 +162,11 @@ export function computeOrderPricing(input, rateCard = readRateCard()) {
   const totalAmount = safePaisa(baseFreight + tollEstimate + platformFee);
 
   // Driver-side cost / margin hints persisted on load_offers.
+  // The toll is a pass-through cost recovered from the customer on the revenue
+  // side (totalAmount includes tollEstimate), so it must not be subtracted a
+  // second time as a driver expense.
   const fuelCost = safePaisa((baseFreight * rateCard.fuelCostPct) / 100);
-  const netProfit = safePaisa(baseFreight - fuelCost - tollEstimate);
+  const netProfit = safePaisa(baseFreight - fuelCost);
 
   return {
     distanceKm: Math.round(distanceKm * 100 + Number.EPSILON) / 100, // 2-decimal precision

@@ -57,8 +57,9 @@ describe('Pricing Service Unit Tests', () => {
       // fuelCost = 45% of 80000 = 36000
       expect(result.fuelCost).toBe(36000);
       
-      // netProfit = 80000 - 36000 - 20000 = 24000
-      expect(result.netProfit).toBe(24000);
+      // netProfit = 80000 - 36000 = 44000 (toll is recovered from the customer
+      // in totalAmount, so it must not be subtracted a second time)
+      expect(result.netProfit).toBe(44000);
     });
 
     it('applies fragile multiplier correctly', () => {
@@ -155,6 +156,14 @@ describe('Pricing Service Unit Tests', () => {
       // tollFactor undefined falls back to 1 (no extra toll)
       expect(Number.isFinite(result.tollEstimate)).toBe(true);
       expect(result.tollEstimate).toBeGreaterThanOrEqual(0);
+    });
+
+    it('does not subtract the toll from netProfit (toll is recovered from the customer)', () => {
+      const result = computeOrderPricing(defaultInput, mockRateCard);
+      // tollEstimate is non-zero (200 * 100 = 20000) and is already included in
+      // totalAmount, so netProfit must equal baseFreight - fuelCost only.
+      expect(result.tollEstimate).toBeGreaterThan(0);
+      expect(result.netProfit).toBe(result.baseFreight - result.fuelCost);
     });
 
     it('does not return NaN in any field for valid inputs', () => {
