@@ -287,12 +287,15 @@ router.post(
         : null;
 
       if (escrowUpdateFailed) {
-        logger.warn(`[confirm-otp] escrowUpdateFailed for order ${req.params.id} — reconciliation required`);
+        logger.warn(
+          '[confirm-otp] Escrow payout requires reconciliation.',
+          { orderId: req.params.id, driverId: req.user.id }
+        );
         return res.status(202).json({
-          message: 'Delivery confirmed. Escrow payout is pending reconciliation — your payment will be credited shortly.',
+          message: 'Delivery confirmed. Payout is pending reconciliation.',
           payment_released: false,
+          escrow_status: 'released',
           reconciliation_required: true,
-          escrow_status: 'release_pending_reconciliation',
           amount_inr: amountInr,
         });
       }
