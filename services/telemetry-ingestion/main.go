@@ -170,7 +170,8 @@ func authenticate(w http.ResponseWriter, r *http.Request) (jwtClaims, bool) {
 		claims.Sub = r.Header.Get("X-Driver-ID")
 		claims.Role = r.Header.Get("X-Driver-Role")
 		if claims.Sub == "" {
-			claims.Sub = "dev-driver"
+			http.Error(w, "driver subject required", http.StatusUnauthorized)
+			return claims, false
 		}
 		if claims.Role == "" {
 			claims.Role = "driver"
@@ -196,6 +197,11 @@ func authenticate(w http.ResponseWriter, r *http.Request) (jwtClaims, bool) {
 		return claims, false
 	}
 
+	if claims.Sub == "" {
+		http.Error(w, "invalid token: missing subject", http.StatusUnauthorized)
+		return claims, false
+	}
+
 	return claims, true
 }
 
@@ -211,11 +217,12 @@ func authorizeGeofence(claims jwtClaims, driverID string) bool {
 // the driver role. On success it returns the authenticated subject (driver id).
 func authenticateDriver(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if bypassAuth {
-		sub := r.Header.Get("X-Driver-ID")
-		if sub == "" {
-			sub = "dev-driver"
+		callerID := r.Header.Get("X-Driver-ID")
+		if callerID == "" {
+			http.Error(w, "driver subject required", http.StatusUnauthorized)
+			return "", false
 		}
-		return sub, true
+		return callerID, true
 	}
 
 	if len(jwtSecret) == 0 {
@@ -232,6 +239,11 @@ func authenticateDriver(w http.ResponseWriter, r *http.Request) (string, bool) {
 	claims, err := parseDriverToken(strings.TrimPrefix(auth, "Bearer "))
 	if err != nil {
 		http.Error(w, "invalid token", http.StatusUnauthorized)
+		return "", false
+	}
+
+	if claims.Sub == "" {
+		http.Error(w, "invalid token: missing subject", http.StatusUnauthorized)
 		return "", false
 	}
 
