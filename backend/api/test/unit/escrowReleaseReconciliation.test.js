@@ -69,6 +69,7 @@ vi.mock('../../src/services/escrow.js', () => ({
 
 vi.mock('../../src/config/db.js', () => ({
   supabase: mockSupabase,
+  supabaseAdmin: mockSupabase,
   redisClient: mockRedisClient,
 }));
 
