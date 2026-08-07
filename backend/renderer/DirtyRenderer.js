@@ -137,8 +137,9 @@ class DirtyRenderer {
     
     shouldFullRender() {
         // Full render if:
-        // - First frame
-        if (this.stats.frames === 0) return true;
+        // - First frame (render() increments stats.frames before calling this,
+        //   so the very first render is observed as frames === 1)
+        if (this.stats.frames === 1) return true;
         
         // - Too many dirty rects (> 20)
         if (this.dirtyRects.length > 20) return true;
