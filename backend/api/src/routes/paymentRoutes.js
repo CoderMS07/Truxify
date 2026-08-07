@@ -269,7 +269,7 @@ router.post(
       }
 
       // 5. Update escrow_status → funded
-      const { error: updateErr } = await orderRepository.updateOrder(
+      const { error: updateErr } = await orderRepository.updateOrderWithFilter(
         order.id,
         {
           escrow_status: 'funded',
