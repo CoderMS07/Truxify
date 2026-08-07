@@ -8,7 +8,8 @@ const VALID_PLATFORMS = ['android', 'ios', 'web'];
 function validateFcmToken(token) {
   if (!token || typeof token !== 'string') return 'fcmToken must be a non-empty string';
   if (token.length < 10 || token.length > 4096) return 'fcmToken length must be between 10 and 4096';
-  if (!/^[a-zA-Z0-9\-_:]+$/.test(token)) return 'fcmToken contains invalid characters';
+  // Allow standard FCM v1 token characters including ., %, /, +, =
+  if (!/^[a-zA-Z0-9\-_:.%/+=]+$/.test(token)) return 'fcmToken contains invalid characters';
   return null;
 }
 
@@ -162,15 +163,23 @@ export async function unregisterDeviceToken(req, res, next) {
       });
     }
 
-    const { error: deleteError } = await supabase
+    const { data: deletedRows, error: deleteError } = await supabase
       .from('user_devices')
       .delete()
       .eq('user_id', userId)
-      .eq('fcm_token', fcmToken);
+      .eq('fcm_token', fcmToken)
+      .select('id');
 
     if (deleteError) {
       logger.error('[DeviceController] Failed to remove device token from database:', deleteError.message);
       return next(new AppError('Failed to unregister device', 500));
+    }
+
+    if (!deletedRows || deletedRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Device token not found for this user'
+      });
     }
 
     const { error: profileClearError } = await supabase
