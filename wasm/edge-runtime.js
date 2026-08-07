@@ -79,7 +79,7 @@ class EdgeRuntime {
                 const func = instance.exports[functionName];
                 if (!func) throw new Error('Function ' + functionName + ' not found');
                 const result = func(...params);
-                parentPort.postMessage({ success: true, data: result });
+                parentPort.postMessage({ success: true, result });
             } catch (err) {
                 parentPort.postMessage({ success: false, error: err.message });
             }

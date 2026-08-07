@@ -76,6 +76,7 @@ type rateEntry struct {
 type jwtClaims struct {
 	Sub  string `json:"sub"`
 	Role string `json:"role"`
+	Exp  int64  `json:"exp"`
 }
 
 // operatorRoles are roles allowed to query a driver's location. Drivers may
@@ -150,6 +151,12 @@ func parseDriverToken(token string) (jwtClaims, error) {
 		return claims, fmt.Errorf("malformed token")
 	}
 
+	// Reject expired tokens. JWT `exp` is a NumericDate (seconds since the
+	// epoch); a token without an expiry is left to the signature check.
+	if claims.Exp != 0 && time.Now().Unix() >= claims.Exp {
+		return claims, fmt.Errorf("token expired")
+	}
+
 	return claims, nil
 }
 
@@ -204,7 +211,11 @@ func authorizeGeofence(claims jwtClaims, driverID string) bool {
 // the driver role. On success it returns the authenticated subject (driver id).
 func authenticateDriver(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if bypassAuth {
-		return r.Header.Get("X-Driver-ID"), true
+		sub := r.Header.Get("X-Driver-ID")
+		if sub == "" {
+			sub = "dev-driver"
+		}
+		return sub, true
 	}
 
 	if len(jwtSecret) == 0 {
@@ -226,6 +237,11 @@ func authenticateDriver(w http.ResponseWriter, r *http.Request) (string, bool) {
 
 	if claims.Role != "driver" {
 		http.Error(w, "forbidden: driver role required", http.StatusForbidden)
+		return "", false
+	}
+
+	if claims.Sub == "" {
+		http.Error(w, "invalid token: subject required", http.StatusUnauthorized)
 		return "", false
 	}
 
@@ -295,17 +311,27 @@ func allowGeofence(driverID string) bool {
 	return true
 }
 
-// pruneGeofenceRateEntries removes empty rate entries once the tracker grows
+// pruneGeofenceRateEntries removes expired rate entries once the tracker grows
 // beyond its cap, keeping the in-memory map bounded.
 func pruneGeofenceRateEntries() {
+	cutoff := time.Now().Add(-time.Second)
 	geofenceRateLimit.Range(func(key, value interface{}) bool {
 		e := value.(*rateEntry)
 		e.mu.Lock()
+		kept := e.stamps[:0]
+		for _, t := range e.stamps {
+			if t.After(cutoff) {
+				kept = append(kept, t)
+			}
+		}
+		e.stamps = kept
 		empty := len(e.stamps) == 0
 		e.mu.Unlock()
+
 		if empty {
-			geofenceRateLimit.Delete(key)
-			atomic.AddUint64(&geofenceRateTracked, ^uint64(0))
+			if _, loaded := geofenceRateLimit.LoadAndDelete(key); loaded {
+				atomic.AddUint64(&geofenceRateTracked, ^uint64(0))
+			}
 		}
 		return true
 	})
@@ -367,7 +393,7 @@ func storePing(driverID string, ping TelemetryPing) bool {
 }
 
 // sweepDrivers removes drivers whose last ping is older than the TTL and drops
-// empty rate-limit entries.
+// stale rate-limit entries.
 func sweepDrivers() {
 	now := time.Now()
 
@@ -381,11 +407,15 @@ func sweepDrivers() {
 	pingRateLimit.Range(func(key, value interface{}) bool {
 		e := value.(*rateEntry)
 		e.mu.Lock()
+		// Stamps are appended in order and pruned oldest-first, so the last
+		// stamp is the driver's most recent activity. Entries are aged out
+		// once they go quiet for a full driverTTL, not only when empty.
+		stale := len(e.stamps) == 0 || now.Sub(e.stamps[len(e.stamps)-1]) > driverTTL
 		// Delete under the entry lock: a concurrent allowPing that re-locks
 		// the entry between the emptiness check and the removal would
 		// otherwise lose its timestamps when the entry is deleted, resetting
 		// that driver's 1-second window and allowing bursts above the cap.
-		if len(e.stamps) == 0 {
+		if stale {
 			pingRateLimit.Delete(key)
 		}
 		e.mu.Unlock()
@@ -416,7 +446,7 @@ func handlePing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if callerID != "" && callerID != ping.DriverID {
+	if callerID != ping.DriverID {
 		http.Error(w, "driver_id does not match authenticated caller", http.StatusForbidden)
 		return
 	}

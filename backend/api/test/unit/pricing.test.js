@@ -143,6 +143,29 @@ describe('Pricing Service Unit Tests', () => {
       const input = { ...defaultInput, isFragile: true };
       expect(() => computeOrderPricing(input, weirdRateCard)).toThrow(RangeError);
     });
+
+    it('returns 0 for NaN tollFactor instead of propagating NaN', () => {
+      const result = computeOrderPricing({ ...defaultInput, tollFactor: NaN });
+      expect(result.tollEstimate).toBe(0);
+      expect(Number.isFinite(result.totalAmount)).toBe(true);
+    });
+
+    it('returns 0 for undefined tollFactor (defaults to 1)', () => {
+      const result = computeOrderPricing({ ...defaultInput, tollFactor: undefined });
+      // tollFactor undefined falls back to 1 (no extra toll)
+      expect(Number.isFinite(result.tollEstimate)).toBe(true);
+      expect(result.tollEstimate).toBeGreaterThanOrEqual(0);
+    });
+
+    it('does not return NaN in any field for valid inputs', () => {
+      const result = computeOrderPricing(defaultInput);
+      expect(Number.isFinite(result.baseFreight)).toBe(true);
+      expect(Number.isFinite(result.tollEstimate)).toBe(true);
+      expect(Number.isFinite(result.platformFee)).toBe(true);
+      expect(Number.isFinite(result.totalAmount)).toBe(true);
+      expect(Number.isFinite(result.fuelCost)).toBe(true);
+      expect(Number.isFinite(result.netProfit)).toBe(true);
+    });
   });
 
   describe('convertKmToMiles', () => {
