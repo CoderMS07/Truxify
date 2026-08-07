@@ -16,9 +16,8 @@ import { OrderLifecycleService } from '../services/order/orderLifecycleService.j
 
 import {
   buildDepositTx,
-  escrowRefund,
-  recordDepositTx,
   submitEscrowRefund,
+  recordDepositTx,
   confirmEscrowRefund,
 } from '../services/escrow.js';
 
@@ -35,7 +34,7 @@ const bidAcceptanceService = new BidAcceptanceService({
   orderRepository,
   buildDepositTxFn: buildDepositTx,
   recordDepositTxFn: recordDepositTx,
-  escrowRefundFn: escrowRefund,
+  escrowRefundFn: submitEscrowRefund,
   logger,
 });
 
@@ -81,8 +80,7 @@ export {
   orderLifecycleService,
 
   buildDepositTx,
-  escrowRefund,
-  recordDepositTx,
   submitEscrowRefund,
+  recordDepositTx,
   confirmEscrowRefund,
 };

@@ -22,8 +22,9 @@ import securityHeaderDuplicates from './middleware/securityHeaderDuplicates.js';
 import cookieSecurityValidator from './middleware/cookieSecurityValidator.js';
 import maintenancePhotoRoutes from './routes/maintenancePhotoRoutes.js'
 
-import { closeDbConnections, waitForMongoDb, validateConfig, redisClient } from './config/db.js'
+import { closeDbConnections, waitForMongoDb, validateConfig, redisClient, supabaseAdmin } from './config/db.js'
 import { orderRepository } from './core/container.js'
+import { OrderRepository } from './repositories/orderRepository.js'
 import { CacheManager } from './cache/CacheManager.js'
 import { closeWebSocketServer, initWebSocketServer, __testing as wsTesting } from './sockets/tracker.js'
 import { initLocationServer, closeLocationServer } from './sockets/locationServer.js'
@@ -45,6 +46,7 @@ import supportRoutes from './routes/supportRoutes.js'
 import profileRoutes from './routes/profileRoutes.js'
 import shipmentRoutes from './routes/shipmentRoutes.js'
 import loadRoutes from './routes/loadRoutes.js'
+import iotRoutes from './routes/iotRoutes.js'
 import deadheadRoutes from './routes/deadheadRoutes.js'
 import truckRoutes from './routes/truckRoutes.js'
 import authRoutes from './routes/authRoutes.js'
@@ -59,12 +61,14 @@ import paymentRoutes from './routes/paymentRoutes.js'
 import userRoutes from './routes/userRoutes.js'
 import voiceRoutes from './routes/voiceRoutes.js'
 import demandRoutes from './routes/demandRoutes.js'
+import iotRoutes from './routes/iotRoutes.js'
 
 // ============================================================================
 // 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
 // ============================================================================
 import verificationRoutes from './routes/verificationRoutes.js'
 import oracleRoutes from './routes/oracleRoutes.js'
+import blockchainMonitoringRoutes from './routes/blockchainMonitoringRoutes.js'
 
 // ============================================================================
 // 🆕 GEOGRAPHIC SHARDING ROUTES
@@ -138,6 +142,8 @@ import {
   stopDlqWorker,
 } from './workers/dlqWorker.js'
 import { startStaleOrderWorker } from './workers/staleOrderWorker.js'
+import BlockchainMetrics from './services/blockchain/blockchainMetrics.js'
+import EscalationHandler from './services/blockchain/escalationHandler.js'
 import {
   startWithdrawalSettlementWorker,
   stopWithdrawalSettlementWorker
@@ -165,6 +171,12 @@ try {
 // INITIALIZE DISTRIBUTED CACHE MANAGER
 // ============================================================================
 CacheManager.init(redisClient)
+
+// ============================================================================
+// BLOCKCHAIN MONITORING — singletons shared with blockchainMonitoringRoutes
+// ============================================================================
+const blockchainMetrics = new BlockchainMetrics()
+const escalationHandler = new EscalationHandler({})
 
 // ============================================================================
 // STARTUP VALIDATION — crash fast, not at request time
@@ -464,8 +476,10 @@ app.use('/api/driver', driverRoutes)
 // content-type enforcement, fraud detection and the /api rate limiter.
 // Registering it earlier silently bypasses every one of them.
 app.use('/api/earnings', earningsRouter)
+app.use('/api/routes', routeRoutes)
 app.use('/api/v1/shipment', shipmentRoutes)
 app.use('/api/loads', loadRoutes)
+app.use('/api/iot', iotRoutes)
 app.use('/api/support', supportRoutes)
 app.use('/api/profile', profileRoutes)
 app.use('/api/users', userRoutes)
@@ -480,6 +494,8 @@ app.use('/api/v1/admin', adminRoutes)
 app.use('/api/v1/admin/audit-logs', auditRoutes)
 app.use('/api/voice', voiceRoutes)
 app.use('/api/demand-heatmap', demandRoutes)
+app.use('/api/routes', routeRoutes)
+app.use('/api/iot', iotRoutes)
 
 // ============================================================================
 // WEBHOOK ROUTES
@@ -492,6 +508,18 @@ app.use('/api/webhooks', webhookRoutes)
 app.use('/api/verify', verificationRoutes)
 app.use('/api/oracle', oracleRoutes)
 app.use('/api/webhooks', webhookRoutes)
+
+// ============================================================================
+// 🆕 BLOCKCHAIN MONITORING ROUTES
+// Attach the monitoring services and service-role client per request so the
+// handlers never fall back to the anon-key client (RLS would hide all rows).
+// ============================================================================
+app.use('/api/blockchain', (req, _res, next) => {
+  req.blockchainMetrics = blockchainMetrics
+  req.escalationHandler = escalationHandler
+  req.supabase = supabaseAdmin
+  next()
+}, blockchainMonitoringRoutes)
 
 // 🆕 Oracle Health Check Endpoint
 app.get('/api/oracle/health', (req, res) => {
@@ -578,7 +606,7 @@ app.get('/api/fraud/health', (req, res) => {
 // ============================================================================
 // 🆕 ZK-PROOFS FOR DRIVER KYC ROUTES
 // ============================================================================
-app.use('/api', zkpRoutes)
+app.use('/api/zkp', zkpRoutes)
 
 // 🆕 ZK-Proof Health Check Endpoint
 app.get('/api/zkp/health', (req, res) => {
@@ -658,12 +686,18 @@ server.listen(PORT, () => {
   logger.info(`🆕 ZK-Proof KYC Verification enabled with contract: ${process.env.KYC_VERIFIER_CONTRACT || 'not-deployed'}`)
 
 
-  startEscrowRefundReconciliation(orderRepository)
+  // Reconciliation workers sweep `orders` for stuck funding/refund states.
+  // They must run with the service-role client: the anon client has no RLS
+  // read access to `orders`, so an anon-backed repository would silently no-op.
+  const escrowReconciliationOrderRepository = supabaseAdmin
+    ? new OrderRepository(supabaseAdmin)
+    : orderRepository;
+  startEscrowRefundReconciliation(escrowReconciliationOrderRepository)
   startEscrowReleaseReconciliation()
-  startEscrowFundingReconciliation(orderRepository)
+  startEscrowFundingReconciliation(escrowReconciliationOrderRepository)
   startReputationReconciliation(orderRepository)
   startDlqWorker()
-  startStaleOrderWorker()
+  startStaleOrderWorker(escrowReconciliationOrderRepository)
   startDocumentExpiryWorker()
   startWithdrawalSettlementWorker()
 

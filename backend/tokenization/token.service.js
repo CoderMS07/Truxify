@@ -175,6 +175,7 @@ class TokenizationService {
     async getTradeOrder(assetId, orderIndex) {
         try {
             const orders = await this.token.getTradeOrders(assetId);
+
             if (orderIndex < 0 || orderIndex >= orders.length) {
                 throw new Error(`Order index ${orderIndex} out of range for asset ${assetId}`);
             }
