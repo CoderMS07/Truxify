@@ -243,9 +243,6 @@ router.post('/api/deliveries/:id/geofence-confirm', async (req, res) => {
     return res.status(400).json({ error: 'Invalid driver_lat or driver_lng' });
   }
 
-  const geofenceRadiusM = geofence_radius_m !== undefined ? parseFloat(geofence_radius_m) : undefined;
-  if (geofenceRadiusM !== undefined && (!Number.isFinite(geofenceRadiusM) || geofenceRadiusM <= 0)) {
-    return res.status(400).json({ error: 'Invalid geofence_radius_m' });
   let geofenceRadiusM;
   if (geofence_radius_m !== undefined) {
     geofenceRadiusM = parseFloat(geofence_radius_m);
