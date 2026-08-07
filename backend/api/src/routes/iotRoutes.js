@@ -42,7 +42,7 @@ router.post('/telemetry/:id', telemetryHistoryLimiter, authenticate, validatePar
     // service-role client; ownership is enforced below against req.user.
     const { data: load, error: loadErr } = await supabaseAdmin
       .from('load_offers')
-      .select('requires_refrigeration, target_temperature_min, target_temperature_max, customer_id')
+      .select('requires_refrigeration, target_temperature_min, target_temperature_max, customer_id, order_display_id')
       .eq('id', loadId)
       .maybeSingle();
 
@@ -59,8 +59,23 @@ router.post('/telemetry/:id', telemetryHistoryLimiter, authenticate, validatePar
       return res.status(400).json({ error: 'Load does not require refrigeration' });
     }
 
-    if (req.user.role !== 'admin' && load.customer_id !== req.user.id) {
-      return res.status(403).json({ error: 'Access denied for this load' });
+    // Mirror GET authorization: allow the load owner OR the assigned driver.
+    // The driver is the party physically carrying the load and the only person
+    // able to record cold-chain readings in transit.
+    if (req.user.role !== 'admin') {
+      let isAuthorized = load.customer_id === req.user.id;
+      if (!isAuthorized && load.order_display_id) {
+        const { data: order } = await supabase
+          .from('orders')
+          .select('driver_id')
+          .eq('order_display_id', load.order_display_id)
+          .in('status', ['truck_assigned', 'en_route_pickup', 'picked_up', 'in_transit'])
+          .maybeSingle();
+        isAuthorized = order?.driver_id === req.user.id;
+      }
+      if (!isAuthorized) {
+        return res.status(403).json({ error: 'Access denied for this load' });
+      }
     }
 
     // Insert telemetry (service-role client: RLS only permits service_role to
