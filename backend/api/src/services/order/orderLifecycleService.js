@@ -5,12 +5,12 @@ import { acquireLock, releaseLock } from '../../lib/redisLock.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 import { supabaseAdmin } from '../../config/db.js';
 import {
-  escrowRefund,
-  recordDepositTx,
   submitEscrowRefund,
+  recordDepositTx,
   submitEscrowCancelWithPenalty,
   confirmEscrowRefund,
   getEscrowBookingId,
+  paisaToMaticWei,
 } from '../escrow.js';
 import { computeOrderPricing } from '../../lib/pricing.js';
 import { getRouteEstimate } from '../osrm.js';
@@ -301,8 +301,8 @@ export class OrderLifecycleService {
   async submitBid(loadOfferId, driverId, bidAmount) {
     return measureExecution('OrderLifecycleService.submitBid', async () => {
       const lockKey = `lock:submitBid:${driverId}:${loadOfferId}`;
-      const acquired = await acquireLock(lockKey, 5000);
-      if (!acquired) throw new DomainError(409, { error: 'Duplicate bid submission in progress.' });
+      const lockValue = await acquireLock(lockKey, 5000);
+      if (!lockValue) throw new DomainError(409, { error: 'Duplicate bid submission in progress.' });
 
       try {
         const { data: offer, error: offerErr } = await this.orderRepository.findLoadOfferById(loadOfferId, 'id, status, customer_id');
@@ -341,7 +341,7 @@ export class OrderLifecycleService {
 
         return { message: 'Bid submitted successfully.', bid };
       } finally {
-        await releaseLock(lockKey);
+        await releaseLock(lockKey, lockValue);
       }
     });
   }
@@ -572,7 +572,7 @@ export class OrderLifecycleService {
           throw new DomainError(400, { error: 'Unable to compute new pricing for the requested drop.', details: pricingErr.message });
         }
 
-        const newAmountWei = BigInt(Math.round(pricing.totalAmount * 1e16));
+        const newAmountWei = BigInt(paisaToMaticWei(pricing.totalAmount));
 
         const updates = {
           drop_address,
@@ -603,7 +603,7 @@ export class OrderLifecycleService {
           p_order_display_id: order.order_display_id,
           p_order_updates: updates,
           p_offer_updates: offerUpdates
-        }, userClient ?? supabaseAdmin);
+        }, supabaseAdmin);
 
         if (updateErr) {
           throw new DomainError(500, {
@@ -667,14 +667,14 @@ export class OrderLifecycleService {
         // The driver has already started the trip — a full-refund cancellation is
         // no longer possible. On-chain, cancelBooking / cancelWithPenalty revert
         // once the booking has been marked as started, so reject here first.
-        if (['picked_up', 'in_transit', 'arriving', 'arrived_dropoff'].includes(currentOrder.status)) {
+        if (['picked_up', 'in_transit', 'arriving', 'delivered'].includes(currentOrder.status)) {
           throw new DomainError(409, { error: 'Cannot cancel: the shipment has already been picked up and is in transit.' });
         }
 
         const requiresRefund = ['funded', 'refund_pending', 'refund_failed'].includes(currentOrder.escrow_status);
-        const penaltyBps = currentOrder.status === 'assigned'
+        const penaltyBps = currentOrder.status === 'truck_assigned'
           ? 1000
-          : ['arrived_pickup', 'picked_up', 'in_transit', 'arrived_dropoff'].includes(currentOrder.status)
+          : ['arrived_pickup', 'picked_up', 'in_transit', 'delivered'].includes(currentOrder.status)
             ? 5000
             : 0;
         const cancellationFee = currentOrder.total_amount && penaltyBps > 0
@@ -925,7 +925,7 @@ export class OrderLifecycleService {
           if (acceptErr) {
             logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
             try {
-              await escrowRefund(order.order_display_id);
+              await submitEscrowRefund(order.order_display_id);
             } catch (refundErr) {
               logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
             }
