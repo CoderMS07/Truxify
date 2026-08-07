@@ -307,3 +307,79 @@ func TestAdvanceCommitIndexRequiresQuorum(t *testing.T) {
 		t.Errorf("expected last_applied 2, got %d", leader.LastApplied)
 	}
 }
+
+// TestOutofOrderAppendResponseDoesNotRegressMatchIndex verifies that a delayed
+// or out-of-order AppendEntries success response with lower match index does
+// not regress matchIndex or nextIndex for a follower.
+func TestOutofOrderAppendResponseDoesNotRegressMatchIndex(t *testing.T) {
+	bypassAuth = true
+	defer func() { bypassAuth = false }()
+
+	follower := NewRaftNode("node2", []string{"node1"}, nil)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/raft/append" {
+			follower.HandleAppend(w, r)
+		}
+	}))
+	defer server.Close()
+
+	now := time.Now()
+	leader := NewRaftNode("node1", []string{"node2"}, []string{server.URL})
+	leader.Log = []LogEntry{
+		{Index: 1, Term: 1, Command: "CREATED", OrderID: "ord-1", Timestamp: now},
+		{Index: 2, Term: 1, Command: "DISPATCHED", OrderID: "ord-1", Timestamp: now},
+	}
+	leader.Role = Leader
+	leader.CurrentTerm = 1
+	leader.nextIndex = map[string]uint64{server.URL: 3}
+	leader.matchIndex = map[string]uint64{server.URL: 2}
+
+	// Simulate stale heartbeat sent with PrevLogIndex 0 arriving later
+	leader.nextIndex[server.URL] = 1
+	leader.sendHeartbeats()
+
+	leader.mu.Lock()
+	match := leader.matchIndex[server.URL]
+	next := leader.nextIndex[server.URL]
+	leader.mu.Unlock()
+
+	if match != 2 {
+		t.Errorf("expected matchIndex to remain monotonically at 2, got %d", match)
+	}
+	if next != 3 {
+		t.Errorf("expected nextIndex to remain at 3, got %d", next)
+	}
+}
+
+// TestHandleVoteResetsElectionTimer verifies that granting a vote updates lastLeaderSeen.
+func TestHandleVoteResetsElectionTimer(t *testing.T) {
+	bypassAuth = true
+	defer func() { bypassAuth = false }()
+
+	node := NewRaftNode("node1", []string{"node2"}, nil)
+	oldTime := time.Now().Add(-10 * time.Second)
+	node.lastLeaderSeen = oldTime
+
+	reqPayload := `{"term": 1, "candidate_id": "node2", "last_log_index": 0, "last_log_term": 0}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/raft/vote", strings.NewReader(reqPayload))
+	w := httptest.NewRecorder()
+
+	node.HandleVote(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	node.mu.Lock()
+	updatedSeen := node.lastLeaderSeen
+	votedFor := node.VotedFor
+	node.mu.Unlock()
+
+	if votedFor != "node2" {
+		t.Errorf("expected voted_for node2, got %s", votedFor)
+	}
+	if !updatedSeen.After(oldTime) {
+		t.Errorf("expected lastLeaderSeen to be reset upon granting vote, got %v", updatedSeen)
+	}
+}
+
