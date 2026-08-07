@@ -454,19 +454,13 @@ func sweepDrivers() {
 	})
 
 	pingRateLimit.Range(func(key, value interface{}) bool {
-		pingRateLimit.Range(func(key, value interface{}) bool {
-				e := value.(*rateEntry)
-				e.mu.Lock()
-				if len(e.stamps) > 0 {
-						if now.Sub(e.stamps[len(e.stamps)-1]) <= driverTTL {
-								e.mu.Unlock()
-								return true
-						}
-				}
-				e.mu.Unlock()
-				pingRateLimit.Delete(key)
-				return true
-		})
+		e := value.(*rateEntry)
+		e.mu.Lock()
+		stale := false
+		if len(e.stamps) > 0 {
+			stale = now.Sub(e.stamps[len(e.stamps)-1]) > driverTTL
+		}
+		e.mu.Unlock()
 		if stale {
 			pingRateLimit.Delete(key)
 		}
