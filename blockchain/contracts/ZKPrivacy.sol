@@ -45,10 +45,10 @@ contract ZKPrivacy is Ownable, ReentrancyGuard, Pausable {
     mapping(bytes32 => PrivateTransaction) public transactions;
 
     MerkleTree public merkleTree;
-    bytes32[MERKLE_DEPTH] private fillSubtrees;
     address public verifier;
 
     uint256 public constant MERKLE_DEPTH = 20;
+    bytes32[MERKLE_DEPTH] private fillSubtrees;
     uint256 public transactionCounter;
 
     // Events
