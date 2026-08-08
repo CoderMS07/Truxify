@@ -140,22 +140,27 @@ export async function unregisterDeviceToken(req, res, next) {
       });
     }
 
+    // Only clear profile fcm_token if no other active devices remain for this user
     const { data: remainingDevices } = await supabase
       .from('user_devices')
-      .select('fcm_token')
+      .select('id')
       .eq('user_id', userId)
       .not('fcm_token', 'is', null)
       .limit(1);
 
-    if ((remainingDevices || []).length === 0) {
+    if (!remainingDevices || remainingDevices.length === 0) {
       const { error: profileClearError } = await supabase
         .from('profiles')
-        .update({ fcm_token: null, fcm_token_updated_at: new Date().toISOString() })
-        .eq('id', userId);
+        .update({
+          fcm_token: null,
+          fcm_token_updated_at: new Date().toISOString(),
+        })
+        .eq('id', userId)
+        .eq('fcm_token', fcmToken);
 
       if (profileClearError) {
         logger.error(
-          '[DeviceController] No remaining devices but failed to clear profiles.fcm_token:',
+          '[DeviceController] Device token removed but failed to clear profiles.fcm_token:',
           profileClearError.message
         );
       }
