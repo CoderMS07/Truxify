@@ -15,7 +15,7 @@ class TokenizationService {
             'function createTradeOrder(uint256 assetId, uint256 amount, uint256 price, string memory orderType) external',
             'function executeTradeOrder(uint256 assetId, uint256 orderIndex) external payable',
             'function cancelTradeOrder(uint256 assetId, uint256 orderIndex) external',
-            'function getTradeOrder(uint256 assetId, uint256 orderIndex) external view returns (tuple(address,uint256,uint256,uint256,bool))',
+            'function getTradeOrders(uint256 assetId) external view returns (tuple(uint256 orderId, uint256 tokenId, address seller, address buyer, uint256 amount, uint256 price, string orderType, bool isActive, uint256 createdAt, uint256 expiresAt)[])',
             'function getAsset(uint256 assetId) external view returns (tuple(uint256,string,string,string,uint256,uint256,uint256,uint256,address,bool,string,uint256,uint256))',
             'function getFractionalOwnership(uint256 assetId, address owner) external view returns (tuple(address,uint256,uint256,uint256))',
             'function getTotalAssets() external view returns (uint256)',
@@ -174,23 +174,38 @@ class TokenizationService {
 
     async getTradeOrder(assetId, orderIndex) {
         try {
-            const order = await this.token.getTradeOrder(assetId, orderIndex);
+            const orders = await this.token.getTradeOrders(assetId);
+
+            if (orderIndex < 0 || orderIndex >= orders.length) {
+                throw new Error(`Order index ${orderIndex} out of range for asset ${assetId}`);
+            }
+            const order = orders[orderIndex];
             return {
-                maker: order.maker,
-                price: ethers.formatEther(order.price),
+                orderId: order.orderId.toString(),
+                tokenId: order.tokenId.toString(),
+                seller: order.seller,
+                buyer: order.buyer,
                 amount: ethers.formatEther(order.amount),
-                filled: order.filled,
-                orderId: order.orderId
+                price: ethers.formatEther(order.price),
+                orderType: order.orderType,
+                isActive: order.isActive,
+                createdAt: order.createdAt.toString(),
+                expiresAt: order.expiresAt.toString()
             };
         } catch (error) {
             logger.error('Failed to get trade order:', error);
             throw error;
         }
-    }
+}
 
     async executeTradeOrder(assetId, orderIndex, buyerAddress) {
         try {
             const order = await this.getTradeOrder(assetId, orderIndex);
+
+            if (!order.isActive) {
+                throw new Error(`Trade order ${order.orderId} is not active`);
+            }
+
             const totalCost = parseFloat(order.price) * parseFloat(order.amount);
 
             const tx = await this.token.executeTradeOrder(

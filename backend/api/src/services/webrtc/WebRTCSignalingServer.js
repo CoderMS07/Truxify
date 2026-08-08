@@ -6,7 +6,8 @@ import { supabase, redisClient } from '../../config/db.js';
 
 class WebRTCSignalingServer {
   constructor(server) {
-    this.wss = new WebSocketServer({ server, path: '/webrtc' });
+    const MAX_WS_PAYLOAD_BYTES = parseInt(process.env.WS_MAX_PAYLOAD_BYTES, 10) || 4096;
+    this.wss = new WebSocketServer({ server, path: '/webrtc', maxPayload: MAX_WS_PAYLOAD_BYTES });
     this.redis = redisClient;
     this.peers = new Map(); // peerId -> { ws, location, meshId }
     this.meshes = new Map(); // meshId -> Set of peerIds
@@ -308,13 +309,13 @@ class WebRTCSignalingServer {
   }
 
   getOrCreateMesh() {
-    const meshId = `mesh_${crypto.randomBytes(8).toString('hex')}`;
+    const meshId = `mesh_${crypto.randomUUID()}`;
     this.meshes.set(meshId, new Set());
     return meshId;
   }
 
   generatePeerId() {
-    return `peer_${crypto.randomBytes(8).toString('hex')}`;
+    return `peer_${crypto.randomUUID()}`;
   }
 
   startDiscovery() {

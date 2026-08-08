@@ -22,6 +22,49 @@ if (!process.env.ML_API_KEY) {
     logger.warn('[ML] WARNING: ML_API_KEY is not set. All ML API endpoints will return 503. Set ML_API_KEY in your environment.');
 }
 
+/**
+ * Parse the free-text `weight` column of load_offers (e.g. '3 tonnes') into
+ * kilograms. Returns NaN when the value cannot be interpreted.
+ */
+function parseWeightKg(weight) {
+  if (typeof weight !== 'string') {
+    const num = Number(weight);
+    return Number.isFinite(num) ? num : NaN;
+  }
+  const match = weight.toLowerCase().match(/([\d.]+)\s*(kg|ton|tonne|t)\b/);
+  if (!match) return NaN;
+  const value = Number(match[1]);
+  return match[2] === 'kg' ? value : value * 1000;
+}
+
+function parseWeightKgSafe(weight) {
+  const result = parseWeightKg(weight);
+  if (Number.isNaN(result)) {
+    logger.warn(`[ML] parseWeightKg received unparseable weight: ${weight}`);
+    return 0;
+  }
+  return result;
+}
+
+/**
+ * Parse the free-text `dimensions` column of load_offers (e.g. '12 X 6 X 6 ft')
+ * into length/width/height in meters. Falls back to 1 m per dimension when
+ * fewer than three values are present.
+ */
+function parseDimensions(dimensions) {
+  const fallback = { length: 1, width: 1, height: 1 };
+  if (typeof dimensions !== 'string') return fallback;
+  const numbers = (dimensions.match(/\d+(?:\.\d+)?/g) || []).map(Number);
+  if (numbers.length < 3) return fallback;
+  const ftToM = dimensions.toLowerCase().includes('ft') ? 0.3048 : 1;
+  const [length, width, height] = numbers;
+  return {
+    length: Number((length * ftToM).toFixed(2)),
+    width: Number((width * ftToM).toFixed(2)),
+    height: Number((height * ftToM).toFixed(2)),
+  };
+}
+
 function guardMlApiKey() {
   if (!process.env.ML_API_KEY) {
     throw new Error("[ML] ML_API_KEY is not configured. All ML endpoints will return 503. Set ML_API_KEY to enable ML features.");
@@ -36,251 +79,14 @@ function getHeaders() {
     if (process.env.ML_API_KEY) {
         headers['X-API-Key'] = process.env.ML_API_KEY;
     }
-    return headers;
-}
 
-/**
- * Utility: handle ML engine responses consistently
- */
-async function handleResponse(response) {
-    const text = await response.text();
-
-    if (response.status === 401 || response.status === 403) {
-        throw new Error(`[ML] Authentication failed (${response.status}): ${text}`);
-    }
-    if (!response.ok) {
-        throw new Error(`[ML] Request failed (${response.status}): ${text}`);
+    if (response.status === 401) {
+      throw new Error(`[MLService] Unauthorized (401) for ${method} ${url}`);
     }
 
-    try {
-        return JSON.parse(text);
-    } catch (err) {
-        throw new Error(`[ML] Invalid JSON response from ML engine: ${err.message}`, { cause: err });
+    if (response.status === 403) {
+      throw new Error(`[MLService] Forbidden (403) for ${method} ${url}`);
     }
-}
-
-/**
- * Utility: resolve base URL for ML engine
- */
-function getBaseUrl() {
-    return (
-        process.env.ML_ENGINE_URL ||
-        process.env.ML_SERVICE_URL ||
-        DEFAULT_ML_ENGINE_URL
-    );
-}
-
-/**
- * Predicts ride/truck demand
- * @param {object} features
- * @returns {Promise<object>}
- */
-export async function predictDemand(features = {}) {
-  guardMlApiKey();
-  const cacheKey = JSON.stringify(features);
-  const cached = demandCache.get(cacheKey);
-  if (cached !== undefined) return cached;
-
-  const url = `${getBaseUrl()}/predict/demand`;
-
-  const response = await fetch(url, {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify(features),
-      signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
-  });
-
-  const result = await handleResponse(response);
-  demandCache.set(cacheKey, result);
-  return result;
-}
-
-/**
- * Predicts freight price.
- *
- * Returns the validated ML response with `estimatedPricePaisa` (paisa integer)
- * and `estimatedPriceInr` (INR float) added. Throws on any validation failure
- * so callers can transparently fall back to deterministic pricing.
- *
- * @param {object} params
- * @returns {Promise<{estimated_price: number, currency: string, estimatedPricePaisa: number}>}
- * @throws {Error} on HTTP failure, timeout, or prediction validation failure
- */
-export async function predictPrice({
-    distanceKm,
-    cargoWeightKg,
-    truckType = 'medium_truck',
-    routeOrigin = '',
-    routeDestination = '',
-    trafficMultiplier = 1.0,
-} = {}) {
-  guardMlApiKey();
-  
-  const cacheKey = JSON.stringify({ distanceKm, cargoWeightKg, truckType, routeOrigin, routeDestination, trafficMultiplier });
-  const cached = priceCache.get(cacheKey);
-  if (cached !== undefined) return cached;
-
-  const url = `${getBaseUrl()}/predict/price`;
-
-  const payload = {
-      distance_km: distanceKm,
-      cargo_weight_kg: cargoWeightKg,
-      truck_type: truckType,
-      route_origin: routeOrigin,
-      route_destination: routeDestination,
-      traffic_multiplier: trafficMultiplier,
-  };
-
-  const response = await fetch(url, {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
-  });
-
-  const raw = await handleResponse(response);
-
-  const validated = validatePricePrediction(raw);
-  if (!validated.ok) {
-      logger.warn({
-          reason: validated.reason,
-          detail: validated.detail,
-          response_keys: raw && typeof raw === 'object' ? Object.keys(raw) : typeof raw,
-      }, '[ML] Price prediction rejected by validator');
-      throw new Error(`[ML] Invalid prediction: ${validated.reason} — ${validated.detail}`);
-  }
-
-  logger.debug({
-      estimated_price_inr: validated.validated.estimated_price,
-      confidence: validated.validated.confidence,
-  }, '[ML] Price prediction validated successfully');
-
-  const result = {
-      ...validated.validated,
-      estimatedPricePaisa: convertToPaisa(validated.validated.estimated_price * trafficMultiplier),
-      estimatedPriceInr: validated.validated.estimated_price * trafficMultiplier,
-  };
-  priceCache.set(cacheKey, result);
-  return result;
-}
-
-/**
- * Predicts estimated time of arrival for a route.
- *
- * @param {object} params
- * @param {number} params.routeDistance  - Route distance in km (must be > 0)
- * @param {number} params.timeOfDay      - Hour of the day (0-23)
- * @param {number} params.dayOfWeek      - Day of week (0=Sunday, 6=Saturday)
- * @param {string} params.routeType      - Route type ("highway" or "city")
- * @param {number} params.historicalSpeed - Historical average speed in km/h (must be > 0)
- * @returns {Promise<{eta_minutes: number, confidence_interval: {lower: number, upper: number}}>}
- * @throws {Error} if ML_API_KEY is missing, HTTP fails, or response is invalid
- */
-export async function predictEta({
-  routeDistance,
-  timeOfDay,
-  dayOfWeek,
-  routeType,
-  historicalSpeed,
-}) {
-  guardMlApiKey();
-  const url = `${getBaseUrl()}/predict/eta`;
-
-  const payload = {
-    route_distance: routeDistance,
-    time_of_day: timeOfDay,
-    day_of_week: dayOfWeek,
-    route_type: routeType,
-    historical_speed: historicalSpeed,
-  };
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
-  });
-
-  const result = await handleResponse(response);
-
-  if (
-    result == null ||
-    typeof result.eta_minutes !== 'number' ||
-    !isFinite(result.eta_minutes)
-  ) {
-    throw new Error('[ML] Invalid ETA prediction: missing or non-finite eta_minutes');
-  }
-
-  return {
-    eta_minutes: result.eta_minutes,
-    confidence_interval: result.confidence_interval ?? { lower: 0, upper: 0 },
-  };
-}
-
-/**
- * Matches shipments for bilateral load consolidation.
- *
- * @param {object} params
- * @param {Array}  params.loads   - Array of load objects with origin/dest lat/lng, dimensions, deadline
- * @param {Array}  params.drivers - Array of driver objects with current location, capacity, rating
- * @returns {Promise<{assignments: Array, unmatched_loads: Array, unmatched_drivers: Array}>}
- * @throws {Error} if ML_API_KEY is missing or HTTP fails
- */
-export async function matchBilateral({ loads, drivers }) {
-  guardMlApiKey();
-  const url = `${getBaseUrl()}/match/bilateral`;
-
-  const payload = { loads, drivers };
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS_HEAVY),
-  });
-
-  return handleResponse(response);
-}
-
-/**
- * Predicts driver profit for a given route using ML model.
- *
- * @param {object} params
- * @param {number} params.routeDistanceKm  - Total route distance in km (must be > 0)
- * @param {number} params.fuelPricePerLitre - Current fuel price in INR/L (must be > 0)
- * @param {number} params.tollEstimateInr  - Estimated toll cost in INR (must be >= 0)
- * @param {number} params.truckMileageKmL  - Truck fuel efficiency in km/L (must be > 0)
- * @param {number} params.cargoWeightKg    - Cargo weight in kg (must be > 0)
- * @param {number} params.tripDurationHours - Estimated trip duration in hours (must be > 0)
- * @returns {Promise<{predicted_profit: number, confidence_interval: {lower: number, upper: number}}>}
- * @throws {Error} if ML_API_KEY is missing, HTTP fails, or response is invalid
- */
-export async function predictDriverProfit({
-  routeDistanceKm,
-  fuelPricePerLitre,
-  tollEstimateInr,
-  truckMileageKmL,
-  cargoWeightKg,
-  tripDurationHours,
-}) {
-  guardMlApiKey();
-  const url = `${getBaseUrl()}/predict/driver-profit`;
-
-  const payload = {
-    route_distance: routeDistanceKm,
-    fuel_price: fuelPricePerLitre,
-    toll_estimate: tollEstimateInr,
-    truck_mileage: truckMileageKmL,
-    cargo_weight: cargoWeightKg,
-    trip_duration: tripDurationHours,
-  };
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
-  });
 
   const result = await handleResponse(response);
 
@@ -554,22 +360,29 @@ export async function matchEnRouteLoads({
 }) {
   if (!offers || offers.length === 0) return [];
 
-  // Build the available_loads list the ML model expects
+  // Build the available_loads list the ML model expects. load_offers stores
+  // coordinates as pickup_*/drop_*, weight as text ('3 tonnes') and dimensions
+  // as text ('12 X 6 X 6 ft'), so normalize those to the numeric fields the
+  // model consumes.
   const availableLoads = offers
-    .filter(o => o.origin_lat && o.origin_lng && o.dest_lat && o.dest_lng && o.weight_kg)
-    .map(o => ({
-      load_id: o.id,
-      origin_lat: Number(o.origin_lat),
-      origin_lng: Number(o.origin_lng),
-      dest_lat: Number(o.dest_lat),
-      dest_lng: Number(o.dest_lng),
-      weight_kg: Number(o.weight_kg),
-      length_m: Number(o.length_m || 1),
-      width_m: Number(o.width_m || 1),
-      height_m: Number(o.height_m || 1),
-      pickup_deadline: new Date(Date.now() + ML_DEFAULT_PICKUP_LEAD_MS).toISOString(),
-      payment_inr: Number(o.payment_inr || (o.freight_value ? o.freight_value / 100 : 0)),
-    }));
+    .filter(o => o.pickup_lat && o.pickup_lng && o.drop_lat && o.drop_lng)
+    .map(o => {
+      const dims = parseDimensions(o.dimensions);
+      return {
+        load_id: o.id,
+        origin_lat: Number(o.pickup_lat),
+        origin_lng: Number(o.pickup_lng),
+        dest_lat: Number(o.drop_lat),
+        dest_lng: Number(o.drop_lng),
+        weight_kg: parseWeightKg(o.weight),
+        length_m: dims.length,
+        width_m: dims.width,
+        height_m: dims.height,
+        pickup_deadline: o.pickup_deadline ? new Date(o.pickup_deadline).toISOString() : new Date(Date.now() + ML_DEFAULT_PICKUP_LEAD_MS).toISOString(),
+        payment_inr: Number(o.payment_inr || (o.freight_value ? o.freight_value / 100 : 0)),
+      };
+    })
+    .filter(l => Number.isFinite(l.weight_kg) && l.weight_kg > 0);
 
   const specs = truckSpecs || {
     max_weight_kg: DEFAULT_TRUCK_MAX_WEIGHT_KG,
@@ -587,7 +400,7 @@ export async function matchEnRouteLoads({
       const result = await matchDeadhead({
         driverDestination: { lat: currentLat, lng: currentLng },
         truckSpecs: specs,
-        arrivalTime: new Date(Date.now() + ML_DEFAULT_PICKUP_LEAD_MS).toISOString(),
+        arrivalTime: new Date().toISOString(),
         availableLoads,
       });
       recommendations = result.recommendations || [];
@@ -595,14 +408,13 @@ export async function matchEnRouteLoads({
     } catch (err) {
       logger.warn('[ML] matchEnRouteLoads: falling back to haversine. Reason: ' + err.message);
     }
-  }
 
   // Haversine fallback — score by distance to pickup
-  if (!mlUsed) {
+  if (!mlUsed || recommendations.length === 0) {
     recommendations = offers
-      .filter(o => o.origin_lat && o.origin_lng)
+      .filter(o => o.pickup_lat && o.pickup_lng)
       .map(o => {
-        const dtKm = _haversineKm(currentLat, currentLng, Number(o.origin_lat), Number(o.origin_lng));
+        const dtKm = _haversineKm(currentLat, currentLng, Number(o.pickup_lat), Number(o.pickup_lng));
         return {
           load_id: o.id,
           detour_km: dtKm,
@@ -615,50 +427,6 @@ export async function matchEnRouteLoads({
       .filter(r => r.detour_km <= maxDetourKm)
       .sort((a, b) => b.match_score - a.match_score);
   }
-
-  // Build a lookup map of ML results keyed by load_id
-  const recMap = new Map(recommendations.map(r => [r.load_id, r]));
-
-  // Merge ML/haversine annotations back onto the original offer rows
-  const enriched = offers
-    .map(o => {
-      const rec = recMap.get(o.id);
-      if (!rec) return null; // not recommended by ML — exclude
-      return {
-        ...o,
-        detour_km: rec.detour_km ?? rec.distance_to_pickup_km ?? 0,
-        extra_earnings: rec.estimated_earnings
-          ? Math.round(rec.estimated_earnings * 100) // convert to paisa for consistency
-          : (o.freight_value || 0),
-        match_score: rec.match_score ?? 0,
-        extra_distance_km: rec.detour_km ?? 0,
-        ml_used: mlUsed,
-      };
-    })
-    .filter(Boolean)
-    .sort((a, b) => b.match_score - a.match_score);
-
-  return enriched;
 }
 
-/**
- * Haversine great-circle distance in km between two lat/lng points.
- * @private
- */
-function _haversineKm(lat1, lng1, lat2, lng2) {
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-export const __testing = {
-  demandCache,
-  priceCache,
-  _haversineKm,
-};
+module.exports = new MLService();
