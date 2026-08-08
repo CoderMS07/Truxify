@@ -14,6 +14,15 @@ const ALLOWED_DOCUMENT_TYPES = Object.freeze([
   'other',
 ]);
 
+const MIME_EXTENSION_MAP = Object.freeze({
+  'application/pdf': 'pdf',
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/webp': 'webp',
+  'image/heic': 'heic',
+});
+
 /**
  * Handles a driver KYC document upload. The file itself is validated
  * server-side by inspecting its magic bytes (see lib/documentValidation.js)
@@ -69,9 +78,13 @@ export async function uploadDriverDocument(req, res) {
       throw scanError;
     }
 
-    const extension = verifiedMimeType === 'application/pdf' ? 'pdf'
-      : verifiedMimeType === 'image/png' ? 'png'
-      : 'jpg';
+    const extension = MIME_EXTENSION_MAP[verifiedMimeType];
+    if (!extension) {
+      return res.status(422).json({
+        error: `Unsupported file extension for MIME type: ${verifiedMimeType}`,
+      });
+    }
+
     const storagePath = `${driverId}/${documentType}-${Date.now()}.${extension}`;
 
     const { error: storageError } = await supabase.storage
