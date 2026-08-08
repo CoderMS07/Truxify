@@ -51,6 +51,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
     mapping(address => uint256) public releaseTimestamps;
     uint256 public constant WITHDRAWAL_TIMEOUT = 30 days;
     uint256 public constant DISPUTE_TIMEOUT = 7 days;
+    address public trustedRelayer;
 
     // ─── Events ──────────────────────────────────────────────────────────────
 
@@ -109,6 +110,8 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
     event Withdrawn(address indexed recipient, uint256 amount);
 
     event EmergencyRecovered(address indexed recipient, uint256 amount);
+
+    event RelayerUpdated(address indexed newRelayer);
 
     // ─── Constructor ─────────────────────────────────────────────────────────
 
@@ -562,13 +565,27 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
     }
 
     /**
+     * @dev Set the trusted relayer whose Kyber-hybrid signatures gate
+     *      authorization flows. Only the owner may update it.
+     */
+    function setTrustedRelayer(address _newRelayer) external onlyOwner {
+        require(_newRelayer != address(0), "Invalid relayer address");
+        trustedRelayer = _newRelayer;
+        emit RelayerUpdated(_newRelayer);
+    }
+
+    /**
      * @dev Post-Quantum Hybrid Verification helper for Kyber1024 shared secrets.
+     *      Recovers the signer of the combined hash and requires it to be the
+     *      on-chain trustedRelayer so arbitrary third-party signatures cannot
+     *      satisfy the check.
      */
     function verifyKyberRelayerSignature(
         bytes32 messageHash,
         bytes32 kyberSharedSecretHash,
         bytes memory signature
-    ) external pure returns (bool) {
+    ) external view returns (bool) {
+        require(trustedRelayer != address(0), "Relayer not configured");
         require(signature.length == 65, "Invalid signature length");
         bytes32 combinedHash = keccak256(abi.encodePacked(messageHash, kyberSharedSecretHash));
         
@@ -582,6 +599,6 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
         }
         
         address signer = ecrecover(combinedHash, v, r, s);
-        return (signer != address(0));
+        return (signer == trustedRelayer);
     }
 }
