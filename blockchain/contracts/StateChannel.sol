@@ -115,8 +115,9 @@ contract StateChannel is ReentrancyGuard {
         require(block.timestamp >= channel.challengeExpiry, "Challenge period active");
         require(!channel.isClosed, "Already closed");
 
-        channel.isClosed = true;
-
+        // Effects-before-interactions: pay out first so a failed transfer
+        // reverts the whole call instead of leaving isClosed set with funds
+        // stuck (issue #7736).
         uint256 amountA = channel.balanceA;
         uint256 amountB = channel.balanceB;
 
@@ -125,6 +126,8 @@ contract StateChannel is ReentrancyGuard {
 
         (bool sentB, ) = channel.userB.call{value: amountB}("");
         require(sentB, "Transfer B failed");
+
+        channel.isClosed = true;
 
         emit ChannelClosed(channelId, amountA, amountB);
     }
