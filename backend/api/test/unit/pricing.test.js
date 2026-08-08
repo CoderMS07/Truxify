@@ -89,7 +89,9 @@ describe('Pricing Service Unit Tests', () => {
       expect(result.platformFee).toBe(4000);
       expect(result.totalAmount).toBe(104000);
       expect(result.fuelCost).toBe(36000);
-      expect(result.netProfit).toBe(24000);
+
+      // netProfit = baseFreight - fuelCost (toll is a pass-through included in totalAmount, not a cost)
+      expect(result.netProfit).toBe(44000);
     });
 
     it('applies fragile multiplier correctly', () => {
@@ -194,6 +196,18 @@ describe('Pricing Service Unit Tests', () => {
       expect(Number.isFinite(result.totalAmount)).toBe(true);
       expect(Number.isFinite(result.fuelCost)).toBe(true);
       expect(Number.isFinite(result.netProfit)).toBe(true);
+    });
+
+    it('netProfit does not subtract tollEstimate since toll is a pass-through in totalAmount', () => {
+      // Using defaultInput: baseFreight=80000, fuelCost=36000, tollEstimate=20000
+      // totalAmount = 80000 + 20000 + 4000 = 104000 (toll included)
+      // netProfit should = baseFreight - fuelCost = 80000 - 36000 = 44000
+      // NOT baseFreight - fuelCost - tollEstimate = 80000 - 36000 - 20000 = 24000
+      const result = computeOrderPricing(defaultInput, mockRateCard);
+      expect(result.netProfit).toBe(44000);
+      expect(result.netProfit).toBe(result.baseFreight - result.fuelCost);
+      // Verify toll is still in totalAmount
+      expect(result.totalAmount).toBe(result.baseFreight + result.tollEstimate + result.platformFee);
     });
   });
 

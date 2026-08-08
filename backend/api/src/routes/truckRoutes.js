@@ -96,6 +96,8 @@ import crypto from 'crypto';
 import { cacheMiddleware } from '../middleware/cacheMiddleware.js';
 import { getTruckSearchVersion } from '../utils/cacheInvalidation.js';
 
+const DEFAULT_TRUCK_TYPES = ['Open Body', 'Closed Body', 'Container', 'Refrigerated'];
+
 function sanitizeNumberPlate(plate) {
   if (!plate || typeof plate !== 'string') return '';
   return plate.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -136,7 +138,7 @@ const router = express.Router();
  */
 router.get('/types', authenticate, userLimiter, (req, res) => {
   return res.json({
-    types: ['Open Body', 'Closed Body', 'Container', 'Refrigerated']
+    types: DEFAULT_TRUCK_TYPES
   });
 });
 function parseCapacityFilter(value, field) {
