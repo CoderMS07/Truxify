@@ -51,7 +51,7 @@ spec:
     - destination:
         host: api-service
         port:
-          number: 5000
+          number: 80
   - match:
     - uri:
         prefix: /graphql
@@ -67,5 +67,5 @@ spec:
     - destination:
         host: api-service
         port:
-          number: 5000
+          number: 80
 
