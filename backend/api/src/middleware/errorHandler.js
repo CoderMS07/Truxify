@@ -33,7 +33,17 @@ export function errorHandler(err, req, res, next) {
     });
   }
 
-  if (err instanceof AppError) {
+  // Handle Zod validation errors
+if (err \&\& err.name === 'ZodError') {
+  logger.warn({ requestId: req.requestId, errors: err.errors }, 'Zod validation failed');
+  return res.status(400).json({
+    success: false,
+    error: 'Validation failed',
+    details: err.errors.map(e => ({ field: e.path.join('.'), message: e.message })),
+  });
+}
+
+if (err instanceof AppError) {
     return res.status(err.statusCode).json({
       success: false,
       error: err.message
