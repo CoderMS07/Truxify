@@ -25,6 +25,7 @@ contract StateChannel is ReentrancyGuard {
     }
 
     mapping(bytes32 => Channel) public channels;
+    uint256 public channelCounter;
     uint256 public constant CHALLENGE_PERIOD = 1 days;
 
     event ChannelOpened(bytes32 indexed channelId, address indexed userA, address indexed userB, uint256 deposit);
@@ -35,7 +36,9 @@ contract StateChannel is ReentrancyGuard {
         require(msg.value > 0, "Deposit required");
         require(userB != address(0), "Invalid user B");
 
-        channelId = keccak256(abi.encodePacked(msg.sender, userB, block.timestamp));
+        channelCounter++;
+        channelId = keccak256(abi.encodePacked(msg.sender, userB, block.timestamp, channelCounter));
+        require(channels[channelId].userA == address(0), "Channel exists");
         channels[channelId] = Channel({
             userA: msg.sender,
             userB: userB,
