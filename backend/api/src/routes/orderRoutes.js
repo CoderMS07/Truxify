@@ -237,6 +237,13 @@ const LOAD_OFFER_CACHE_TTL_SECONDS = 120;
 
 async function readLoadOfferCache(cacheKey) {
   if (!redisClient) return null;
+const getOrderResource = async (req) => {
+  const { id } = req.params;
+  if (!id) return null;
+  return await orderService.getOrderById(id);
+};
+
+
 router.post('/api/deliveries/:id/geofence-confirm', async (req, res) => {
   const { driver_lat, driver_lng, geofence_radius_m } = req.body;
 
