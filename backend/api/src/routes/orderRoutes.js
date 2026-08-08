@@ -271,6 +271,14 @@ router.post('/api/deliveries/:id/geofence-confirm', async (req, res) => {
       lng,
     }, 'Driver geofence confirm attempt');
 
+    const result = await orderLifecycleService.deliveryVerification.geofenceAutoConfirm({
+      orderId: req.params.id,
+      driverId: req.user.id,
+      driverLat: lat,
+      driverLng: lng,
+      geofenceRadiusM,
+    });
+
       'id, driver_id, customer_id',
     );
     orderValidationService.assertOrderFound(order);
@@ -318,8 +326,65 @@ router.post('/api/deliveries/:id/geofence-confirm', async (req, res) => {
  *
  * This keeps the driver app URL surface clean while reusing identical logic.
  */
-router.post(
-  '/:id/confirm-otp',
+const handleDeliveryVerification = async (req, res) => {
+  try {
+    const order = await orderValidationService.findOrderByIdOrDisplayId(
+      req.params.id,
+      'id, driver_id, customer_id'
+    );
+    orderValidationService.assertOrderFound(order);
+    orderValidationService.assertDriverAssignment(order, req.user.id);
+
+    logger.info({
+      event: 'CONFIRM_OTP_ATTEMPT',
+      orderId: req.params.id,
+      driverId: req.user.id,
+    }, 'Driver OTP confirm attempt');
+
+    const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(
+      req.params.id,
+      req.user.id,
+      req.body.otp,
+      req.token ? createUserClient(req.token) : undefined
+    );
+
+    // Fetch the released amount to include in the response
+    const orderForAmount = await orderValidationService.findOrderByIdOrDisplayId(
+      req.params.id,
+      'total_amount, order_display_id'
+    );
+    const amountInr = orderForAmount?.total_amount
+      ? (orderForAmount.total_amount / 100).toFixed(0)
+      : null;
+
+    if (escrowUpdateFailed) {
+      logger.warn(`[confirm-otp] escrowUpdateFailed for order ${req.params.id} — reconciliation required`);
+      return res.status(202).json({
+        message: 'Delivery confirmed. Escrow payout is pending reconciliation — your payment will be credited shortly.',
+        payment_released: false,
+        reconciliation_required: true,
+        escrow_status: 'release_pending_reconciliation',
+        amount_inr: amountInr,
+      });
+    }
+
+    return res.json({
+      message: 'Delivery confirmed! Payment released to driver.',
+      payment_released: true,
+      escrow_status: 'released',
+      amount_inr: amountInr,
+      order_display_id: orderForAmount?.order_display_id,
+    });
+  } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
+    logger.error('[confirm-otp] Exception:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+const deliveryVerificationMiddleware = [
   authenticate,
   userLimiter,
   requirePolicy('delivery:verify'),
@@ -328,6 +393,7 @@ router.post(
   requireIdempotency(86400),
   validateParams(paramIdSchema),
   validateBody(verifyDeliverySchema),
+];
   async (req, res) => {
     try {
       const order = await orderValidationService.findOrderByIdOrDisplayId(
@@ -373,22 +439,8 @@ router.post(
         });
       }
 
-      return res.json({
-        message: 'Delivery confirmed! Payment released to driver.',
-        payment_released: true,
-        escrow_status: 'released',
-        amount_inr: amountInr,
-        order_display_id: orderForAmount?.order_display_id,
-      });
-    } catch (err) {
-      if (err instanceof DomainError) {
-        return res.status(err.status).json(err.payload);
-      }
-      logger.error('[confirm-otp] Exception:', err.message);
-      return res.status(500).json({ error: 'Internal Server Error' });
-    }
-  }
-);
+router.post('/:id/confirm-otp', deliveryVerificationMiddleware, handleDeliveryVerification);
+router.post('/:id/verify-delivery', deliveryVerificationMiddleware, handleDeliveryVerification);
 
 // ============================================================================
 // 14. RESEND DELIVERY OTP (DRIVER)

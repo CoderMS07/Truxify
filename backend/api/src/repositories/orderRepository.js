@@ -597,5 +597,32 @@ export class OrderRepository {
         p_instance_id: instanceId,
       }), 'claimRefundReconciliation');
   }
+
+  // ===================================================================
+  // ESCROW RELEASE RECONCILIATION
+  // ===================================================================
+
+  /**
+   * Selects orders whose on-chain escrow release may have completed without
+   * the trip being finalized. Covers the exact failure window: a release that
+   * succeeded on-chain but whose `complete_trip_tx` never ran (or whose
+   * release evidence was never persisted), leaving the order at
+   * `status <> 'payment_released'`.
+   *
+   * Plain `funded` orders that are still awaiting delivery are included so the
+   * worker can consult the on-chain booking and heal the release if it did in
+   * fact land; orders still waiting are skipped without side effects. The
+   * attempt budget excludes orders already escalated to manual review.
+   */
+  async findPendingEscrowReleases(limit = 50) {
+    return this._retryableQuery(() => this.supabase
+      .from('orders')
+      .select('id, order_display_id, status, escrow_status, escrow_disabled, escrow_booking_id, escrow_release_attempts, escrow_release_last_attempt_at, escrow_release_error, release_tx_hash, escrow_released_at')
+      .in('escrow_status', ['release_failed', 'released', 'funded'])
+      .neq('status', 'payment_released')
+      .or('escrow_release_attempts.lt.10,escrow_release_attempts.is.null')
+      .order('escrow_release_attempts', { ascending: false })
+      .limit(limit), 'findPendingEscrowReleases');
+  }
 }
 
