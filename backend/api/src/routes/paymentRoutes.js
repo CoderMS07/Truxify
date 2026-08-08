@@ -302,8 +302,6 @@ router.post(
           escrow_status: 'funded',
           escrow_booking_id: bookingId,
           escrow_tx_hash: tx_hash,
-          escrow_deposited_at: new Date().toISOString(),
-          wallet_address: wallet_address || order.wallet_address,
           updated_at: new Date().toISOString(),
         },
         [{ op: 'neq', column: 'escrow_status', value: 'funded' }]

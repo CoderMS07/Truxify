@@ -809,8 +809,6 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
     if (result.alreadyFunded) {
       const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
         escrow_status: 'funded',
-        deposit_tx_hash: result.txHash,
-        escrow_deposited_at: new Date().toISOString(),
       }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
 
       if (!updateErr && updatedData) {
@@ -826,8 +824,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
 
     const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
       escrow_status: 'funded',
-      deposit_tx_hash: result.txHash,
-      escrow_deposited_at: new Date().toISOString(),
+      escrow_status: 'funded',
     }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
 
     if (updateErr) {
