@@ -321,10 +321,16 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), async (re
       return res.status(400).json({ error: 'Destination with lat/lng is required' });
     }
 
-    if (weight_tons === undefined || weight_tons === null || Number.isNaN(Number(weight_tons))) {
+    const parsedWeight = Number(weight_tons);
+    if (weight_tons === undefined || weight_tons === null || Number.isNaN(parsedWeight)) {
       return res.status(400).json({ error: 'Valid weight_tons is required' });
     }
-    if (expected_price === undefined || expected_price === null || Number.isNaN(Number(expected_price))) {
+    if (parsedWeight <= 0) {
+      return res.status(400).json({ error: 'weight_tons must be a positive number' });
+    }
+
+    const parsedPrice = Number(expected_price);
+    if (expected_price === undefined || expected_price === null || Number.isNaN(parsedPrice)) {
       return res.status(400).json({ error: 'Valid expected_price is required' });
     }
 
