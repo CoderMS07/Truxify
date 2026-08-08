@@ -119,6 +119,9 @@ async function handleBookingCancelled(payload) {
   const now = new Date().toISOString();
 
   if (order.escrow_status === 'refunded') {
+    if (payload.txHash && !order.refund_tx_hash) {
+      await requireDb().from('orders').update({ refund_tx_hash: payload.txHash }).eq('id', order.id);
+    }
     logger.info(`[Webhook] Order ${order.order_display_id} already refunded — duplicate delivery ignored.`);
     return;
   }
@@ -154,6 +157,13 @@ async function handleWithdrawalSettled(payload) {
   // If the order already reflects the intended terminal state, short-circuit.
   const targetStatus = isRefund ? 'refunded' : 'released';
   if (order.escrow_status === targetStatus) {
+    if (txHash) {
+      if (isRefund && !order.refund_tx_hash) {
+        await requireDb().from('orders').update({ refund_tx_hash: txHash }).eq('id', order.id);
+      } else if (!isRefund && !order.release_tx_hash) {
+        await requireDb().from('orders').update({ release_tx_hash: txHash }).eq('id', order.id);
+      }
+    }
     if (!isRefund) {
       await reconcileWalletLedger(order, txHash);
     }
