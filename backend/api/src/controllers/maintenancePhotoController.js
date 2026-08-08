@@ -13,9 +13,21 @@ const ALLOWED_PHOTO_MIME_TYPES = Object.freeze([
 
 const MAX_PHOTOS = 3;
 
+// Map supported MIME types to their correct extensions
+const MIME_EXTENSION_MAP = Object.freeze({
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/heic': 'heic',
+  'application/pdf': 'pdf',
+});
+
 function extensionForMime(mime) {
-  if (mime === 'image/png') return 'png';
-  return 'jpg';
+  const ext = MIME_EXTENSION_MAP[mime];
+  if (!ext) {
+    throw new Error(`Unsupported MIME type for extension mapping: '${mime}'`);
+  }
+  return ext;
 }
 
 export async function uploadMaintenancePhotos(req, res) {
