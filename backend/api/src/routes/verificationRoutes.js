@@ -2,7 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import { verificationService } from '../core/container.js';
-import { supabase } from '../config/db.js';
+import { supabase, supabaseAdmin } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { safeIpKeyGenerator, createStore } from '../middleware/rateLimiter.js';
 import { validateParams, validateBody } from '../middleware/validate.js';
@@ -227,7 +227,7 @@ router.post('/kyc/upload', kycUploadLimiter, upload.single('image'), authenticat
     }
 
     // Set status to pending
-    const { error: updateError } = await supabase
+    const { error: updateError } = await supabaseAdmin
       .from('driver_details')
       .update({ kyc_status: 'Pending KYC' })
       .eq('user_id', userId);
@@ -256,7 +256,7 @@ router.post('/kyc/upload', kycUploadLimiter, upload.single('image'), authenticat
     const ocrData = await mlResponse.json();
 
     if (ocrData.verified) {
-      const { error: verifyError } = await supabase
+      const { error: verifyError } = await supabaseAdmin
         .from('driver_details')
         .update({ 
           kyc_status: 'Verified',
@@ -266,7 +266,7 @@ router.post('/kyc/upload', kycUploadLimiter, upload.single('image'), authenticat
 
       if (verifyError) throw verifyError;
     } else {
-       const { error: rejectError } = await supabase
+       const { error: rejectError } = await supabaseAdmin
         .from('driver_details')
         .update({ kyc_status: 'Rejected' })
         .eq('user_id', userId);
