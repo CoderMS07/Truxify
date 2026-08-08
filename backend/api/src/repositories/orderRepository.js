@@ -549,13 +549,42 @@ export class OrderRepository {
   }
 
   async revertEscrowStatus(orderId) {
+    // Guard the revert to 'pending' so it can never clobber a concurrent
+    // escrow transition (e.g. the stale-order worker moving a funded order
+    // into 'refund_pending'). Only states this method legitimately reverts
+    // are 'funding'/'funded'.
     return this._retryableQuery(() => this.supabase
       .from('orders')
       .update({
         escrow_status: 'pending',
         escrow_booking_id: null,
       })
-      .eq('id', orderId), 'revertEscrowStatus');
+      .eq('id', orderId)
+      .in('escrow_status', ['funding', 'funded']), 'revertEscrowStatus');
+  }
+
+  // ===================================================================
+  // STALE ORDER CANCELLATION
+  // ===================================================================
+
+  async findStalePendingOrders(cutoff, limit) {
+    return this._retryableQuery(() => this.supabase
+      .from('orders')
+      .select('id')
+      .eq('status', 'pending')
+      .lt('created_at', cutoff)
+      .neq('escrow_status', 'funding')
+      .limit(limit), 'findStalePendingOrders');
+  }
+
+  async cancelStaleOrder(orderId, cancellationReason, staleSince, client) {
+    const supabaseClient = client || this.supabase;
+    return this._retryableQuery(() => supabaseClient
+      .rpc('cancel_stale_order_tx', {
+        p_order_id: orderId,
+        p_cancellation_reason: cancellationReason,
+        p_stale_since: staleSince,
+      }), 'cancelStaleOrder');
   }
 
   async findStaleFundingOrders(cutoff) {
