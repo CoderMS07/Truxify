@@ -173,7 +173,6 @@ import {
   deliveryVerificationService,
   buildDepositTx,
   recordDepositTx,
-  submitEscrowRefund,
   confirmEscrowRefund,
 } from '../core/container.js';
 import { getEscrowBookingId, resolveExpectedDepositAmount, paisaToMaticWei } from '../services/escrow.js';
@@ -233,6 +232,13 @@ const changeDropLimiter = rateLimit({
 
 const router = express.Router();
 
+const getOrderResource = async (req) => {
+  const { id } = req.params;
+  if (!id) return null;
+  return await orderService.getOrderById(id);
+};
+
+
 router.post('/api/deliveries/:id/geofence-confirm', async (req, res) => {
   const { driver_lat, driver_lng, geofence_radius_m } = req.body;
 
@@ -243,9 +249,6 @@ router.post('/api/deliveries/:id/geofence-confirm', async (req, res) => {
     return res.status(400).json({ error: 'Invalid driver_lat or driver_lng' });
   }
 
-  const geofenceRadiusM = geofence_radius_m !== undefined ? parseFloat(geofence_radius_m) : undefined;
-  if (geofenceRadiusM !== undefined && (!Number.isFinite(geofenceRadiusM) || geofenceRadiusM <= 0)) {
-    return res.status(400).json({ error: 'Invalid geofence_radius_m' });
   let geofenceRadiusM;
   if (geofence_radius_m !== undefined) {
     geofenceRadiusM = parseFloat(geofence_radius_m);
@@ -520,7 +523,7 @@ router.post('/:id/resend-otp', authenticate, userLimiter, resendOtpLimiter, requ
  *       429:
  *         description: Rate limited
  */
-router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, requirePolicy('order:change-drop'), auditLog({ action: 'order:change-drop', resourceType: 'order' }), validateParams(paramIdSchema), validateBody(changeDropSchema), async (req, res) => {
+router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, requirePolicy('order:change-drop'), auditLog({ action: 'order:change-drop', resourceType: 'order' }), requireIdempotency(86400), validateParams(paramIdSchema), validateBody(changeDropSchema), async (req, res) => {
   const { id: orderId } = req.params;
   const { drop_address, drop_lat, drop_lng } = req.body;
   try {
@@ -694,7 +697,7 @@ router.post('/:id/cancel', authenticate, userLimiter, requirePolicy('order:cance
  *       200:
  *         description: Deposit confirmed
  */
-router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('order:confirm-deposit'), auditLog({ action: 'order:confirm-deposit', resourceType: 'order' }), validateParams(paramIdSchema), validateBody(
+router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('order:confirm-deposit'), auditLog({ action: 'order:confirm-deposit', resourceType: 'order' }), requireIdempotency(86400), validateParams(paramIdSchema), validateBody(
   z.object({ txHash: z.string().regex(/^0x([A-Fa-f0-9]{64})$/, 'Invalid transaction hash') }),
 ), async (req, res) => {
   const orderId = req.params.id;
@@ -783,7 +786,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
         pending.driver_id,
         'Bid Accepted!',
         `Your bid for order ${pending.order_display_id} has been accepted. You are now assigned to this load.`,
-        'bid_accepted',
+        'order_update',
         { orderId, orderDisplayId: pending.order_display_id }
       ).catch((err) => logger.error(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
     };
@@ -809,8 +812,6 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
     if (result.alreadyFunded) {
       const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
         escrow_status: 'funded',
-        deposit_tx_hash: result.txHash,
-        escrow_deposited_at: new Date().toISOString(),
       }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
 
       if (!updateErr && updatedData) {
@@ -826,8 +827,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
 
     const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
       escrow_status: 'funded',
-      deposit_tx_hash: result.txHash,
-      escrow_deposited_at: new Date().toISOString(),
+      escrow_status: 'funded',
     }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
 
     if (updateErr) {
@@ -1107,7 +1107,7 @@ async function validateAndScanPodFile(file, label) {
 // PoD uploads are rate-limited per driver + order: each request may carry up to
 // 20MB and triggers a malware scan, so without a limiter a driver could exhaust
 // storage, RAM (multer memoryStorage), and scan CPU with an unbounded stream.
-router.post('/:id/pod', authenticate, requireRole(['driver']), podUploadLimiter, podUpload.fields([{ name: 'signature', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
+router.post('/:id/pod', authenticate, requireRole(['driver']), podUploadLimiter, requireIdempotency(86400), podUpload.fields([{ name: 'signature', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
   try {
     const orderId = req.params.id;
     const { data: order, error: orderErr } = await orderRepository.findOrderById(orderId);
@@ -1195,6 +1195,27 @@ router.post('/:id/pod', authenticate, requireRole(['driver']), podUploadLimiter,
   } catch (err) {
     logger.error('PoD upload error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
+// GET /api/orders/history
+router.get('/history', authenticate, userLimiter, requirePolicy('order:view-history'), async (req, res) => {
+  const { cursor } = req.query;
+
+  if (cursor !== undefined && (!Number.isInteger(Number(cursor)) || Number(cursor) < 1)) {
+    return res.status(400).json({ error: 'Invalid cursor parameter. Must be a valid positive integer.' });
+  }
+
+  const page = cursor ? parseInt(cursor, 10) : (parseInt(req.query.page, 10) || 1);
+  const limit = parseInt(req.query.limit, 10) || 20;
+
+  try {
+    const result = await orderLifecycleService.getOrderHistory(req.user.id, page, limit);
+    return res.json(result);
+  } catch (err) {
+    logger.error('Order history fetch error:', err);
+    return res.status(500).json({ error: 'Failed to fetch order history.' });
   }
 });
 

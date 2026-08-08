@@ -10,7 +10,7 @@ import logger from '../middleware/logger.js';
 import { verifyOrderParamsSchema, documentCheckSchema } from '../validation/requestSchemas.js';
 import { scanDocument, MalwareScanError } from '../lib/malwareScanner.js';
 import { PolicyError, policy } from '../security/policyEngine.js';
-import digilockerService from '../services/verification/DigilockerService.js';
+import digilockerService from '../services/digilockerService.js';
 import { validateDocumentBuffer, DocumentValidationError } from '../lib/documentValidation.js';
 
 const router = express.Router();
@@ -240,11 +240,19 @@ router.post('/kyc/upload', kycUploadLimiter, upload.single('image'), authenticat
     const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
     formData.append('file', blob, req.file.originalname);
 
-    const mlResponse = await fetch('http://127.0.0.1:8000/verify/kyc', {
+    const mlBaseUrl = (process.env.ML_API_URL || process.env.ML_ENGINE_URL || process.env.ML_SERVICE_URL || '').replace(/\/$/, '');
+    const mlApiKey = process.env.ML_API_KEY;
+
+    if (!mlBaseUrl || !mlApiKey) {
+      logger.error('[OCR] ML service URL (ML_API_URL) or API key (ML_API_KEY) not configured');
+      return res.status(503).json({ success: false, error: 'KYC OCR service is unconfigured' });
+    }
+
+    const mlResponse = await fetch(`${mlBaseUrl}/verify/kyc`, {
       method: 'POST',
       body: formData,
       headers: {
-        'X-API-Key': process.env.ML_API_KEY || 'truxify_ml_dev_key',
+        'X-API-Key': mlApiKey,
       },
     });
 

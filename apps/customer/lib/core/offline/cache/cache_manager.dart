@@ -85,15 +85,19 @@ class CacheManager {
 
     _database = await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE IF NOT EXISTS orders (
             id TEXT PRIMARY KEY,
             type TEXT NOT NULL,
+            status TEXT,
             payload TEXT NOT NULL,
             updated_at TEXT NOT NULL
           )
+        ''');
+        await db.execute('''
+          CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)
         ''');
         await db.execute('''
           CREATE TABLE IF NOT EXISTS profile (
@@ -135,6 +139,12 @@ class CacheManager {
           )
         ''');
       },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute('''ALTER TABLE orders ADD COLUMN status TEXT''');
+          await db.execute('''CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)''');
+        }
+      },
     );
 
     return _database!;
@@ -156,6 +166,7 @@ class CacheManager {
         {
           'id': id,
           'type': item['type'] ?? 'order',
+          'status': item['status']?.toString(),
           'payload': jsonEncode(item),
           'updated_at': updatedAt,
         },
@@ -165,10 +176,10 @@ class CacheManager {
 
     await batch.commit(noResult: true);
   }
+  set databaseForTesting(Database? db) => _database = db;
 
   Future<List<Map<String, dynamic>>> getOrders({bool activeOnly = false, int limit = 20}) async {
     final db = await open();
-
     // The order status lives inside the JSON `payload` column, so the active
     // filter runs in Dart rather than SQL. When filtering, fetch the full
     // cached set (a local, pruned table) and let filterActiveOrders truncate
