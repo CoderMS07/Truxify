@@ -45,6 +45,7 @@ contract ZKPrivacy is Ownable, ReentrancyGuard, Pausable {
     mapping(bytes32 => PrivateTransaction) public transactions;
 
     MerkleTree public merkleTree;
+    bytes32[MERKLE_DEPTH] private fillSubtrees;
     address public verifier;
 
     uint256 public constant MERKLE_DEPTH = 20;
@@ -80,20 +81,18 @@ contract ZKPrivacy is Ownable, ReentrancyGuard, Pausable {
         require(index < 2 ** MERKLE_DEPTH, "Tree full");
 
         bytes32 leaf = commitment;
-        bytes32[] memory updatedLevels = merkleTree.levels;
-
         uint256 currentIndex = index;
         for (uint256 i = 0; i < MERKLE_DEPTH; i++) {
             if (currentIndex % 2 == 0) {
-                updatedLevels[i + 1] = keccak256(abi.encodePacked(leaf, updatedLevels[i]));
+                leaf = keccak256(abi.encodePacked(leaf, merkleTree.levels[i]));
+                fillSubtrees[i] = leaf;
             } else {
-                updatedLevels[i + 1] = keccak256(abi.encodePacked(updatedLevels[i], leaf));
+                leaf = keccak256(abi.encodePacked(fillSubtrees[i], leaf));
             }
             currentIndex /= 2;
-            leaf = updatedLevels[i + 1];
         }
 
-        merkleTree.levels = updatedLevels;
+        merkleTree.levels[MERKLE_DEPTH] = leaf;
         merkleTree.nextIndex = index + 1;
 
         emit CommitmentAdded(commitment, index);
