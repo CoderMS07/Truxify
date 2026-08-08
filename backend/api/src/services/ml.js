@@ -37,6 +37,15 @@ function parseWeightKg(weight) {
   return match[2] === 'kg' ? value : value * 1000;
 }
 
+function parseWeightKgSafe(weight) {
+  const result = parseWeightKg(weight);
+  if (Number.isNaN(result)) {
+    logger.warn(`[ML] parseWeightKg received unparseable weight: ${weight}`);
+    return 0;
+  }
+  return result;
+}
+
 /**
  * Parse the free-text `dimensions` column of load_offers (e.g. '12 X 6 X 6 ft')
  * into length/width/height in meters. Falls back to 1 m per dimension when
