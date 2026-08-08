@@ -103,6 +103,19 @@ export async function uploadDriverDocument(req, res) {
       clearTimeout(timeoutId);
     }
 
+    // Check if driver already has an existing document record for this documentType
+    const { data: existingDoc, error: checkError } = await supabase
+      .from('driver_documents')
+      .select('id, storage_path')
+      .eq('driver_id', driverId)
+      .eq('document_type', documentType)
+      .maybeSingle();
+
+    if (checkError) {
+      logger.error('[DocumentController] Failed to check for existing document:', checkError.message);
+      return res.status(500).json({ error: 'Failed to process document' });
+    }
+
     const extension = verifiedMimeType === 'application/pdf' ? 'pdf'
       : verifiedMimeType === 'image/png' ? 'png'
       : 'jpg';
@@ -123,27 +136,70 @@ export async function uploadDriverDocument(req, res) {
       return res.status(500).json({ error: 'Failed to store document' });
     }
 
-    const { data: record, error: insertError } = await supabase
-      .from('driver_documents')
-      .insert({
-        driver_id: driverId,
-        document_type: documentType,
-        storage_path: storagePath,
-        mime_type: verifiedMimeType,
-        status: 'pending_review',
-      })
-      .select('id, document_type, status, created_at')
-      .single();
+    let record;
+    let dbError;
 
-    if (insertError) {
-      logger.error('[DocumentController] Failed to record document metadata:', insertError.message);
+    if (existingDoc) {
+      // Update existing record (Supersede)
+      const { data: updatedRecord, error: updateErr } = await supabase
+        .from('driver_documents')
+        .update({
+          storage_path: storagePath,
+          mime_type: verifiedMimeType,
+          status: 'pending_review',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existingDoc.id)
+        .select('id, document_type, status, created_at')
+        .single();
+
+      record = updatedRecord;
+      dbError = updateErr;
+    } else {
+      // Insert new document record
+      const { data: insertedRecord, error: insertErr } = await supabase
+        .from('driver_documents')
+        .insert({
+          driver_id: driverId,
+          document_type: documentType,
+          storage_path: storagePath,
+          mime_type: verifiedMimeType,
+          status: 'pending_review',
+        })
+        .select('id, document_type, status, created_at')
+        .single();
+
+      record = insertedRecord;
+      dbError = insertErr;
+    }
+
+    if (dbError) {
+      logger.error('[DocumentController] Failed to record document metadata:', dbError.message);
       await supabase.storage.from('driver-documents').remove([storagePath]).catch((storageCleanErr) => {
         logger.error('[DocumentController] Failed to clean up document storage path:', storageCleanErr.message);
       });
+
+      // Handle Postgres unique constraint violation explicitly (HTTP 409 Conflict)
+      if (dbError.code === '23505') {
+        return res.status(409).json({
+          error: `A document of type '${documentType}' already exists for this driver.`,
+        });
+      }
+
       return res.status(500).json({ error: 'Failed to store document' });
     }
 
-    return res.status(201).json({
+    // Clean up old file from storage to prevent orphaned files
+    if (existingDoc?.storage_path) {
+      await supabase.storage
+        .from('driver-documents')
+        .remove([existingDoc.storage_path])
+        .catch((cleanupErr) => {
+          logger.warn('[DocumentController] Failed to delete superseded storage file:', cleanupErr.message);
+        });
+    }
+
+    return res.status(existingDoc ? 200 : 201).json({
       success: true,
       document: record,
     });
