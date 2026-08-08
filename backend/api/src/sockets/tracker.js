@@ -949,9 +949,9 @@ export async function handleLocationPing(ws, data, req) {
     GpsLog.create({
       bookingId: orderDisplayId || orderUUID || driver_id,
       driverId: driver_id,
-      lat,
-      lng,
-      speed: speed || 0,
+      lat: sanitized.lat,
+      lng: sanitized.lng,
+      speed: sanitized.speed ?? 0,
       heading: sanitized.bearing ?? 0,
       timestamp: deviceTime || new Date(serverNow),
       metadata: {
@@ -1202,14 +1202,17 @@ export async function closeWebSocketServer() {
       await new Promise(r => setTimeout(r, mongoPollIntervalMs));
     }
     if (!getMongoDb()) {
-      const dataLoss = telemetryWriteBuffer.length;
-      if (dataLoss > 0) {
+      const allPending = [
+        ...telemetryFlushBuffer,
+        ...(await telemetryWriteBuffer.toArray())
+      ];
+      if (allPending.length > 0) {
         try {
-          const lines = (await telemetryWriteBuffer.toArray()).map(r => JSON.stringify(r)).join('\n');
+          const lines = allPending.map(r => JSON.stringify(r)).join('\n');
           fs.writeFileSync(RECOVERY_FILE_PATH, lines + '\n', { encoding: 'utf-8', mode: 0o600 });
-          logger.warn(`[TRUXIFY SHUTDOWN] MongoDB not available. Wrote ${dataLoss} telemetry records to recovery file: ${RECOVERY_FILE_PATH}`);
+          logger.warn(`[TRUXIFY SHUTDOWN] MongoDB not available. Wrote ${allPending.length} telemetry records to recovery file: ${RECOVERY_FILE_PATH}`);
         } catch (fileErr) {
-          logger.error(`[TRUXIFY SHUTDOWN] Failed to write recovery file: ${fileErr.message}. ${dataLoss} records lost.`);
+          logger.error(`[TRUXIFY SHUTDOWN] Failed to write recovery file: ${fileErr.message}. ${allPending.length} records lost.`);
         }
       }
     }
