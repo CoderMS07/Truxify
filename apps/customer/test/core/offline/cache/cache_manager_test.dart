@@ -43,19 +43,27 @@ void main() {
       'updated_at': DateTime(2026, 8, 1).toIso8601String(),
     });
 
-    when(() => mockDatabase.query(
-      'orders',
-      orderBy: 'updated_at DESC',
-      limit: null,
-    )).thenAnswer((_) async => rows);
+    when(() => mockDatabase.rawQuery(
+      any(),
+      any(),
+    )).thenAnswer((_) async => [
+      {
+        'id': 'active-oldest',
+        'type': 'order',
+        'payload': jsonEncode({
+          'id': 'active-oldest',
+          'status': 'in_transit', // active status
+        }),
+        'updated_at': DateTime(2026, 8, 1).toIso8601String(),
+      }
+    ]);
 
     final result = await cacheManager.getOrders(activeOnly: true, limit: 20);
 
-    // Verify the db.query was called with limit: null
-    verify(() => mockDatabase.query(
-      'orders',
-      orderBy: 'updated_at DESC',
-      limit: null,
+    // Verify rawQuery was used to filter in SQL
+    verify(() => mockDatabase.rawQuery(
+      any(that: contains('WHERE status IN')),
+      [20],
     )).called(1);
 
     expect(result.length, 1);

@@ -30,8 +30,7 @@ spec:
     - "*.truxify.com"
     tls:
       mode: SIMPLE
-      credentialName: truxify-cert
----
+      credentialName: truxify-cert---
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -68,4 +67,3 @@ spec:
         host: api-service
         port:
           number: 5000
-
