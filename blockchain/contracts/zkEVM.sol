@@ -166,7 +166,15 @@ contract zkEVM is Ownable, ReentrancyGuard, Pausable {
             txHashes[i] = txHash;
 
             require(!processedTxHashes[txHash], "Duplicate transaction");
+            require(!usedNonces[from][nonce], "Nonce already used");
+            require(currentState.balances[from] >= value + gasPrice * gasLimit, "Insufficient balance");
+
+            // Verify signature (same digest as executeTransaction)
+            bytes32 txHashForSig = keccak256(abi.encodePacked(from, to, value, data, nonce, gasPrice, gasLimit));
+            require(_verifySignature(txHashForSig, signature, from), "Invalid signature");
+
             processedTxHashes[txHash] = true;
+            usedNonces[from][nonce] = true;
 
             // Execute
             currentState.balances[from] -= value + gasPrice * gasLimit;
