@@ -73,6 +73,12 @@ export function deserializeCacheEvent(json) {
   try {
     const event = JSON.parse(json);
     if (!event || !event.type || !event.namespace) return null;
+
+    if (!Object.values(CacheEventType).includes(event.type)) {
+      logger.warn(`[CacheEvent] Deserialization failed: unrecognized event type "${event.type}".`);
+      return null;
+    }
+
     return event;
   } catch (err) {
     logger.warn('[CacheEvent] Deserialization failed:', err?.message);
