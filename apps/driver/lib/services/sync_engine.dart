@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -18,10 +19,11 @@ class SyncEngine {
   static String get apiBaseUrl {
     const envUrl = String.fromEnvironment('TRUXIFY_API_BASE_URL');
     if (envUrl.isNotEmpty) return envUrl;
-    if (kReleaseMode) {
-      throw StateError('TRUXIFY_API_BASE_URL must be set in release mode');
-    }
-    return 'http://localhost:5000';
+    if (kReleaseMode) throw StateError('TRUXIFY_API_BASE_URL must be set in release mode');
+
+    if (kIsWeb) return 'http://localhost:8080';
+    if (Platform.isAndroid) return 'http://10.0.2.2:8080';
+    return 'http://localhost:8080';
   }
 
   static Future<Database> get database async {
@@ -71,8 +73,8 @@ class SyncEngine {
 
     debugPrint('[SyncEngine] Queued $eventType for trip $tripId.');
     
-    final connectivityResult = await Connectivity().checkConnectivity();
-    if (connectivityResult != ConnectivityResult.none) {
+    final connectivityResults = await Connectivity().checkConnectivity();
+    if (!connectivityResults.contains(ConnectivityResult.none)) {
       await attemptSync();
     }
   }
@@ -80,8 +82,8 @@ class SyncEngine {
   /// Flushes the queue to the backend.
   static Future<void> attemptSync() async {
     if (_isSyncing) return;
-    final connectivityResult = await Connectivity().checkConnectivity();
-    if (connectivityResult == ConnectivityResult.none) return;
+    final connectivityResults = await Connectivity().checkConnectivity();
+    if (connectivityResults.contains(ConnectivityResult.none)) return;
 
     final db = await database;
     final events = await db.query('sync_queue', orderBy: 'occurred_at ASC');

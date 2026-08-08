@@ -1,11 +1,13 @@
 import { WebSocketServer } from 'ws';
+import crypto from 'crypto';
 import { verifyAuthToken } from '../../middleware/auth.js';
 import logger from '../../middleware/logger.js';
 import { supabase, redisClient } from '../../config/db.js';
 
 class WebRTCSignalingServer {
   constructor(server) {
-    this.wss = new WebSocketServer({ server, path: '/webrtc' });
+    const MAX_WS_PAYLOAD_BYTES = parseInt(process.env.WS_MAX_PAYLOAD_BYTES, 10) || 4096;
+    this.wss = new WebSocketServer({ server, path: '/webrtc', maxPayload: MAX_WS_PAYLOAD_BYTES });
     this.redis = redisClient;
     this.peers = new Map(); // peerId -> { ws, location, meshId }
     this.meshes = new Map(); // meshId -> Set of peerIds
@@ -307,13 +309,13 @@ class WebRTCSignalingServer {
   }
 
   getOrCreateMesh() {
-    const meshId = `mesh_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    const meshId = `mesh_${crypto.randomUUID()}`;
     this.meshes.set(meshId, new Set());
     return meshId;
   }
 
   generatePeerId() {
-    return `peer_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    return `peer_${crypto.randomUUID()}`;
   }
 
   startDiscovery() {
@@ -332,7 +334,14 @@ class WebRTCSignalingServer {
       this._discoveryInterval = null;
     }
     for (const [peerId, peer] of this.peers) {
-      try { peer.ws.close(1001, 'Server shutting down'); } catch {}
+      try {
+        peer.ws.close(1001, 'Server shutting down');
+      } catch (err) {
+        logger.warn(
+          { err },
+          '[WebRTC] Failed to close peer WebSocket during shutdown.'
+        );
+      }
     }
     this.peers.clear();
     this.meshes.clear();

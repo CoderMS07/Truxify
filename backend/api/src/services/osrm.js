@@ -39,7 +39,7 @@ function buildRouteUrl({ pickupLat, pickupLng, dropLat, dropLng }) {
 }
 
 function buildCacheKey({ pickupLat, pickupLng, dropLat, dropLng }) {
-  const r = (n) => Number(n.toFixed(6));
+  const r = (n) => Number(n.toFixed(8));
   return `osrm:route:v2:${r(pickupLat)}:${r(pickupLng)}:${r(dropLat)}:${r(dropLng)}`;
 }
 
@@ -210,8 +210,11 @@ export async function getRouteGeometry({ originLat, originLng, destLat, destLng 
     return feature;
 
   } catch (err) {
-    logger.error('[osrm] Fetch error (geometry):', err.message);
-    if (err.message?.includes('Circuit open')) return null;
+    if (err.code === 'EOPENBREAKER' || err.message?.includes('Breaker is open')) {
+      logger.warn('[OSRM] Circuit is open during geometry fetch. Falling back.');
+      return null;
+    }
+    logger.error({ errMessage: err.message, stack: err.stack }, '[OSRM] Failed to fetch route geometry');
     return null;
   } finally {
     clearTimeout(timeout);

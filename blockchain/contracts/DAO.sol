@@ -194,7 +194,7 @@ contract DAO is Ownable, ReentrancyGuard, Pausable {
         uint256 proposalId,
         bool support
     ) external onlyMember onlyActiveProposal(proposalId) {
-        uint256 votingPower = members[msg.sender].votingPower;
+        uint256 votingPower = IERC20(governanceToken).balanceOf(msg.sender);
         require(votingPower > 0, "No voting power");
         require(!hasVoted[proposalId][msg.sender], "Already voted");
         require(getProposalState(proposalId) == ProposalState.ACTIVE, "Proposal not active");
@@ -239,7 +239,7 @@ contract DAO is Ownable, ReentrancyGuard, Pausable {
 
     function cancelProposal(uint256 proposalId) external onlyOwner {
         Proposal storage proposal = proposals[proposalId];
-        require(proposal.state == ProposalState.PENDING || proposal.state == ProposalState.ACTIVE, "Cannot cancel");
+        require(proposal.state == ProposalState.PENDING || proposal.state == ProposalState.ACTIVE || proposal.state == ProposalState.PASSED, "Cannot cancel");
         proposal.state = ProposalState.CANCELLED;
         emit ProposalCancelled(proposalId, msg.sender);
     }
@@ -275,13 +275,13 @@ contract DAO is Ownable, ReentrancyGuard, Pausable {
         require(recipient != address(0), "Invalid recipient");
         require(amount > 0, "Amount must be > 0");
 
-        bytes memory callData = abi.encodeWithSignature("withdrawTreasury(uint256,address)", amount, recipient);
+        bytes memory callData = "";
 
         return createProposal(
             string(abi.encodePacked("Treasury Withdrawal: ", reason)),
             reason,
             callData,
-            address(this),
+            recipient,
             amount,
             ProposalType.TREASURY
         );
@@ -329,7 +329,7 @@ contract DAO is Ownable, ReentrancyGuard, Pausable {
         return members[member];
     }
 
-    function getProposalState(uint256 proposalId) external view returns (ProposalState) {
+    function getProposalState(uint256 proposalId) public view returns (ProposalState) {
         Proposal storage proposal = proposals[proposalId];
         if (proposal.state == ProposalState.EXECUTED) return ProposalState.EXECUTED;
         if (proposal.state == ProposalState.CANCELLED) return ProposalState.CANCELLED;

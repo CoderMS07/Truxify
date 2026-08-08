@@ -8,9 +8,52 @@ const priceCache = new LRUCache(100, 15 * 60 * 1000);
 // Single source of truth for ML engine base URL
 const DEFAULT_ML_ENGINE_URL = 'http://localhost:8001';
 
+const ML_HTTP_TIMEOUT_MS = 5000;
+const ML_HTTP_TIMEOUT_MS_HEAVY = 10000;
+const ML_HTTP_TIMEOUT_MS_LONG = 300000;
+const ML_DEFAULT_PICKUP_LEAD_MS = 8 * 60 * 60 * 1000;
+const DEFAULT_TRUCK_MAX_WEIGHT_KG = 25000;
+const DEFAULT_TRUCK_MAX_LENGTH_M = 12;
+const DEFAULT_TRUCK_MAX_WIDTH_M = 2.5;
+const DEFAULT_TRUCK_MAX_HEIGHT_M = 4;
+
 // Startup validation
 if (!process.env.ML_API_KEY) {
     logger.warn('[ML] WARNING: ML_API_KEY is not set. All ML API endpoints will return 503. Set ML_API_KEY in your environment.');
+}
+
+/**
+ * Parse the free-text `weight` column of load_offers (e.g. '3 tonnes') into
+ * kilograms. Returns NaN when the value cannot be interpreted.
+ */
+function parseWeightKg(weight) {
+  if (typeof weight !== 'string') {
+    const num = Number(weight);
+    return Number.isFinite(num) ? num : NaN;
+  }
+  const match = weight.toLowerCase().match(/([\d.]+)\s*(kg|ton|tonne|t)\b/);
+  if (!match) return NaN;
+  const value = Number(match[1]);
+  return match[2] === 'kg' ? value : value * 1000;
+}
+
+/**
+ * Parse the free-text `dimensions` column of load_offers (e.g. '12 X 6 X 6 ft')
+ * into length/width/height in meters. Falls back to 1 m per dimension when
+ * fewer than three values are present.
+ */
+function parseDimensions(dimensions) {
+  const fallback = { length: 1, width: 1, height: 1 };
+  if (typeof dimensions !== 'string') return fallback;
+  const numbers = (dimensions.match(/\d+(?:\.\d+)?/g) || []).map(Number);
+  if (numbers.length < 3) return fallback;
+  const ftToM = dimensions.toLowerCase().includes('ft') ? 0.3048 : 1;
+  const [length, width, height] = numbers;
+  return {
+    length: Number((length * ftToM).toFixed(2)),
+    width: Number((width * ftToM).toFixed(2)),
+    height: Number((height * ftToM).toFixed(2)),
+  };
 }
 
 function guardMlApiKey() {
@@ -78,7 +121,7 @@ export async function predictDemand(features = {}) {
       method: 'POST',
       headers: getHeaders(),
       body: JSON.stringify(features),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
   });
 
   const result = await handleResponse(response);
@@ -126,7 +169,7 @@ export async function predictPrice({
       method: 'POST',
       headers: getHeaders(),
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
   });
 
   const raw = await handleResponse(response);
@@ -189,7 +232,7 @@ export async function predictEta({
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
   });
 
   const result = await handleResponse(response);
@@ -227,7 +270,7 @@ export async function matchBilateral({ loads, drivers }) {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS_HEAVY),
   });
 
   return handleResponse(response);
@@ -270,7 +313,7 @@ export async function predictDriverProfit({
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
   });
 
   const result = await handleResponse(response);
@@ -321,7 +364,7 @@ export async function optimisePacking({ packages, truck, deliveryAddresses }) {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS_HEAVY),
   });
 
   return handleResponse(response);
@@ -353,7 +396,7 @@ export async function recommendLoads({ userId, bookingHistory = [], ratedDrivers
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
   });
 
   return handleResponse(response);
@@ -385,7 +428,7 @@ export async function recommendTrucks({ userId, bookingHistory = [], ratedLoads 
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
   });
 
   return handleResponse(response);
@@ -419,7 +462,7 @@ export async function scoreTrust({ cancellationRate, onTimePct, avgRating, dispu
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
   });
 
   return handleResponse(response);
@@ -447,7 +490,7 @@ export async function matchDeadhead({ driverDestination, truckSpecs, arrivalTime
       arrival_time: arrivalTime,
       available_loads: availableLoads,
     }),
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS_HEAVY),
   });
   return handleResponse(response);
 }
@@ -465,7 +508,7 @@ export async function optimiseMidTrip(routeData) {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify(routeData),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
   });
   return handleResponse(response);
 }
@@ -483,7 +526,7 @@ export async function trainDemandModel(force = false) {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ force }),
-    signal: AbortSignal.timeout(300000),
+    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS_LONG),
   });
   return handleResponse(response);
 }
@@ -501,7 +544,7 @@ export async function trainPriceModel(force = false) {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ force }),
-    signal: AbortSignal.timeout(300000),
+    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS_LONG),
   });
   return handleResponse(response);
 }
@@ -517,7 +560,7 @@ export async function listModels() {
   const response = await fetch(url, {
     method: 'GET',
     headers: getHeaders(),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
   });
   return handleResponse(response);
 }
@@ -545,28 +588,35 @@ export async function matchEnRouteLoads({
 }) {
   if (!offers || offers.length === 0) return [];
 
-  // Build the available_loads list the ML model expects
+  // Build the available_loads list the ML model expects. load_offers stores
+  // coordinates as pickup_*/drop_*, weight as text ('3 tonnes') and dimensions
+  // as text ('12 X 6 X 6 ft'), so normalize those to the numeric fields the
+  // model consumes.
   const availableLoads = offers
-    .filter(o => o.origin_lat && o.origin_lng && o.dest_lat && o.dest_lng && o.weight_kg)
-    .map(o => ({
-      load_id: o.id,
-      origin_lat: Number(o.origin_lat),
-      origin_lng: Number(o.origin_lng),
-      dest_lat: Number(o.dest_lat),
-      dest_lng: Number(o.dest_lng),
-      weight_kg: Number(o.weight_kg),
-      length_m: Number(o.length_m || 1),
-      width_m: Number(o.width_m || 1),
-      height_m: Number(o.height_m || 1),
-      pickup_deadline: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
-      payment_inr: Number(o.payment_inr || (o.freight_value ? o.freight_value / 100 : 0)),
-    }));
+    .filter(o => o.pickup_lat && o.pickup_lng && o.drop_lat && o.drop_lng)
+    .map(o => {
+      const dims = parseDimensions(o.dimensions);
+      return {
+        load_id: o.id,
+        origin_lat: Number(o.pickup_lat),
+        origin_lng: Number(o.pickup_lng),
+        dest_lat: Number(o.drop_lat),
+        dest_lng: Number(o.drop_lng),
+        weight_kg: parseWeightKg(o.weight),
+        length_m: dims.length,
+        width_m: dims.width,
+        height_m: dims.height,
+        pickup_deadline: new Date(Date.now() + ML_DEFAULT_PICKUP_LEAD_MS).toISOString(),
+        payment_inr: Number(o.payment_inr || (o.freight_value ? o.freight_value / 100 : 0)),
+      };
+    })
+    .filter(l => Number.isFinite(l.weight_kg) && l.weight_kg > 0);
 
   const specs = truckSpecs || {
-    max_weight_kg: 25000,
-    max_length_m: 12,
-    max_width_m: 2.5,
-    max_height_m: 4,
+    max_weight_kg: DEFAULT_TRUCK_MAX_WEIGHT_KG,
+    max_length_m: DEFAULT_TRUCK_MAX_LENGTH_M,
+    max_width_m: DEFAULT_TRUCK_MAX_WIDTH_M,
+    max_height_m: DEFAULT_TRUCK_MAX_HEIGHT_M,
   };
 
   let recommendations = [];
@@ -578,7 +628,7 @@ export async function matchEnRouteLoads({
       const result = await matchDeadhead({
         driverDestination: { lat: currentLat, lng: currentLng },
         truckSpecs: specs,
-        arrivalTime: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
+        arrivalTime: new Date(Date.now() + ML_DEFAULT_PICKUP_LEAD_MS).toISOString(),
         availableLoads,
       });
       recommendations = result.recommendations || [];
@@ -591,9 +641,9 @@ export async function matchEnRouteLoads({
   // Haversine fallback — score by distance to pickup
   if (!mlUsed) {
     recommendations = offers
-      .filter(o => o.origin_lat && o.origin_lng)
+      .filter(o => o.pickup_lat && o.pickup_lng)
       .map(o => {
-        const dtKm = _haversineKm(currentLat, currentLng, Number(o.origin_lat), Number(o.origin_lng));
+        const dtKm = _haversineKm(currentLat, currentLng, Number(o.pickup_lat), Number(o.pickup_lng));
         return {
           load_id: o.id,
           detour_km: dtKm,

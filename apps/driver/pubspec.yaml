@@ -13,6 +13,7 @@ dependencies:
   firebase_messaging: ^16.4.1
   flutter:
     sdk: flutter
+  lottie: ^3.1.2
   flutter_localizations:
     sdk: flutter
   truxify_shared:
@@ -21,6 +22,8 @@ dependencies:
   supabase_flutter: ^2.9.1
   web_socket_channel: ^3.0.0
   flutter_secure_storage: ^10.3.1
+  flutter_webrtc: ^0.10.4
+  audioplayers: ^5.2.1
 
   google_fonts: ^8.1.0
   fl_chart: ^0.66.0
@@ -40,11 +43,13 @@ dependencies:
   share_plus: ^10.1.4
   pdf: ^3.11.2
   printing: ^5.13.4
+  qr_flutter: ^4.1.0
   camera: ^0.11.0
   signature: ^6.3.0
   image_picker: ^1.1.2
   battery_plus: ^6.2.1
   flutter_dotenv: ^5.2.0
+  sentry_flutter: ^8.14.1
 
 dev_dependencies:
   flutter_lints: ^6.0.0

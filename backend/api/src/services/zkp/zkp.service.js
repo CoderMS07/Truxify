@@ -65,16 +65,25 @@ class ZKPService {
   }
 
   async callSnarkJS(driverData, documentHash) {
-    // In production: execute snarkjs via child_process
-    // For now, return mock proof
-    return {
-      proof: {
-        a: ['0x123...', '0x456...'],
-        b: [['0x789...', '0xabc...'], ['0xdef...', '0xghi...']],
-        c: ['0xjkl...', '0xmno...']
-      },
-      publicSignals: [documentHash, '1']
-    };
+    const isMock = process.env.ZKP_MOCK === 'true' || process.env.NODE_ENV === 'test';
+    
+    if (process.env.NODE_ENV === 'production' && !isMock) {
+      throw new Error('[ZKPService] Real SNARK circuit proof execution is required in production. Mock proofs are disallowed.');
+    }
+
+    if (isMock) {
+      logger.warn('[ZKPService] Generating mock ZK proof (ZKP_MOCK or test mode active)');
+      return {
+        proof: {
+          a: ['0x123...', '0x456...'],
+          b: [['0x789...', '0xabc...'], ['0xdef...', '0xghi...']],
+          c: ['0xjkl...', '0xmno...']
+        },
+        publicSignals: [documentHash, '1']
+      };
+    }
+
+    throw new Error('[ZKPService] SNARK proof generation circuit worker is not configured.');
   }
 
   async verifyKYCOnChain(userId, proof) {
@@ -197,22 +206,22 @@ class ZKPService {
    */
   async verifyDriver(driverData) {
     const lockKey = `zkp:verify:${driverData.userId}`;
-    let lockValue = null;
-
-    // Throws LockAcquisitionError if Redis is down — propagate to route handler.
-    lockValue = await acquireLock(lockKey, ZKP_LOCK_TTL_MS);
-
-    if (lockValue === null) {
-      // Another request is currently processing this user's verification.
-      logger.warn(`[ZKP] Verification already in progress for user ${driverData.userId}`);
-      return {
-        success: false,
-        conflict: true,
-        error: 'Verification already in progress for this user. Please try again shortly.'
-      };
-    }
+    let lockValue;
 
     try {
+      // Throws LockAcquisitionError if Redis is down — propagate to route handler.
+      lockValue = await acquireLock(lockKey, ZKP_LOCK_TTL_MS);
+
+      if (lockValue === null) {
+        // Another request is currently processing this user's verification.
+        logger.warn(`[ZKP] Verification already in progress for user ${driverData.userId}`);
+        return {
+          success: false,
+          conflict: true,
+          error: 'Verification already in progress for this user. Please try again shortly.'
+        };
+      }
+
       // Idempotency guard: re-check inside the lock so a second request that
       // arrives after the first one has already committed sees the result and
       // exits without re-running the expensive blockchain transaction.
@@ -253,11 +262,9 @@ class ZKPService {
       };
     } finally {
       // Always release the lock, even on error, so the user can retry.
-      if (lockValue) {
-        await releaseLock(lockKey, lockValue).catch(err =>
-          logger.error({ err }, '[ZKP] Failed to release verification lock')
-        );
-      }
+      await releaseLock(lockKey, lockValue).catch(err =>
+        logger.error({ err }, '[ZKP] Failed to release verification lock')
+      );
     }
   }
 

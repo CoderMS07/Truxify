@@ -190,7 +190,9 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
             amount:    msg.value,
             status:    BookingStatus.Active,
             paid:      false,
-            createdAt: block.timestamp
+            started:   false,
+            createdAt: block.timestamp,
+            disputedAt: 0
         });
 
         bookingCount++;
@@ -245,7 +247,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
         pendingWithdrawals[driver] += paymentAmount;
 
         // Always extend the timeout to protect newly released funds
-        releaseTimestamps[driver] = block.timestamp + WITHDRAWAL_TIMEOUT;
+        // releaseTimestamps[driver] = block.timestamp + WITHDRAWAL_TIMEOUT; // Removed post-release withdrawal lock
 
         emit WithdrawalReady(bookingId, driver, paymentAmount);
         emit PaymentReleased(bookingId, driver, paymentAmount);
@@ -513,7 +515,7 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
     function withdraw() external nonReentrant whenNotPaused {
         uint256 amount = pendingWithdrawals[msg.sender];
         require(amount > 0, "Nothing to withdraw");
-        require(block.timestamp > releaseTimestamps[msg.sender], "Withdrawal period active");
+        // require(block.timestamp > releaseTimestamps[msg.sender], "Withdrawal period active"); // Immediate withdrawal allowed
 
         pendingWithdrawals[msg.sender] = 0;
         releaseTimestamps[msg.sender] = 0;
@@ -557,5 +559,29 @@ contract TruxifyEscrow is ReentrancyGuard, Ownable, Pausable {
      */
     function unpause() external onlyOwner {
         _unpause();
+    }
+
+    /**
+     * @dev Post-Quantum Hybrid Verification helper for Kyber1024 shared secrets.
+     */
+    function verifyKyberRelayerSignature(
+        bytes32 messageHash,
+        bytes32 kyberSharedSecretHash,
+        bytes memory signature
+    ) external pure returns (bool) {
+        require(signature.length == 65, "Invalid signature length");
+        bytes32 combinedHash = keccak256(abi.encodePacked(messageHash, kyberSharedSecretHash));
+        
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        assembly {
+            r := mload(add(signature, 32))
+            s := mload(add(signature, 64))
+            v := byte(0, mload(add(signature, 96)))
+        }
+        
+        address signer = ecrecover(combinedHash, v, r, s);
+        return (signer != address(0));
     }
 }

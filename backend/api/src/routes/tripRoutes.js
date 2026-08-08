@@ -73,7 +73,7 @@
 
 import express from 'express';
 import { z } from 'zod';
-import { supabase } from '../config/db.js';
+import { supabase, supabaseAdmin } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 import { validateParams } from '../middleware/validate.js';
@@ -226,22 +226,7 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
   }
 
   try {
-    // 1. Check Idempotency (Prevent double processing)
-    // We check if this exact batch has already been processed recently.
-    const { data: existingBatch } = await supabase
-      .from('processed_batches')
-      .select('id')
-      .eq('idempotency_key', idempotencyKey)
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    if (existingBatch) {
-      logger.info('[SyncEngine] Ignored duplicate batch:', idempotencyKey);
-      // Return 202 Accepted so the Flutter app marks them as synced locally
-      return res.status(202).json({ error: 'Batch already processed.' });
-    }
-
-    // 2. Validate per-event-type payloads and strip sensitive fields
+    // 1. Validate per-event-type payloads and strip sensitive fields
     for (const event of events) {
       const result = validateEventPayload(event.type, event.payload || {});
       if (!result.success) {
@@ -253,8 +238,10 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
       }
     }
 
-    // 2b. Ownership check: events may only be attached to trips (orders) the
+    // 2. Ownership check: events may only be attached to trips (orders) the
     // caller owns or is assigned to. Never trust a client-supplied trip_id.
+    // This runs BEFORE the idempotency short-circuit below, otherwise a
+    // replayed batch would return 202 and skip authorization entirely.
     if (req.user.role !== 'admin') {
       const tripIds = [...new Set(events.map(event => event.trip_id).filter(Boolean))];
 
@@ -283,9 +270,29 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
       }
     }
 
+    // 3. Check Idempotency (Prevent double processing)
+    // We check if this exact batch has already been processed recently.
+    const { data: existingBatch } = await supabase
+      .from('processed_batches')
+      .select('id')
+      .eq('idempotency_key', idempotencyKey)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (existingBatch) {
+      logger.info('[SyncEngine] Ignored duplicate batch:', idempotencyKey);
+      // Return 202 Accepted so the Flutter app marks them as synced locally
+      return res.status(202).json({ error: 'Batch already processed.' });
+    }
+
     const recordsToInsert = events.map(event => {
       const lat = event.payload?.lat !== undefined ? Number(event.payload.lat) : null;
       const lng = event.payload?.lng !== undefined ? Number(event.payload.lng) : null;
+
+      if (lat === null || lng === null || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+        logger.warn('[SyncEngine] Skipping event with invalid coordinates:', { eventId: event.id, lat, lng });
+        return null;
+      }
 
       const safeMetadata = deepSanitize(event.payload, SENSITIVE_FIELDS);
 
@@ -303,11 +310,15 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
     });
 
     // 3. Bulk Insert / Upsert into the trip_events table
+    // Filter out null records (events with invalid coordinates)
+    const validRecords = recordsToInsert.filter(Boolean);
+
+    // 4. Bulk Insert / Upsert into the trip_events table
     // Upsert ensures that if a specific event ID already exists, it just updates it
     // rather than failing the whole batch.
     const { error: insertError } = await supabase
       .from('trip_events')
-      .upsert(recordsToInsert, { onConflict: 'event_id' });
+      .upsert(validRecords, { onConflict: 'event_id' });
 
     if (insertError) {
       logger.error('[SyncEngine] Bulk Insert Failed:', insertError.message);
@@ -435,7 +446,7 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
   const offset = (page - 1) * limit;
 
   try {
-    const { data: order, error: orderErr } = await supabase
+    const { data: order, error: orderErr } = await supabaseAdmin
       .from('orders')
       .select('id, driver_id, customer_id')
       .eq('id', tripId)
@@ -497,6 +508,354 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
     });
   } catch (err) {
     return res.status(500).json({ error: 'Internal Server Error', details: err.message });
+  }
+});
+
+// ============================================================================
+// TRIP DATA ACCESS (DRIVER) — #6325
+// ----------------------------------------------------------------------------
+// The driver app reads trip items/stops/route-points from
+// /api/trips/{tripDisplayId}/... and starts / completes trip work there. Trips
+// and their child rows are created by the service role on trip start (the
+// trips RLS is read-only for authenticated users by design).
+// ============================================================================
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isAdmin(user) {
+  return user?.role === 'admin';
+}
+
+function canAccessOrder(user, order) {
+  return isAdmin(user) || (order && order.driver_id === user.id);
+}
+
+function canAccessTrip(user, trip) {
+  return isAdmin(user) || (trip && trip.driver_id === user.id);
+}
+
+// Resolves a path id that may be a trips.trip_display_id, a trips.id, an
+// orders.order_display_id or an orders.id. Returns { trip }, { order } or
+// { error }.
+async function findTripContext(ref) {
+  let { data: trip, error: tripErr } = await supabaseAdmin
+    .from('trips')
+    .select('id, trip_display_id, driver_id, order_id, status')
+    .eq('trip_display_id', ref)
+    .maybeSingle();
+
+  if (tripErr) return { error: tripErr };
+  if (trip) return { trip };
+
+  if (UUID_REGEX.test(ref)) {
+    const { data: tripById, error: tripByIdErr } = await supabaseAdmin
+      .from('trips')
+      .select('id, trip_display_id, driver_id, order_id, status')
+      .eq('id', ref)
+      .maybeSingle();
+    if (tripByIdErr) return { error: tripByIdErr };
+    if (tripById) return { trip: tripById };
+  }
+
+  const { data: order, error: orderErr } = await supabaseAdmin
+    .from('orders')
+    .select('id, order_display_id, driver_id, customer_id, status, total_amount, pickup_address, drop_address, pickup_date, base_freight, goods_type, weight_tonnes')
+    .eq('order_display_id', ref)
+    .maybeSingle();
+
+  if (orderErr) return { error: orderErr };
+  if (order) return { order };
+
+  if (UUID_REGEX.test(ref)) {
+    const { data: orderById, error: orderByIdErr } = await supabaseAdmin
+      .from('orders')
+      .select('id, order_display_id, driver_id, customer_id, status, total_amount, pickup_address, drop_address, pickup_date, base_freight, goods_type, weight_tonnes')
+      .eq('id', ref)
+      .maybeSingle();
+    if (orderByIdErr) return { error: orderByIdErr };
+    if (orderById) return { order: orderById };
+  }
+
+  return { error: null };
+}
+
+async function requireOwnedTrip(req, res, ctx) {
+  let trip = ctx?.trip || null;
+  const order = ctx?.order || null;
+
+  if (!trip && order) {
+    const { data: linkedTrip, error: linkedErr } = await supabaseAdmin
+      .from('trips')
+      .select('id, trip_display_id, driver_id, order_id, status')
+      .eq('order_id', order.id)
+      .eq('status', 'active')
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (linkedErr) return { error: { status: 500, body: { error: 'Failed to resolve trip.', details: linkedErr.message } } };
+    trip = linkedTrip || null;
+  }
+
+  if (!trip) {
+    return { error: { status: 404, body: { error: 'Active trip not found.' } } };
+  }
+
+  if (!canAccessTrip(req.user, trip)) {
+    return { error: { status: 403, body: { error: 'Access Denied: Trip does not belong to you.' } } };
+  }
+
+  return { trip };
+}
+
+/**
+ * GET /api/trips/{tripDisplayId}/items
+ * Returns all items for a trip. The driver must own the trip.
+ */
+router.get('/:id/items', authenticate, userLimiter, async (req, res) => {
+  try {
+    const ctx = await findTripContext(req.params.id);
+    if (ctx.error) return res.status(500).json({ error: 'Internal Server Error', details: ctx.error.message });
+    const owned = await requireOwnedTrip(req, res, ctx);
+    if (owned.error) return res.status(owned.error.status).json(owned.error.body);
+
+    const { data: items, error: itemsErr } = await supabaseAdmin
+      .from('trip_items')
+      .select('*')
+      .eq('trip_display_id', owned.trip.trip_display_id)
+      .order('sort_order', { ascending: true });
+
+    if (itemsErr) return res.status(500).json({ error: 'Failed to fetch trip items.', details: itemsErr.message });
+    return res.json(items || []);
+  } catch (err) {
+    logger.error('[Trips] Fetch trip items error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+/**
+ * GET /api/trips/{tripDisplayId}/stops
+ * Returns all stops for a trip, ordered by sort_order. Driver must own the trip.
+ */
+router.get('/:id/stops', authenticate, userLimiter, async (req, res) => {
+  try {
+    const ctx = await findTripContext(req.params.id);
+    if (ctx.error) return res.status(500).json({ error: 'Internal Server Error', details: ctx.error.message });
+    const owned = await requireOwnedTrip(req, res, ctx);
+    if (owned.error) return res.status(owned.error.status).json(owned.error.body);
+
+    const { data: stops, error: stopsErr } = await supabaseAdmin
+      .from('trip_stops')
+      .select('*')
+      .eq('trip_display_id', owned.trip.trip_display_id)
+      .order('sort_order', { ascending: true });
+
+    if (stopsErr) return res.status(500).json({ error: 'Failed to fetch trip stops.', details: stopsErr.message });
+    return res.json(stops || []);
+  } catch (err) {
+    logger.error('[Trips] Fetch trip stops error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+/**
+ * GET /api/trips/{tripDisplayId}/route-points
+ * Returns route geometry points for a trip. Driver must own the trip.
+ */
+router.get('/:id/route-points', authenticate, userLimiter, async (req, res) => {
+  try {
+    const ctx = await findTripContext(req.params.id);
+    if (ctx.error) return res.status(500).json({ error: 'Internal Server Error', details: ctx.error.message });
+    const owned = await requireOwnedTrip(req, res, ctx);
+    if (owned.error) return res.status(owned.error.status).json(owned.error.body);
+
+    const { data: points, error: pointsErr } = await supabaseAdmin
+      .from('route_map_points')
+      .select('*')
+      .eq('trip_display_id', owned.trip.trip_display_id)
+      .order('sort_order', { ascending: true });
+
+    if (pointsErr) return res.status(500).json({ error: 'Failed to fetch route points.', details: pointsErr.message });
+    return res.json(points || []);
+  } catch (err) {
+    logger.error('[Trips] Fetch route points error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+/**
+ * PUT /api/trips/{tripDisplayId}/start
+ * Starts (and, if needed, creates) the active trip for the driver's order.
+ * Creates the trips row plus trip_items/trip_stops via the service role, since
+ * the trips RLS deliberately exposes no write path to authenticated users.
+ * Idempotent: an already-active trip for the order is returned as-is.
+ */
+router.put('/:id/start', authenticate, userLimiter, async (req, res) => {
+  try {
+    const ctx = await findTripContext(req.params.id);
+    if (ctx.error) return res.status(500).json({ error: 'Internal Server Error', details: ctx.error.message });
+
+    if (ctx.trip) {
+      if (!canAccessTrip(req.user, ctx.trip)) {
+        return res.status(403).json({ error: 'Access Denied: Trip does not belong to you.' });
+      }
+      return res.json(ctx.trip);
+    }
+
+    const order = ctx.order;
+    if (!order) return res.status(404).json({ error: 'Order not found. Cannot start trip.' });
+    if (!canAccessOrder(req.user, order)) {
+      return res.status(403).json({ error: 'Access Denied: You are not assigned to this order.' });
+    }
+    if (!order.driver_id) return res.status(409).json({ error: 'No driver assigned to this order.' });
+    if (['cancelled', 'delivered', 'payment_released'].includes(order.status)) {
+      return res.status(409).json({ error: `Order cannot be started: status is ${order.status}.` });
+    }
+
+    // A driver can only have one active trip at a time (partial unique index).
+    const { data: existingActive, error: existingErr } = await supabaseAdmin
+      .from('trips')
+      .select('id')
+      .eq('driver_id', order.driver_id)
+      .eq('status', 'active')
+      .maybeSingle();
+    if (existingErr) return res.status(500).json({ error: 'Failed to check existing trips.', details: existingErr.message });
+    if (existingActive) return res.status(409).json({ error: 'You already have an active trip.' });
+
+    const tripDisplayId = `TX-${order.order_display_id}`;
+
+    const { data: customer, error: customerErr } = await supabaseAdmin
+      .from('profiles')
+      .select('full_name')
+      .eq('id', order.customer_id)
+      .maybeSingle();
+    if (customerErr) return res.status(500).json({ error: 'Failed to resolve customer.', details: customerErr.message });
+    const customerName = customer?.full_name || 'Customer';
+
+    const earnings = order.total_amount || 0;
+    const routeLabel = `${order.pickup_address} → ${order.drop_address}`;
+
+    const { data: createdTrip, error: tripInsertErr } = await supabaseAdmin
+      .from('trips')
+      .insert({
+        trip_display_id: tripDisplayId,
+        driver_id: order.driver_id,
+        order_id: order.id,
+        route_label: routeLabel,
+        status: 'active',
+        trip_date: order.pickup_date || new Date().toISOString().slice(0, 10),
+        base_freight: order.base_freight || 0,
+        total_earnings: earnings,
+      })
+      .select('*')
+      .maybeSingle();
+
+    if (tripInsertErr) {
+      logger.error('[Trips] Failed to create trip:', tripInsertErr.message);
+      return res.status(409).json({ error: 'Failed to create trip. A trip for this order may already exist.' });
+    }
+
+    const { error: itemsErr } = await supabaseAdmin.from('trip_items').insert({
+      trip_display_id: tripDisplayId,
+      customer_name: customerName,
+      goods: order.goods_type,
+      destination: order.drop_address,
+      earnings,
+      is_delivered: false,
+      sort_order: 1,
+    });
+    if (itemsErr) logger.error('[Trips] Failed to create trip items:', itemsErr.message);
+
+    const { error: stopsErr } = await supabaseAdmin.from('trip_stops').insert({
+      trip_display_id: tripDisplayId,
+      customer_name: customerName,
+      route_label: routeLabel,
+      goods: order.goods_type,
+      drop_location: order.drop_address,
+      tonnes: order.weight_tonnes != null ? String(order.weight_tonnes) : null,
+      status_label: 'In Progress',
+      sort_order: 1,
+      is_current: true,
+      is_completed: false,
+    });
+    if (stopsErr) logger.error('[Trips] Failed to create trip stops:', stopsErr.message);
+
+    return res.status(201).json(createdTrip);
+  } catch (err) {
+    logger.error('[Trips] Start trip error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+/**
+ * PUT /api/trips/{tripDisplayId}/stops/{stopId}/complete
+ * Marks a stop delivered, advances the current stop, and reports whether every
+ * stop on the trip is now complete. Driver must own the trip.
+ */
+router.put('/:id/stops/:stopId/complete', authenticate, userLimiter, async (req, res) => {
+  try {
+    if (!UUID_REGEX.test(req.params.stopId)) {
+      return res.status(400).json({ error: 'Invalid stop id.' });
+    }
+
+    const ctx = await findTripContext(req.params.id);
+    if (ctx.error) return res.status(500).json({ error: 'Internal Server Error', details: ctx.error.message });
+    const owned = await requireOwnedTrip(req, res, ctx);
+    if (owned.error) return res.status(owned.error.status).json(owned.error.body);
+
+    const { data: stop, error: stopErr } = await supabaseAdmin
+      .from('trip_stops')
+      .select('*')
+      .eq('id', req.params.stopId)
+      .eq('trip_display_id', owned.trip.trip_display_id)
+      .maybeSingle();
+    if (stopErr) return res.status(500).json({ error: 'Failed to fetch stop.', details: stopErr.message });
+    if (!stop) return res.status(404).json({ error: 'Stop not found on this trip.' });
+    if (stop.is_completed) return res.status(409).json({ error: 'Stop is already completed.' });
+
+    const { error: updateErr } = await supabaseAdmin
+      .from('trip_stops')
+      .update({
+        is_completed: true,
+        is_current: false,
+        status_label: 'Delivered',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', stop.id);
+    if (updateErr) return res.status(500).json({ error: 'Failed to complete stop.', details: updateErr.message });
+
+    // Advance the current-stop marker to the next uncompleted stop.
+    const { data: nextStops, error: nextErr } = await supabaseAdmin
+      .from('trip_stops')
+      .select('id')
+      .eq('trip_display_id', owned.trip.trip_display_id)
+      .eq('is_completed', false)
+      .order('sort_order', { ascending: true })
+      .limit(1);
+    if (nextErr) {
+      logger.error('[Trips] Failed to resolve next stop:', nextErr.message);
+    } else if (nextStops && nextStops.length > 0) {
+      await supabaseAdmin
+        .from('trip_stops')
+        .update({
+          is_current: true,
+          status_label: 'In Progress',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', nextStops[0].id);
+    }
+
+    const { data: stops, error: stopsErr } = await supabaseAdmin
+      .from('trip_stops')
+      .select('*')
+      .eq('trip_display_id', owned.trip.trip_display_id)
+      .order('sort_order', { ascending: true });
+    if (stopsErr) return res.status(500).json({ error: 'Failed to fetch updated stops.', details: stopsErr.message });
+
+    const allCompleted = (stops || []).length > 0 && (stops || []).every((s) => s.is_completed);
+    return res.json({ stops: stops || [], allCompleted });
+  } catch (err) {
+    logger.error('[Trips] Complete stop error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 

@@ -2,13 +2,32 @@ import asyncio
 import logging
 import os
 import time
+
+# Initialize Sentry as early as possible
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+
+sentry_dsn = os.environ.get("SENTRY_DSN")
+if sentry_dsn:
+    sentry_sdk.init(
+        dsn=sentry_dsn,
+        environment=os.environ.get("ENVIRONMENT", "development"),
+        integrations=[
+            FastApiIntegration(
+                transaction_style="endpoint"
+            ),
+        ],
+        traces_sample_rate=1.0,
+    )
+
 import numpy as np
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from app.models.eta_prediction import eta_predictor
+from fastapi import HTTPException
 
 from app.models.demand_forecast import (
     predict_demand,
@@ -27,6 +46,7 @@ from app.models.collaborative_filter import collaborative_filter
 from app.models.trust_scorer import trust_scorer
 from app.models.deadhead_eliminator import find_return_loads
 from app.models.mid_trip_reoptimiser import find_mid_trip_loads
+from app.models.ocr_verifier import ocr_verifier
 from app.models.base import model_exists
 from app.models.demand_forecast import MODEL_NAME as DEMAND_MODEL_NAME
 from app.models.price_prediction import MODEL_NAME as PRICE_MODEL_NAME
@@ -69,6 +89,11 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["X-API-Key", "Content-Type"],
 )
+
+
+@app.get("/sentry-debug")
+async def trigger_error():
+    division_by_zero = 1 / 0
 
 
 @app.on_event("startup")
@@ -389,7 +414,7 @@ async def predict_demand_endpoint(input: DemandForecastInput, _auth=Depends(veri
     features = [
         input.hour,
         input.day_of_week,
-        1 if input.day_of_week >= 5 else 0,
+        1 if input.day_of_week in (0, 6) else 0,
         input.temperature,
         input.precipitation,
         input.historical_volume,
@@ -515,7 +540,6 @@ async def recommend_loads_endpoint(input: RecommendLoadsInput, _auth=Depends(ver
         result = collaborative_filter.recommend_loads(
             user_id=input.user_id,
             booking_history=input.booking_history,
-            rated_drivers=input.rated_drivers,
             top_n=input.top_n,
         )
         return RecommendOutput(**result)
@@ -534,7 +558,6 @@ async def recommend_trucks_endpoint(input: RecommendTrucksInput, _auth=Depends(v
         result = collaborative_filter.recommend_trucks(
             user_id=input.user_id,
             booking_history=input.booking_history,
-            rated_loads=input.rated_loads,
             top_n=input.top_n,
         )
         return RecommendOutput(**result)
@@ -695,3 +718,55 @@ async def predict_maintenance_endpoint(input: PredictiveMaintenanceInput, _auth=
     except Exception as e:
         logger.error("Predictive maintenance prediction failed: %s", e)
         raise HTTPException(status_code=500, detail="Predictive maintenance prediction failed")
+
+# ---------------------------------------------------------------------------
+# KYC Document OCR Verification
+# ---------------------------------------------------------------------------
+
+class KYCVerificationOutput(BaseModel):
+    verified: bool
+    document_type: str
+    extracted_number: Optional[str] = None
+    raw_text: str
+
+@app.post("/verify/kyc", response_model=KYCVerificationOutput)
+async def verify_kyc_endpoint(file: UploadFile = File(...), _auth=Depends(verify_api_key)):
+    allowed_content_types = {"image/jpeg", "image/png", "image/webp"}
+    max_file_size_bytes = 5 * 1024 * 1024  # 5 MB
+
+    if file.content_type not in allowed_content_types:
+        raise HTTPException(
+            status_code=422,
+            detail="Unsupported file type. Upload a JPEG, PNG, or WebP image.",
+        )
+
+    if file.size is not None and file.size > max_file_size_bytes:
+        raise HTTPException(status_code=422, detail="File too large. Maximum size is 5 MB.")
+
+    try:
+        image_bytes = await file.read()
+
+        if len(image_bytes) == 0:
+            raise HTTPException(status_code=422, detail="Uploaded file is empty.")
+
+        if len(image_bytes) > max_file_size_bytes:
+            raise HTTPException(status_code=422, detail="File too large. Maximum size is 5 MB.")
+
+        text = ocr_verifier.extract_text(image_bytes)
+        if text is None:
+            # OCR failed (undecodable image, Tesseract unavailable, ...).
+            # Never fall back to a simulated licence: report unverified.
+            return KYCVerificationOutput(
+                verified=False,
+                document_type="Unknown",
+                extracted_number=None,
+                raw_text="",
+            )
+
+        result = ocr_verifier.verify_license(text)
+        return KYCVerificationOutput(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("KYC OCR verification failed: %s", e)
+        raise HTTPException(status_code=500, detail="KYC OCR verification failed")

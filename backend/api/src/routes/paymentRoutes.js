@@ -26,7 +26,7 @@ import { requireIdempotency } from '../middleware/idempotency.js';
 import { acquireLock, releaseLock, LockAcquisitionError } from '../lib/redisLock.js';
 import { auditLog } from '../middleware/auditLog.js';
 import logger from '../middleware/logger.js';
-import { orderRepository } from '../core/container.js';
+import { orderRepository, orderValidationService } from '../core/container.js';
 import { supabase } from '../config/db.js';
 import {
   recordDepositTx,
@@ -34,6 +34,7 @@ import {
   paisaToMaticWei,
   isEscrowEnabled,
   escrowLockPayment,
+  resolveExpectedDepositAmount,
 } from '../services/escrow.js';
 import { sendPushNotification } from '../services/notificationService.js';
 import upiPaymentService from '../services/payment/UpiPaymentService.js';
@@ -104,12 +105,17 @@ router.post(
     try {
       const { order_id } = req.body;
 
-      const { data: order, error } = await orderRepository.findOrderByIdOrDisplayId(
-        order_id,
-        'id, order_display_id, customer_id, total_amount, escrow_status, status'
-      );
+      let order;
+      try {
+        order = await orderValidationService.findOrderByIdOrDisplayId(
+          order_id,
+          'id, order_display_id, customer_id, total_amount, escrow_status, status'
+        );
+      } catch (err) {
+        return res.status(500).json({ error: 'Failed to fetch order.' });
+      }
 
-      if (error || !order) {
+      if (!order) {
         return res.status(404).json({ error: 'Order not found.' });
       }
 
@@ -206,12 +212,17 @@ router.post(
       }
 
       // 1. Fetch order
-      const { data: order, error: orderErr } = await orderRepository.findOrderByIdOrDisplayId(
-        order_id,
-        'id, order_display_id, customer_id, driver_id, total_amount, escrow_status, escrow_booking_id, wallet_address'
-      );
+      let order;
+      try {
+        order = await orderValidationService.findOrderByIdOrDisplayId(
+          order_id,
+          'id, order_display_id, customer_id, driver_id, total_amount, escrow_status, escrow_booking_id, wallet_address, escrow_driver_wallet, escrow_amount_wei, pending_bid_acceptance'
+        );
+      } catch (err) {
+        return res.status(500).json({ error: 'Failed to fetch order.' });
+      }
 
-      if (orderErr || !order) {
+      if (!order) {
         return res.status(404).json({ error: 'Order not found.' });
       }
 
@@ -236,37 +247,61 @@ router.post(
         });
       }
 
-      // 3. Derive the on-chain booking ID
-      const bookingId = order.escrow_booking_id || getEscrowBookingId(order.order_display_id);
-
-      // 4. Verify the deposit transaction on-chain (or skip if escrow not enabled)
-      if (isEscrowEnabled()) {
-        const senderAddress = wallet_address || order.wallet_address;
-        const result = await recordDepositTx(bookingId, tx_hash, senderAddress);
-
-        if (result.error) {
-          logger.warn(`[payments] recordDepositTx failed for ${order.order_display_id}: ${result.error}`);
-          return res.status(422).json({
-            error: `Transaction verification failed: ${result.error}`,
-            hint: 'Ensure the transaction is confirmed on Polygon and the wallet address matches your profile.',
-          });
-        }
-
-        logger.info(`[payments] Deposit verified on-chain for ${order.order_display_id}`);
-      } else {
-        // Dev/staging mode — skip on-chain verification, trust the client tx_hash
-        logger.warn(`[payments] Escrow not configured — accepting tx_hash ${tx_hash} on trust (dev mode)`);
+      // 3. The deposit may only be locked while the order is in 'funding'
+      //    state. A lock must never be accepted for an order that was not
+      //    staged for escrow funding.
+      if (order.escrow_status !== 'funding') {
+        return res.status(409).json({
+          error: `Cannot lock payment — escrow must be in 'funding' state, current status: ${order.escrow_status}`,
+        });
       }
 
-      // 5. Update escrow_status → funded
-      const { error: updateErr } = await orderRepository.updateOrder(
+      // 4. Derive the on-chain booking ID
+      const bookingId = order.escrow_booking_id || getEscrowBookingId(order.order_display_id);
+
+      // 5. Verify the deposit transaction on-chain against the order's escrow
+      //    booking: the sender must be the registered customer wallet, the
+      //    booking must be created for the assigned driver, and funded with at
+      //    least the expected escrow amount. The client-supplied tx_hash is
+      //    never trusted without on-chain verification (no dev trust path).
+      const senderAddress = wallet_address || order.wallet_address;
+
+      // Resolve the authoritative expected deposit amount (cross-checked
+      // against the server-written bid context). If it cannot be resolved the
+      // deposit is rejected — the amount on-chain must always equal the amount
+      // the app recorded for this order.
+      const resolvedAmount = resolveExpectedDepositAmount(order);
+      if (resolvedAmount.error) {
+        return res.status(422).json({ error: resolvedAmount.error, code: resolvedAmount.code });
+      }
+      const expectedAmountWei = resolvedAmount.expectedAmountWei;
+
+      const result = await recordDepositTx(
+        bookingId,
+        tx_hash,
+        senderAddress,
+        order.escrow_driver_wallet ?? null,
+        expectedAmountWei
+      );
+
+      if (result.error) {
+        logger.warn(`[payments] recordDepositTx failed for ${order.order_display_id}: ${result.error}`);
+        return res.status(422).json({
+          error: `Transaction verification failed: ${result.error}`,
+          code: result.code,
+          hint: 'Ensure the transaction is confirmed on Polygon and the wallet address matches your profile.',
+        });
+      }
+
+      logger.info(`[payments] Deposit verified on-chain for ${order.order_display_id}`);
+
+      // 6. Update escrow_status → funded
+      const { error: updateErr } = await orderRepository.updateOrderWithFilter(
         order.id,
         {
           escrow_status: 'funded',
           escrow_booking_id: bookingId,
           escrow_tx_hash: tx_hash,
-          escrow_deposited_at: new Date().toISOString(),
-          wallet_address: wallet_address || order.wallet_address,
           updated_at: new Date().toISOString(),
         },
         [{ op: 'neq', column: 'escrow_status', value: 'funded' }]
@@ -279,7 +314,7 @@ router.post(
         });
       }
 
-      // 6. Notify assigned driver that payment is now locked
+      // 7. Notify assigned driver that payment is now locked
       if (order.driver_id) {
         sendPushNotification(
           order.driver_id,
@@ -312,11 +347,15 @@ router.post(
       return res.status(500).json({ error: 'Internal Server Error' });
 
     } finally {
-      // Release using the owner token so we never delete another process's lock.
       if (lockValue) {
-        await releaseLock(lockKey, lockValue).catch(releaseErr =>
-          logger.warn('[payments] releaseLock failed in finally:', releaseErr.message)
-        );
+        try {
+          await releaseLock(lockKey, lockValue);
+        } catch (releaseErr) {
+          logger.error(
+            { err: releaseErr, lockKey },
+            'Failed to release payment lock'
+          );
+        }
       }
     }
   }
@@ -334,12 +373,17 @@ router.get(
   validateParams(orderIdParamSchema),
   async (req, res) => {
     try {
-      const { data: order, error } = await orderRepository.findOrderByIdOrDisplayId(
-        req.params.orderId,
-        'id, order_display_id, customer_id, driver_id, escrow_status, escrow_booking_id, escrow_deposited_at, escrow_released_at, total_amount, status'
-      );
+      let order;
+      try {
+        order = await orderValidationService.findOrderByIdOrDisplayId(
+          req.params.orderId,
+          'id, order_display_id, customer_id, driver_id, escrow_status, escrow_booking_id, escrow_deposited_at, escrow_released_at, total_amount, status'
+        );
+      } catch (err) {
+        return res.status(500).json({ error: 'Failed to fetch order.' });
+      }
 
-      if (error || !order) {
+      if (!order) {
         return res.status(404).json({ error: 'Order not found.' });
       }
 
@@ -388,142 +432,9 @@ router.post(
   lockLimiter,
   validateBody(chargeAndLockSchema),
   async (req, res) => {
-    const { order_id, customer_upi_id } = req.body;
-    const lockKey = `payment_lock:${order_id}`;
-    let lockValue = null;
-
-    try {
-      // Guard against concurrent charge-and-lock calls for the same order.
-      lockValue = await acquireLock(lockKey, PAYMENT_LOCK_TTL_MS);
-
-      if (lockValue === null) {
-        return res.status(409).json({
-          error: 'Payment is already being processed for this order. Please wait.',
-        });
-      }
-
-      const { data: order, error: orderErr } = await orderRepository.findOrderByIdOrDisplayId(
-        order_id,
-        'id, order_display_id, customer_id, driver_id, total_amount, escrow_status, wallet_address'
-      );
-
-      if (orderErr || !order) {
-        return res.status(404).json({ error: 'Order not found.' });
-      }
-
-      if (order.customer_id !== req.user.id) {
-        return res.status(403).json({ error: 'Access denied.' });
-      }
-
-      if (order.escrow_status === 'funded') {
-        return res.status(409).json({ error: 'Escrow payment already locked.' });
-      }
-
-      if (!order.driver_id) {
-        return res.status(400).json({
-          error: 'No driver is assigned to this order yet.',
-        });
-      }
-
-      const { data: driverProfile } = await supabase
-        .from('profiles')
-        .select('polygon_wallet_address')
-        .eq('id', order.driver_id)
-        .maybeSingle();
-
-      const driverWallet = driverProfile?.polygon_wallet_address;
-      if (!driverWallet) {
-        return res.status(400).json({
-          error: 'Assigned driver has no registered Polygon wallet on file.',
-        });
-      }
-
-      const upiOrder = await upiPaymentService.createPaymentOrder(
-        order.id, order.total_amount
-      );
-
-      let txHash = `mock_tx_${Math.random().toString(36).substring(2, 15)}`;
-      const bookingId = getEscrowBookingId(order.order_display_id);
-
-      if (isEscrowEnabled()) {
-        try {
-          const amountWei = paisaToMaticWei(order.total_amount);
-          const lockResult = await escrowLockPayment(
-            order.order_display_id,
-            order.wallet_address ||
-              req.user.wallet_address ||
-              '0x0000000000000000000000000000000000000000',
-            driverWallet,
-            amountWei
-          );
-
-          if (lockResult.error) {
-            logger.error(`[payments] lockPayment failed: ${lockResult.error}`);
-            return res.status(500).json({
-              error: `On-chain lockPayment failed: ${lockResult.error}`,
-            });
-          }
-          txHash = lockResult.txHash;
-        } catch (chainErr) {
-          logger.error(`[payments] lockPayment chain error: ${chainErr.message}`);
-          return res.status(500).json({
-            error: `On-chain lockPayment call failed: ${chainErr.message}`,
-          });
-        }
-      } else {
-        logger.warn('[payments] Escrow disabled. Simulating lockPayment call.');
-      }
-
-      const { error: dbErr } = await orderRepository.updateOrder(order.id, {
-        escrow_status: 'funded',
-        escrow_booking_id: bookingId,
-        escrow_tx_hash: txHash,
-        escrow_deposited_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-
-      if (dbErr) {
-        logger.error('[payments] DB update failed:', dbErr.message);
-        return res.status(500).json({
-          error: 'Payment locked on-chain but database update failed.',
-        });
-      }
-
-      if (order.driver_id) {
-        sendPushNotification(
-          order.driver_id,
-          '💰 Payment Locked',
-          `Escrow payment for order ${order.order_display_id} is locked. Please deliver.`,
-          'payment_locked',
-          { order_display_id: order.order_display_id }
-        ).catch(err => logger.warn('[payments] Push failed:', err.message));
-      }
-
-      return res.status(201).json({
-        success: true,
-        message: 'UPI payment received and locked in escrow.',
-        escrow_status: 'funded',
-        tx_hash: txHash,
-        gateway_order_id: upiOrder.gateway_order_id,
-      });
-
-    } catch (err) {
-      if (err instanceof LockAcquisitionError) {
-        logger.error('[payments] Redis unavailable — refusing charge-and-lock:', err.message);
-        return res.status(503).json({
-          error: 'Payment service temporarily unavailable. Please retry in a moment.',
-        });
-      }
-      logger.error('[payments] charge-and-lock error:', err.message);
-      return res.status(500).json({ error: 'Internal Server Error' });
-
-    } finally {
-      if (lockValue) {
-        await releaseLock(lockKey, lockValue).catch(releaseErr =>
-          logger.warn('[payments] releaseLock failed in finally:', releaseErr.message)
-        );
-      }
-    }
+    return res.status(410).json({
+      error: 'This endpoint has been disabled. Use POST /api/payments/upi-intent to generate a UPI deep-link, then POST /api/payments/lock with the on-chain tx_hash after your wallet confirms the deposit.',
+    });
   }
 );
 
