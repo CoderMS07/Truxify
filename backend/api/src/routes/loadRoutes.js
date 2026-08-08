@@ -288,7 +288,7 @@ router.get('/', authenticate, userLimiter, requirePolicy('load-offer:browse'), a
       ...load,
       pickup: load.pickup_address,
       destination: load.drop_address,
-      estimated_price: load.freight_value / 100, // convert paisa to Rupees
+      estimated_price: load.freight_value / 100, // freight_value stored in paisa — divide by 100 for INR display
       vehicle_type: 'Truck'
     }));
 
@@ -351,7 +351,7 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), async (re
         drop_lng: destination.lng,
         route_label: routeLabel,
         weight: `${weight_tons} tonnes`,
-        freight_value: Math.round(parseFloat(expected_price) * 100), // Assuming paisa representation
+        freight_value: Math.round(parseFloat(expected_price) * 100), // user input in INR — multiply by 100 to store as paisa
         goods_type: material_type || 'General',
         status: 'available'
       })
@@ -423,7 +423,7 @@ router.get('/:id', authenticate, userLimiter, requirePolicy('load-offer:browse')
       ...load,
       pickup: load.pickup_address,
       destination: load.drop_address,
-      estimated_price: load.freight_value / 100, // convert paisa to Rupees
+      estimated_price: load.freight_value / 100, // freight_value stored in paisa — divide by 100 for INR display
       vehicle_type: 'Truck'
     };
 

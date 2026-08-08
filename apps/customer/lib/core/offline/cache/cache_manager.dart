@@ -149,10 +149,10 @@ class CacheManager {
 
     await batch.commit(noResult: true);
   }
+  set databaseForTesting(Database? db) => _database = db;
 
   Future<List<Map<String, dynamic>>> getOrders({bool activeOnly = false, int limit = 20}) async {
     final db = await open();
-
     const activeStatuses = {
       'pending',
       'active',
@@ -198,6 +198,7 @@ class CacheManager {
         '_cached_at': row['updated_at'],
       });
     }
+
 
     return results;
   }
