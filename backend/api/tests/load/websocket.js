@@ -18,6 +18,7 @@ export default function () {
 
   const res = ws.connect(WS_URL, params, function (socket) {
     socket.on('open', function () {
+    socket.on('open', () => {
       socket.send(
         JSON.stringify({
           type: 'LOCATION_UPDATE',
@@ -34,5 +35,14 @@ export default function () {
 
   check(res, {
     'websocket connection status is 101': (r) => r && r.status === 101,
+
+      socket.setTimeout(() => {
+        socket.close();
+      }, 10000);
+    });
+  });
+
+  check(res, {
+    'connected successfully': (r) => r && r.status === 101,
   });
 }

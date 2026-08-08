@@ -70,6 +70,23 @@ Load testing is performed using [k6](https://k6.io/).
   ```bash
   npm run test:load:ws
   ```
+Ensure `k6` is installed on your system (e.g., `brew install k6` or official k6 installation instructions).
+
+Set `BYPASS_AUTH=true` in `.env` and execute the seeding command first to create the dummy driver profile:
+
+```bash
+npm run seed:dev
+```
+
+Run the load tests:
+
+```bash
+# REST API Load Test
+npm run test:load:api
+
+# WebSocket Load Test
+npm run test:load:ws
+```
 
 ## Notes
 
