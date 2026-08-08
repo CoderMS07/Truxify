@@ -226,23 +226,28 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
   }
 
   try {
-    // 1. Check Idempotency (Prevent double processing)
-    // We check if this exact batch has already been processed recently.
-    const { data: existingBatch } = await supabase
-      .from('processed_batches')
-      .select('id')
-      .eq('idempotency_key', idempotencyKey)
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    if (existingBatch) {
-      logger.info('[SyncEngine] Ignored duplicate batch:', idempotencyKey);
-      // Return 202 Accepted so the Flutter app marks them as synced locally
-      return res.status(202).json({ error: 'Batch already processed.' });
-    }
-
-    // 2. Validate per-event-type payloads and strip sensitive fields
+    // 1. Validate per-event-type payloads and strip sensitive fields
     for (const event of events) {
+      // Explicit coordinate validation for telemetry frames
+      const isTelemetry = event.type === 'gpsUpdate' || (event.payload && ('lat' in event.payload || 'lng' in event.payload));
+      if (isTelemetry) {
+        const lat = event.payload?.lat;
+        const lng = event.payload?.lng;
+        const numLat = Number(lat);
+        const numLng = Number(lng);
+
+        if (
+          lat === null || lat === undefined ||
+          lng === null || lng === undefined ||
+          Number.isNaN(numLat) || Number.isNaN(numLng) ||
+          numLat < -90 || numLat > 90 ||
+          numLng < -180 || numLng > 180
+        ) {
+          logger.warn(`[SyncEngine] Rejected batch: invalid coordinate data in event ${event.id}`);
+          return res.status(400).json({ error: 'Invalid coordinate data' });
+        }
+      }
+
       const result = validateEventPayload(event.type, event.payload || {});
       if (!result.success) {
         logger.warn('[SyncEngine] Invalid payload for event', event.id, '(type:', event.type, '):', result.error.issues);
@@ -253,8 +258,10 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
       }
     }
 
-    // 2b. Ownership check: events may only be attached to trips (orders) the
+    // 2. Ownership check: events may only be attached to trips (orders) the
     // caller owns or is assigned to. Never trust a client-supplied trip_id.
+    // This runs BEFORE the idempotency short-circuit below, otherwise a
+    // replayed batch would return 202 and skip authorization entirely.
     if (req.user.role !== 'admin') {
       const tripIds = [...new Set(events.map(event => event.trip_id).filter(Boolean))];
 
@@ -281,6 +288,21 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
           }
         }
       }
+    }
+
+    // 3. Check Idempotency (Prevent double processing)
+    // We check if this exact batch has already been processed recently.
+    const { data: existingBatch } = await supabase
+      .from('processed_batches')
+      .select('id')
+      .eq('idempotency_key', idempotencyKey)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (existingBatch) {
+      logger.info('[SyncEngine] Ignored duplicate batch:', idempotencyKey);
+      // Return 202 Accepted so the Flutter app marks them as synced locally
+      return res.status(202).json({ error: 'Batch already processed.' });
     }
 
     const recordsToInsert = events.map(event => {
