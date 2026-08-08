@@ -1198,4 +1198,25 @@ router.post('/:id/pod', authenticate, requireRole(['driver']), podUploadLimiter,
   }
 });
 
+
+// GET /api/orders/history
+router.get('/history', authenticate, userLimiter, requirePolicy('order:view-history'), async (req, res) => {
+  const { cursor } = req.query;
+
+  if (cursor !== undefined && (!Number.isInteger(Number(cursor)) || Number(cursor) < 1)) {
+    return res.status(400).json({ error: 'Invalid cursor parameter. Must be a valid positive integer.' });
+  }
+
+  const page = cursor ? parseInt(cursor, 10) : (parseInt(req.query.page, 10) || 1);
+  const limit = parseInt(req.query.limit, 10) || 20;
+
+  try {
+    const result = await orderLifecycleService.getOrderHistory(req.user.id, page, limit);
+    return res.json(result);
+  } catch (err) {
+    logger.error('Order history fetch error:', err);
+    return res.status(500).json({ error: 'Failed to fetch order history.' });
+  }
+});
+
 module.exports = router;
