@@ -29,6 +29,8 @@ contract AtomicSwap is ReentrancyGuard {
 
     mapping(bytes32 => Swap) public swaps;
 
+    mapping(bytes32 => bool) public usedHashLocks;
+
     event SwapOpened(bytes32 indexed swapId, address indexed sender, address indexed recipient, uint256 amount, bytes32 hashLock, uint256 lockTime);
     event SwapClaimed(bytes32 indexed swapId, bytes preimage);
     event SwapRefunded(bytes32 indexed swapId);
@@ -87,7 +89,8 @@ contract AtomicSwap is ReentrancyGuard {
 
         emit SwapRefunded(swapId);
     }
-}
+
     function getUserSwaps(address user) external view returns (SwapReference[] memory) {
         return userSwaps[user];
     }
+}
