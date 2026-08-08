@@ -7,10 +7,11 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { GpsLog } from '../models/GpsLog.js';
+import { ebpfLoader } from '../../../../ebpf/loader.js';
 
 const TELEMETRY_SCHEMA = {
-  lat: { type: 'number', required: false, min: -90, max: 90 },
-  lng: { type: 'number', required: false, min: -180, max: 180 },
+  lat: { type: 'number', required: true, min: -90, max: 90 },
+  lng: { type: 'number', required: true, min: -180, max: 180 },
   latitude: { type: 'number', required: false, min: -90, max: 90 },
   longitude: { type: 'number', required: false, min: -180, max: 180 },
   driver_id: { type: 'string', required: false, minLen: 1, maxLen: 64 },
@@ -66,6 +67,57 @@ const RECOVERY_FILE_PATH = process.env.RECOVERY_FILE_PATH || path.join(os.tmpdir
 
 // In-memory mapping of active client subscriptions
 const trackingSubscriptions = new Map();
+
+// Dedicated Redis subscriber instance for multi-replica WebSocket broadcasting
+let redisSubClient = null;
+const TRACKER_CHANNELS = {
+  LOCATION: 'tracker:location_updates',
+  MILESTONE: 'tracker:milestone_updates',
+};
+
+function deliverToLocalSubscribers(targetId, payload) {
+  if (!targetId || !trackingSubscriptions.has(targetId)) return;
+  const clients = trackingSubscriptions.get(targetId);
+  clients.forEach((client) => {
+    if (client.readyState === 1) {
+      client.send(payload);
+    }
+  });
+}
+
+function initRedisTrackerPubSub() {
+  if (!redisClient || redisSubClient) return;
+
+  try {
+    redisSubClient = redisClient.duplicate();
+    redisSubClient.subscribe(TRACKER_CHANNELS.LOCATION, TRACKER_CHANNELS.MILESTONE, (err) => {
+      if (err) {
+        logger.error({ err }, '[Tracker] Failed to subscribe to Redis tracker channels');
+      } else {
+        logger.info('[Tracker] Subscribed to Redis Pub/Sub tracker channels for multi-replica broadcasting');
+      }
+    });
+
+    redisSubClient.on('message', (channel, message) => {
+      try {
+        const parsed = JSON.parse(message);
+        if (channel === TRACKER_CHANNELS.LOCATION) {
+          const { orderDisplayId, driver_id, payload } = parsed;
+          if (orderDisplayId) deliverToLocalSubscribers(orderDisplayId, payload);
+          if (driver_id) deliverToLocalSubscribers(driver_id, payload);
+        } else if (channel === TRACKER_CHANNELS.MILESTONE) {
+          const { orderDisplayId, payload } = parsed;
+          if (orderDisplayId) deliverToLocalSubscribers(orderDisplayId, payload);
+        }
+      } catch (err) {
+        logger.error({ err }, '[Tracker] Error handling Pub/Sub message');
+      }
+    });
+  } catch (err) {
+    logger.error({ err }, '[Tracker] Redis Pub/Sub initialization error');
+  }
+}
+
 
 // Cached Supabase Realtime channels keyed by orderUUID to avoid creating a new
 // channel per location ping. Reused across pings and cleaned up on disconnect.
@@ -290,6 +342,8 @@ function getClientIp(request) {
   return request.socket?.remoteAddress || request.connection?.remoteAddress || 'unknown';
 }
 
+export { getClientIp };
+
 // Process-local fallback counter for the per-IP upgrade limit, used when Redis
 // is unavailable so the limit is still enforced instead of failing open.
 const wsUpgradeMemoryLimits = new Map();
@@ -345,6 +399,33 @@ export function rejectWebSocketUpgrade(socket) {
     '\r\n'
   );
   socket.destroy();
+}
+
+/**
+ * Reject a WebSocket connection whose URL carries a `token` query parameter.
+ *
+ * Tokens must only ever arrive via the first-frame `auth` event; a token in
+ * the URL leaks through proxies, CDN/access logs and web analytics. When the
+ * client supplies one, the connection is refused with close code 4001 so the
+ * leak is impossible rather than merely discouraged (issue #5826).
+ *
+ * @param {object} ws     The raw WebSocket connection.
+ * @param {URL}    reqUrl Parsed request URL.
+ * @returns {boolean} true when the connection was rejected (caller should return).
+ */
+export function rejectConnectionWithTokenInUrl(ws, reqUrl) {
+  const urlToken = reqUrl.searchParams.get('token');
+  if (!urlToken) return false;
+  logger.warn(
+    { event: 'WS_TOKEN_IN_URL' },
+    'WebSocket auth token present in URL query string; refusing connection',
+  );
+  ws.send(JSON.stringify({
+    error: 'Unauthorized: auth token must not be sent in the URL query string',
+    code: 4001,
+  }));
+  ws.close(4001, 'Auth token must not be sent in the URL query string');
+  return true;
 }
 
 /**
@@ -486,6 +567,7 @@ export function initWebSocketServer(server, orderRepository) {
 
   wss.on('connection', async (ws, req) => {
     ws._request = req;
+    ws.socketId = ws.socketId || crypto.randomUUID();
     const reqUrl = new URL(req.url, 'http://localhost');
     const bypassAuth = process.env.BYPASS_AUTH === 'true';
 
@@ -514,6 +596,14 @@ export function initWebSocketServer(server, orderRepository) {
         await removeClientFromAllSubscriptions(ws);
       })();
     });
+
+    // A bearer token in the URL query string is a client bug and a credential
+    // leak (issue #5826): it would be written to proxies, CDN/access logs and
+    // web analytics. Refuse the connection loudly instead of silently ignoring
+    // the credential so a future client change cannot reintroduce the leak.
+    if (rejectConnectionWithTokenInUrl(ws, reqUrl)) {
+      return;
+    }
 
     if (bypassAuth) {
       if (process.env.NODE_ENV === 'production') {
@@ -578,7 +668,7 @@ export function initWebSocketServer(server, orderRepository) {
   logger.info('🚀 WebSocket tracking router initialized.');
 }
 
-function isMessageRateLimited(ws) {
+function isMessageRateLimitedInMemory(ws) {
   const now = Date.now();
   let state = messageRateTracker.get(ws);
   if (!state || now - state.windowStart >= 1000) {
@@ -589,8 +679,34 @@ function isMessageRateLimited(ws) {
   return state.count > MAX_MSG_PER_SECOND;
 }
 
+/**
+ * Per-socket message rate limiter (issue #986). Counts messages in a Redis
+ * keyed by socket + 1-second window so the cap holds cluster-wide across all
+ * API instances, and falls back to the in-memory limiter when Redis is down
+ * so the cap is still enforced on this node.
+ */
+export async function isMessageRateLimited(ws) {
+  if (redisClient && redisClient.status === 'ready') {
+    try {
+      const bucket = Math.floor(Date.now() / 1000);
+      const key = `ws:msg:${ws.socketId || ws.driverId || 'anon'}:${bucket}`;
+      const count = await redisClient.incr(key);
+      if (count === 1) {
+        await redisClient.expire(key, 2);
+      }
+      return count > MAX_MSG_PER_SECOND;
+    } catch (err) {
+      logger.warn(
+        'Redis WS message rate limit failed, falling back to in-memory:',
+        err.message,
+      );
+    }
+  }
+  return isMessageRateLimitedInMemory(ws);
+}
+
 export async function handleTrackingMessage(ws, message, req) {
-  if (isMessageRateLimited(ws)) {
+  if (await isMessageRateLimited(ws)) {
     return;
   }
 
@@ -686,6 +802,11 @@ export async function handleLocationPing(ws, data, req) {
   const lat = data.lat !== undefined ? data.lat : data.latitude;
   const lng = data.lng !== undefined ? data.lng : data.longitude;
 
+  // Reject frames with null or undefined coordinates before validation
+  if (lat === null || lat === undefined || lng === null || lng === undefined) {
+    return ws.send(JSON.stringify({ error: 'Invalid telemetry payload.', details: ['lat and lng are required'] }));
+  }
+
   // Fix 3 + dead-code fix: run the payload through the schema validator/
   const normalizedForValidation = {
     lat,
@@ -708,6 +829,17 @@ export async function handleLocationPing(ws, data, req) {
   if (validationErrors) {
     return ws.send(JSON.stringify({ error: 'Invalid telemetry payload', details: validationErrors }));
   }
+
+  // Cross-field validation: require at least one complete coordinate pair.
+  const hasLatLng = data.lat !== undefined && data.lng !== undefined;
+  const hasLatLong = data.latitude !== undefined && data.longitude !== undefined;
+  if (!hasLatLng && !hasLatLong) {
+    return ws.send(JSON.stringify({
+      error: 'Invalid telemetry payload',
+      details: ['At least one coordinate pair (lat+lng or latitude+longitude) is required.']
+    }));
+  }
+
   const sanitized = sanitizeTelemetryData(data);
   Object.assign(data, sanitized);
 
@@ -831,7 +963,7 @@ export async function handleLocationPing(ws, data, req) {
     coordinates: [sanitized.lng, sanitized.lat]
   },
   speed_kmh: sanitized.speed ?? 0,
-  bearing_deg: sanitized.heading ?? 0,
+  bearing_deg: sanitized.bearing ?? 0,
     timestamp: deviceTime || new Date(),
     pinged_at: deviceTime || new Date(),
     buffered_at: new Date(),
@@ -851,7 +983,7 @@ export async function handleLocationPing(ws, data, req) {
       const redisKey = `driver:location:${driver_id}`;
       await redisClient.set(
         redisKey,
-        JSON.stringify({ latitude: sanitized.lat, longitude: sanitized.lng, speed: sanitized.speed ?? 0, bearing: sanitized.heading ?? 0, updated_at: new Date(serverNow) }),
+        JSON.stringify({ latitude: sanitized.lat, longitude: sanitized.lng, speed: sanitized.speed ?? 0, bearing: sanitized.bearing ?? 0, updated_at: new Date(serverNow) }),
         'EX',
         120
       );
@@ -868,10 +1000,10 @@ export async function handleLocationPing(ws, data, req) {
     GpsLog.create({
       bookingId: orderDisplayId || orderUUID || driver_id,
       driverId: driver_id,
-      lat,
-      lng,
-      speed: speed || 0,
-      heading: bearing || 0,
+      lat: sanitized.lat,
+      lng: sanitized.lng,
+      speed: sanitized.speed ?? 0,
+      heading: sanitized.bearing ?? 0,
       timestamp: deviceTime || new Date(serverNow),
       metadata: {
         order_id: orderUUID || null,
@@ -891,27 +1023,27 @@ export async function handleLocationPing(ws, data, req) {
       latitude: sanitized.lat,
       longitude: sanitized.lng,
       speed: sanitized.speed ?? 0,
-      bearing: sanitized.heading ?? 0,
+      bearing: sanitized.bearing ?? 0,
       timestamp: new Date(serverNow)
     }
   });
 
-  if (orderDisplayId && trackingSubscriptions.has(orderDisplayId)) {
-    const clients = trackingSubscriptions.get(orderDisplayId);
-    clients.forEach((client) => {
-      if (client.readyState === 1) { 
-        client.send(broadcastPayload);
-      }
-    });
-  }
+  initRedisTrackerPubSub();
 
-  if (trackingSubscriptions.has(driver_id)) {
-    const clients = trackingSubscriptions.get(driver_id);
-    clients.forEach((client) => {
-      if (client.readyState === 1) {
-        client.send(broadcastPayload);
-      }
+  if (redisClient) {
+    const pubSubMessage = JSON.stringify({
+      orderDisplayId,
+      driver_id,
+      payload: broadcastPayload,
     });
+    redisClient.publish(TRACKER_CHANNELS.LOCATION, pubSubMessage).catch((err) => {
+      logger.error({ err }, '[Tracker] Redis publish error for location update');
+      if (orderDisplayId) deliverToLocalSubscribers(orderDisplayId, broadcastPayload);
+      if (driver_id) deliverToLocalSubscribers(driver_id, broadcastPayload);
+    });
+  } else {
+    if (orderDisplayId) deliverToLocalSubscribers(orderDisplayId, broadcastPayload);
+    if (driver_id) deliverToLocalSubscribers(driver_id, broadcastPayload);
   }
 
   // Publish to Supabase Realtime channel driver-location:{orderId}
@@ -1121,14 +1253,17 @@ export async function closeWebSocketServer() {
       await new Promise(r => setTimeout(r, mongoPollIntervalMs));
     }
     if (!getMongoDb()) {
-      const dataLoss = telemetryWriteBuffer.length;
-      if (dataLoss > 0) {
+      const allPending = [
+        ...telemetryFlushBuffer,
+        ...(await telemetryWriteBuffer.toArray())
+      ];
+      if (allPending.length > 0) {
         try {
-          const lines = (await telemetryWriteBuffer.toArray()).map(r => JSON.stringify(r)).join('\n');
+          const lines = allPending.map(r => JSON.stringify(r)).join('\n');
           fs.writeFileSync(RECOVERY_FILE_PATH, lines + '\n', { encoding: 'utf-8', mode: 0o600 });
-          logger.warn(`[TRUXIFY SHUTDOWN] MongoDB not available. Wrote ${dataLoss} telemetry records to recovery file: ${RECOVERY_FILE_PATH}`);
+          logger.warn(`[TRUXIFY SHUTDOWN] MongoDB not available. Wrote ${allPending.length} telemetry records to recovery file: ${RECOVERY_FILE_PATH}`);
         } catch (fileErr) {
-          logger.error(`[TRUXIFY SHUTDOWN] Failed to write recovery file: ${fileErr.message}. ${dataLoss} records lost.`);
+          logger.error(`[TRUXIFY SHUTDOWN] Failed to write recovery file: ${fileErr.message}. ${allPending.length} records lost.`);
         }
       }
     }
@@ -1175,9 +1310,7 @@ export async function closeWebSocketServer() {
 }
 
 export function broadcastOrderMilestone(orderDisplayId, milestone, status) {
-  if (!orderDisplayId || !trackingSubscriptions.has(orderDisplayId)) {
-    return;
-  }
+  if (!orderDisplayId) return;
 
   const payload = JSON.stringify({
     event: 'milestone_update',
@@ -1189,12 +1322,17 @@ export function broadcastOrderMilestone(orderDisplayId, milestone, status) {
     },
   });
 
-  const clients = trackingSubscriptions.get(orderDisplayId);
-  clients.forEach((client) => {
-    if (client.readyState === 1) {
-      client.send(payload);
-    }
-  });
+  initRedisTrackerPubSub();
+
+  if (redisClient) {
+    const pubSubMessage = JSON.stringify({ orderDisplayId, payload });
+    redisClient.publish(TRACKER_CHANNELS.MILESTONE, pubSubMessage).catch((err) => {
+      logger.error({ err }, '[Tracker] Redis publish error for milestone');
+      deliverToLocalSubscribers(orderDisplayId, payload);
+    });
+  } else {
+    deliverToLocalSubscribers(orderDisplayId, payload);
+  }
 }
 
 export async function handleSubscribe(ws, data) {

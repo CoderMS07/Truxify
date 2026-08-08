@@ -5,7 +5,6 @@ import 'package:truxify_shared/truxify_shared.dart' hide NotificationsScreen;
 
 import '../controllers/app_controller.dart';
 import '../core/offline/cache/cache_manager.dart';
-import '../data/mock_data.dart';
 import '../models/app_models.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_logo.dart';
@@ -161,6 +160,31 @@ class _HomeScreenState extends State<HomeScreen> {
     return parts.first.trim();
   }
 
+  String _formatStatus(String status) {
+    switch (status) {
+      case 'driver_assigned':
+      case 'accepted':
+        return 'Accepted';
+      case 'in_transit':
+        return 'In Transit';
+      case 'payment_released':
+      case 'completed':
+      case 'delivered':
+        return 'Delivered';
+      case 'cancelled':
+        return 'Cancelled';
+      case 'pending':
+        return 'Pending';
+      default:
+        return status
+            .split('_')
+            .map((word) => word.isEmpty
+                ? word
+                : '${word[0].toUpperCase()}${word.substring(1)}')
+            .join(' ');
+    }
+  }
+
   ShipmentCardData? _buildShipmentFromOrder(Map<String, dynamic> order) {
     final route = '${order['pickup_city'] ?? '?'} \u2192 ${order['drop_city'] ?? '?'}';
     final rawDriverName = order['driver_name']?.toString() ?? '';
@@ -168,7 +192,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final driverName = hasDriver ? rawDriverName : '';
     final truckNum = order['truck_number']?.toString() ?? '';
     final driver = driverName.isNotEmpty ? '$driverName | $truckNum' : (truckNum.isNotEmpty ? truckNum : 'Assigning driver');
-    final status = order['status']?.toString() ?? 'Active';
+    // The API returns snake_case statuses; humanize before comparing so the
+    // in-transit styling/live badge actually triggers.
+    final status = _formatStatus(order['status']?.toString() ?? 'pending');
     final eta = order['estimated_arrival']?.toString() ?? 'Pending';
 
     return ShipmentCardData(

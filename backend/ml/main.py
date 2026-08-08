@@ -2,6 +2,24 @@ import asyncio
 import logging
 import os
 import time
+
+# Initialize Sentry as early as possible
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+
+sentry_dsn = os.environ.get("SENTRY_DSN")
+if sentry_dsn:
+    sentry_sdk.init(
+        dsn=sentry_dsn,
+        environment=os.environ.get("ENVIRONMENT", "development"),
+        integrations=[
+            FastApiIntegration(
+                transaction_style="endpoint"
+            ),
+        ],
+        traces_sample_rate=1.0,
+    )
+
 import numpy as np
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Depends, Query, UploadFile, File
@@ -9,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from app.models.eta_prediction import eta_predictor
+from fastapi import HTTPException
 
 from app.models.demand_forecast import (
     predict_demand,
@@ -42,6 +61,12 @@ logger = logging.getLogger(__name__)
 # Track loaded models for health reporting
 loaded_models: set[str] = set()
 
+
+import os
+
+MAX_CONCURRENT_INFERENCE = int(os.getenv("MAX_CONCURRENT_INFERENCE", "10"))
+INFERENCE_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_INFERENCE)
+
 app = FastAPI(
     title="Truxify ML Engine",
     description="ML prediction service for load matching, pricing, ETA, and route optimization",
@@ -70,6 +95,11 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["X-API-Key", "Content-Type"],
 )
+
+
+@app.get("/sentry-debug")
+async def trigger_error():
+    division_by_zero = 1 / 0
 
 
 @app.on_event("startup")
@@ -390,14 +420,14 @@ async def predict_demand_endpoint(input: DemandForecastInput, _auth=Depends(veri
     features = [
         input.hour,
         input.day_of_week,
-        1 if input.day_of_week >= 5 else 0,
+        1 if input.day_of_week in (0, 6) else 0,
         input.temperature,
         input.precipitation,
         input.historical_volume,
         input.nearby_drivers,
     ]
     try:
-        demand = predict_demand(features)
+        demand = await asyncio.to_thread(predict_demand, features)
         if demand is None:
             raise HTTPException(status_code=503, detail="Model not available")
         return DemandForecastOutput(predicted_demand=demand)
@@ -413,7 +443,11 @@ async def predict_demand_endpoint(input: DemandForecastInput, _auth=Depends(veri
 @app.post("/predict/price", response_model=PricePredictOutput)
 async def predict_price_endpoint(input: PricePredictInput, _auth=Depends(verify_api_key)):
     try:
-        result = predict_price(
+        # predict_price performs blocking weather lookups (requests.get) and
+        # CPU-bound model scoring; run it in a worker thread so it never blocks
+        # the FastAPI event loop and stalls other ML endpoints.
+        result = await asyncio.to_thread(
+            predict_price,
             distance_km=input.distance_km,
             cargo_weight_kg=input.cargo_weight_kg,
             truck_type=input.truck_type,
@@ -497,7 +531,7 @@ async def packing_endpoint(input: PackingInput, _auth=Depends(verify_api_key)):
         packages = [pkg.model_dump() for pkg in input.packages]
         truck = input.truck.model_dump()
         addresses = [addr.model_dump() for addr in input.delivery_addresses]
-        result = optimise_packing(packages, truck, addresses)
+        result = await asyncio.to_thread(optimise_packing, packages, truck, addresses)
         return PackingOutput(**result)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -516,7 +550,6 @@ async def recommend_loads_endpoint(input: RecommendLoadsInput, _auth=Depends(ver
         result = collaborative_filter.recommend_loads(
             user_id=input.user_id,
             booking_history=input.booking_history,
-            rated_drivers=input.rated_drivers,
             top_n=input.top_n,
         )
         return RecommendOutput(**result)
@@ -535,7 +568,6 @@ async def recommend_trucks_endpoint(input: RecommendTrucksInput, _auth=Depends(v
         result = collaborative_filter.recommend_trucks(
             user_id=input.user_id,
             booking_history=input.booking_history,
-            rated_loads=input.rated_loads,
             top_n=input.top_n,
         )
         return RecommendOutput(**result)
@@ -576,7 +608,7 @@ async def deadhead_endpoint(input: DeadheadInput, _auth=Depends(verify_api_key))
         driver_dest = input.driver_destination.model_dump()
         truck_specs = input.truck_specs.model_dump()
         loads = [load.model_dump() for load in input.available_loads]
-        result = find_return_loads(driver_dest, truck_specs, input.arrival_time, loads)
+        result = await asyncio.to_thread(find_return_loads, driver_dest, truck_specs, input.arrival_time, loads)
         return DeadheadOutput(**result)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -596,7 +628,7 @@ async def mid_trip_endpoint(input: MidTripInput, _auth=Depends(verify_api_key)):
         route = [wp.model_dump() for wp in input.remaining_route]
         capacity = input.available_capacity.model_dump()
         loads = [load.model_dump() for load in input.nearby_loads]
-        result = find_mid_trip_loads(current_loc, route, capacity, loads)
+        result = await asyncio.to_thread(find_mid_trip_loads, current_loc, route, capacity, loads)
         return MidTripOutput(**result)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -709,11 +741,42 @@ class KYCVerificationOutput(BaseModel):
 
 @app.post("/verify/kyc", response_model=KYCVerificationOutput)
 async def verify_kyc_endpoint(file: UploadFile = File(...), _auth=Depends(verify_api_key)):
+    allowed_content_types = {"image/jpeg", "image/png", "image/webp"}
+    max_file_size_bytes = 5 * 1024 * 1024  # 5 MB
+
+    if file.content_type not in allowed_content_types:
+        raise HTTPException(
+            status_code=422,
+            detail="Unsupported file type. Upload a JPEG, PNG, or WebP image.",
+        )
+
+    if file.size is not None and file.size > max_file_size_bytes:
+        raise HTTPException(status_code=422, detail="File too large. Maximum size is 5 MB.")
+
     try:
         image_bytes = await file.read()
+
+        if len(image_bytes) == 0:
+            raise HTTPException(status_code=422, detail="Uploaded file is empty.")
+
+        if len(image_bytes) > max_file_size_bytes:
+            raise HTTPException(status_code=422, detail="File too large. Maximum size is 5 MB.")
+
         text = ocr_verifier.extract_text(image_bytes)
+        if text is None:
+            # OCR failed (undecodable image, Tesseract unavailable, ...).
+            # Never fall back to a simulated licence: report unverified.
+            return KYCVerificationOutput(
+                verified=False,
+                document_type="Unknown",
+                extracted_number=None,
+                raw_text="",
+            )
+
         result = ocr_verifier.verify_license(text)
         return KYCVerificationOutput(**result)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("KYC OCR verification failed: %s", e)
         raise HTTPException(status_code=500, detail="KYC OCR verification failed")

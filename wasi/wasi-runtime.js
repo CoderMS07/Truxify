@@ -52,9 +52,12 @@ class WASIRuntime {
         try {
             await this.initialize();
             
-            // Path traversal protection
-            const normalized = path.normalize(wasmPath).replace(/^(\.\.[\/\\])+/, '');
-            const resolvedPath = path.resolve(normalized);
+            // Path traversal protection: resolve full path and ensure it stays inside allowed base directory
+            const resolvedPath = path.resolve(wasmPath);
+            const allowedBaseDir = path.resolve(process.cwd());
+            if (!resolvedPath.startsWith(allowedBaseDir + path.sep) && resolvedPath !== allowedBaseDir) {
+                throw new Error('Security Error: Path traversal outside allowed runtime sandbox directory');
+            }
             if (!resolvedPath.endsWith('.wasm')) {
                 throw new Error('Security Error: Only .wasm files are permitted');
             }
@@ -62,13 +65,13 @@ class WASIRuntime {
             // Read WASM file
             const wasmBytes = fs.readFileSync(resolvedPath);
             
-            // Create WASI instance with capabilities
+            // Create WASI instance with capabilities. Never expose
+            // process.env to untrusted WASM, and do not preopen the working
+            // directory — the sandbox gets no host filesystem access by default.
             const wasi = new WASI({
                 args: [],
-                env: process.env,
-                preopens: {
-                    '/': './'
-                },
+                env: {},
+                preopens: {},
                 returnOnExit: true,
             });
             
@@ -127,65 +130,65 @@ class WASIRuntime {
         }
     }
 
-    async readFile(path) {
+    async readFile(instanceId, path) {
         this.validatePath(path);
-        const result = await this.executeFunction('wasi_read_file', path);
+        const result = await this.executeFunction(instanceId, 'wasi_read_file', path);
         return result;
     }
 
-    async writeFile(path, content) {
+    async writeFile(instanceId, path, content) {
         this.validatePath(path);
-        const result = await this.executeFunction('wasi_write_file', path, content);
+        const result = await this.executeFunction(instanceId, 'wasi_write_file', path, content);
         return result;
     }
 
-    async listDirectory(path) {
+    async listDirectory(instanceId, path) {
         this.validatePath(path);
-        const result = await this.executeFunction('wasi_list_directory', path);
+        const result = await this.executeFunction(instanceId, 'wasi_list_directory', path);
         return JSON.parse(result);
     }
 
-    async createDirectory(path) {
+    async createDirectory(instanceId, path) {
         this.validatePath(path);
-        const result = await this.executeFunction('wasi_create_directory', path);
+        const result = await this.executeFunction(instanceId, 'wasi_create_directory', path);
         return result;
     }
 
-    async deleteFile(path) {
+    async deleteFile(instanceId, path) {
         this.validatePath(path);
-        const result = await this.executeFunction('wasi_delete_file', path);
+        const result = await this.executeFunction(instanceId, 'wasi_delete_file', path);
         return result;
     }
 
-    async httpRequest(url, method, headers, body) {
+    async httpRequest(instanceId, url, method, headers, body) {
         this.validateUrl(url);
         const request = JSON.stringify({ url, method, headers, body });
-        const result = await this.executeFunction('wasi_http_request', request);
+        const result = await this.executeFunction(instanceId, 'wasi_http_request', request);
         return JSON.parse(result);
     }
 
-    async getTime() {
-        return await this.executeFunction('wasi_get_time');
+    async getTime(instanceId) {
+        return await this.executeFunction(instanceId, 'wasi_get_time');
     }
 
-    async getTimeMs() {
-        return await this.executeFunction('wasi_get_time_ms');
+    async getTimeMs(instanceId) {
+        return await this.executeFunction(instanceId, 'wasi_get_time_ms');
     }
 
-    async sleep(ms) {
-        return await this.executeFunction('wasi_sleep', ms);
+    async sleep(instanceId, ms) {
+        return await this.executeFunction(instanceId, 'wasi_sleep', ms);
     }
 
-    async getProcessId() {
-        return await this.executeFunction('wasi_get_process_id');
+    async getProcessId(instanceId) {
+        return await this.executeFunction(instanceId, 'wasi_get_process_id');
     }
 
-    async getEnvVar(name) {
-        return await this.executeFunction('wasi_get_env_var', name);
+    async getEnvVar(instanceId, name) {
+        return await this.executeFunction(instanceId, 'wasi_get_env_var', name);
     }
 
-    async getCurrentDir() {
-        return await this.executeFunction('wasi_get_current_dir');
+    async getCurrentDir(instanceId) {
+        return await this.executeFunction(instanceId, 'wasi_get_current_dir');
     }
 
     validatePath(path) {
@@ -197,7 +200,19 @@ class WASIRuntime {
     }
 
     validateUrl(url) {
-        const allowed = this.capabilities.allowedDomains.some(d => url.includes(d));
+        let parsed;
+        try {
+            parsed = new URL(url);
+        } catch (err) {
+            throw new Error(`Invalid URL: ${url}`);
+        }
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+            throw new Error(`Invalid URL protocol: ${url}`);
+        }
+        const hostname = parsed.hostname.toLowerCase();
+        // Exact host match only — an "includes" check is bypassable with
+        // http://api.truxify.com.evil.com.
+        const allowed = this.capabilities.allowedDomains.some(d => hostname === d.toLowerCase());
         if (!allowed) {
             throw new Error(`Access denied: ${url}`);
         }

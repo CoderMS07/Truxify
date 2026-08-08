@@ -26,7 +26,7 @@ import { requireIdempotency } from '../middleware/idempotency.js';
 import { acquireLock, releaseLock, LockAcquisitionError } from '../lib/redisLock.js';
 import { auditLog } from '../middleware/auditLog.js';
 import logger from '../middleware/logger.js';
-import { orderRepository } from '../core/container.js';
+import { orderRepository, orderValidationService } from '../core/container.js';
 import { supabase } from '../config/db.js';
 import {
   recordDepositTx,
@@ -34,6 +34,7 @@ import {
   paisaToMaticWei,
   isEscrowEnabled,
   escrowLockPayment,
+  resolveExpectedDepositAmount,
 } from '../services/escrow.js';
 import { sendPushNotification } from '../services/notificationService.js';
 import upiPaymentService from '../services/payment/UpiPaymentService.js';
@@ -99,17 +100,23 @@ router.post(
   '/upi-intent',
   authenticate,
   lockLimiter,
+  requireIdempotency(3600),
   validateBody(upiIntentSchema),
   async (req, res) => {
     try {
       const { order_id } = req.body;
 
-      const { data: order, error } = await orderRepository.findOrderByIdOrDisplayId(
-        order_id,
-        'id, order_display_id, customer_id, total_amount, escrow_status, status'
-      );
+      let order;
+      try {
+        order = await orderValidationService.findOrderByIdOrDisplayId(
+          order_id,
+          'id, order_display_id, customer_id, total_amount, escrow_status, status'
+        );
+      } catch (err) {
+        return res.status(500).json({ error: 'Failed to fetch order.' });
+      }
 
-      if (error || !order) {
+      if (!order) {
         return res.status(404).json({ error: 'Order not found.' });
       }
 
@@ -206,12 +213,17 @@ router.post(
       }
 
       // 1. Fetch order
-      const { data: order, error: orderErr } = await orderRepository.findOrderByIdOrDisplayId(
-        order_id,
-        'id, order_display_id, customer_id, driver_id, total_amount, escrow_status, escrow_booking_id, wallet_address'
-      );
+      let order;
+      try {
+        order = await orderValidationService.findOrderByIdOrDisplayId(
+          order_id,
+          'id, order_display_id, customer_id, driver_id, total_amount, escrow_status, escrow_booking_id, wallet_address, escrow_driver_wallet, escrow_amount_wei, pending_bid_acceptance'
+        );
+      } catch (err) {
+        return res.status(500).json({ error: 'Failed to fetch order.' });
+      }
 
-      if (orderErr || !order) {
+      if (!order) {
         return res.status(404).json({ error: 'Order not found.' });
       }
 
@@ -236,37 +248,61 @@ router.post(
         });
       }
 
-      // 3. Derive the on-chain booking ID
-      const bookingId = order.escrow_booking_id || getEscrowBookingId(order.order_display_id);
-
-      // 4. Verify the deposit transaction on-chain (or skip if escrow not enabled)
-      if (isEscrowEnabled()) {
-        const senderAddress = wallet_address || order.wallet_address;
-        const result = await recordDepositTx(bookingId, tx_hash, senderAddress);
-
-        if (result.error) {
-          logger.warn(`[payments] recordDepositTx failed for ${order.order_display_id}: ${result.error}`);
-          return res.status(422).json({
-            error: `Transaction verification failed: ${result.error}`,
-            hint: 'Ensure the transaction is confirmed on Polygon and the wallet address matches your profile.',
-          });
-        }
-
-        logger.info(`[payments] Deposit verified on-chain for ${order.order_display_id}`);
-      } else {
-        // Dev/staging mode — skip on-chain verification, trust the client tx_hash
-        logger.warn(`[payments] Escrow not configured — accepting tx_hash ${tx_hash} on trust (dev mode)`);
+      // 3. The deposit may only be locked while the order is in 'funding'
+      //    state. A lock must never be accepted for an order that was not
+      //    staged for escrow funding.
+      if (order.escrow_status !== 'funding') {
+        return res.status(409).json({
+          error: `Cannot lock payment — escrow must be in 'funding' state, current status: ${order.escrow_status}`,
+        });
       }
 
-      // 5. Update escrow_status → funded
-      const { error: updateErr } = await orderRepository.updateOrder(
+      // 4. Derive the on-chain booking ID
+      const bookingId = order.escrow_booking_id || getEscrowBookingId(order.order_display_id);
+
+      // 5. Verify the deposit transaction on-chain against the order's escrow
+      //    booking: the sender must be the registered customer wallet, the
+      //    booking must be created for the assigned driver, and funded with at
+      //    least the expected escrow amount. The client-supplied tx_hash is
+      //    never trusted without on-chain verification (no dev trust path).
+      const senderAddress = wallet_address || order.wallet_address;
+
+      // Resolve the authoritative expected deposit amount (cross-checked
+      // against the server-written bid context). If it cannot be resolved the
+      // deposit is rejected — the amount on-chain must always equal the amount
+      // the app recorded for this order.
+      const resolvedAmount = resolveExpectedDepositAmount(order);
+      if (resolvedAmount.error) {
+        return res.status(422).json({ error: resolvedAmount.error, code: resolvedAmount.code });
+      }
+      const expectedAmountWei = resolvedAmount.expectedAmountWei;
+
+      const result = await recordDepositTx(
+        bookingId,
+        tx_hash,
+        senderAddress,
+        order.escrow_driver_wallet ?? null,
+        expectedAmountWei
+      );
+
+      if (result.error) {
+        logger.warn(`[payments] recordDepositTx failed for ${order.order_display_id}: ${result.error}`);
+        return res.status(422).json({
+          error: `Transaction verification failed: ${result.error}`,
+          code: result.code,
+          hint: 'Ensure the transaction is confirmed on Polygon and the wallet address matches your profile.',
+        });
+      }
+
+      logger.info(`[payments] Deposit verified on-chain for ${order.order_display_id}`);
+
+      // 6. Update escrow_status → funded
+      const { error: updateErr } = await orderRepository.updateOrderWithFilter(
         order.id,
         {
           escrow_status: 'funded',
           escrow_booking_id: bookingId,
           escrow_tx_hash: tx_hash,
-          escrow_deposited_at: new Date().toISOString(),
-          wallet_address: wallet_address || order.wallet_address,
           updated_at: new Date().toISOString(),
         },
         [{ op: 'neq', column: 'escrow_status', value: 'funded' }]
@@ -279,13 +315,13 @@ router.post(
         });
       }
 
-      // 6. Notify assigned driver that payment is now locked
+      // 7. Notify assigned driver that payment is now locked
       if (order.driver_id) {
         sendPushNotification(
           order.driver_id,
           '💰 Payment Locked',
           `Customer payment for order ${order.order_display_id} is now locked in escrow. Proceed with delivery.`,
-          'payment_locked',
+          'payment',
           { order_display_id: order.order_display_id, tx_hash }
         ).catch(err => logger.warn('[payments] Driver FCM push failed:', err.message));
       }
@@ -312,9 +348,9 @@ router.post(
       return res.status(500).json({ error: 'Internal Server Error' });
 
     } finally {
-      if (lockAcquired) {
+      if (lockValue) {
         try {
-          await releaseLock(lockKey);
+          await releaseLock(lockKey, lockValue);
         } catch (releaseErr) {
           logger.error(
             { err: releaseErr, lockKey },
@@ -338,12 +374,17 @@ router.get(
   validateParams(orderIdParamSchema),
   async (req, res) => {
     try {
-      const { data: order, error } = await orderRepository.findOrderByIdOrDisplayId(
-        req.params.orderId,
-        'id, order_display_id, customer_id, driver_id, escrow_status, escrow_booking_id, escrow_deposited_at, escrow_released_at, total_amount, status'
-      );
+      let order;
+      try {
+        order = await orderValidationService.findOrderByIdOrDisplayId(
+          req.params.orderId,
+          'id, order_display_id, customer_id, driver_id, escrow_status, escrow_booking_id, escrow_deposited_at, escrow_released_at, total_amount, status'
+        );
+      } catch (err) {
+        return res.status(500).json({ error: 'Failed to fetch order.' });
+      }
 
-      if (error || !order) {
+      if (!order) {
         return res.status(404).json({ error: 'Order not found.' });
       }
 

@@ -55,6 +55,15 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
     mapping(address => uint256[]) public userAssets;
     mapping(uint256 => TradeOrder[]) public tradeOrders;
     mapping(uint256 => bool) public assetExists;
+    // ETH accrued to each user from treasury buy-backs (sellFraction); the
+    // funds are held by the contract and released via claimPayout().
+    mapping(address => uint256) public claimableBalances;
+    // Hard supply invariant: per-asset count of fractions that were minted
+    // and remain outstanding (minted via purchaseFraction, burned back via
+    // sellFraction). Enforced to never exceed totalTokens so the ERC20 supply
+    // backing an asset can never exceed its collateralized pool, regardless of
+    // how many times fractions change hands on the secondary market.
+    mapping(uint256 => uint256) public issuedTokens;
 
     uint256 private _assetCounter;
     uint256 private _tradeOrderCounter;
@@ -72,6 +81,8 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
     event TradeOrderExecuted(uint256 indexed orderId, uint256 tokenId, address indexed buyer);
     event AssetTraded(uint256 indexed assetId, address indexed from, address indexed to, uint256 amount);
     event ComplianceCheck(address indexed user, bool verified);
+    event PayoutAccrued(uint256 indexed assetId, address indexed user, uint256 amount);
+    event PayoutClaimed(address indexed user, uint256 amount);
 
     // ============ Constructor ============
 
@@ -153,12 +164,16 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
         require(asset.isActive, "Asset not active");
         require(amount > 0, "Amount must be > 0");
         require(asset.availableTokens >= amount, "Insufficient tokens");
+        require(issuedTokens[assetId] + amount <= asset.totalTokens, "Supply cap exceeded");
 
         uint256 totalCost = (amount * asset.tokenPrice + 1e18 - 1) / 1e18;
         require(msg.value >= totalCost, "Insufficient payment");
 
+        require(totalSupply() + amount <= asset.totalTokens, "Exceeds total token cap");
+
         // Update asset
         asset.availableTokens -= amount;
+        issuedTokens[assetId] += amount;
 
         // Update fractional ownership
         FractionalOwnership storage ownership = fractionalOwnership[assetId][msg.sender];
@@ -192,20 +207,53 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
         FractionalOwnership storage ownership = fractionalOwnership[assetId][msg.sender];
         require(ownership.amount >= amount, "Insufficient balance");
 
+        Asset storage asset = assets[assetId];
+        uint256 payout = (amount * asset.tokenPrice) / 1e18;
+
         // Burn tokens
         _burn(msg.sender, amount);
 
         // Update ownership
         ownership.amount -= amount;
 
-        // Update asset
+        // Update asset — returned fractions re-enter the available pool. Only
+        // real, currently-outstanding fractions can be sold back: they are
+        // burned first, and the issuedTokens ledger is decremented to keep the
+        // outstanding count in sync with availableTokens (so re-adding here can
+        // never exceed what was originally minted from the primary pool).
         assets[assetId].availableTokens += amount;
+        issuedTokens[assetId] -= amount;
 
         if (ownership.amount == 0) {
             _removeUserAsset(msg.sender, assetId);
         }
 
+        // Accrue the buy-back payout; the seller claims it with claimPayout().
+        // The contract's ETH balance is backed by purchase proceeds, so a
+        // failing claim is guarded in claimPayout() with a fail-closed require.
+        claimableBalances[msg.sender] += payout;
+
+        emit PayoutAccrued(assetId, msg.sender, payout);
         emit FractionalSale(assetId, msg.sender, amount);
+    }
+
+    /// @notice Releases the caller's accrued buy-back payouts. The contract
+    ///         holds the ETH from fraction purchases until sellers claim it.
+    function claimPayout() external nonReentrant whenNotPaused {
+        uint256 amount = claimableBalances[msg.sender];
+        require(amount > 0, "No claimable balance");
+
+        claimableBalances[msg.sender] = 0;
+
+        (bool paid, ) = payable(msg.sender).call{value: amount}("");
+        require(paid, "Payout transfer failed");
+
+        emit PayoutClaimed(msg.sender, amount);
+    }
+
+    /// @notice View the accrued buy-back balance claimable by *user*.
+    function getClaimableBalance(address user) external view returns (uint256) {
+        return claimableBalances[user];
     }
 
     // ============ Trading ============
@@ -349,6 +397,11 @@ contract AssetToken is ERC20, ERC20Burnable, Ownable, Pausable, ReentrancyGuard 
 
     function getAsset(uint256 assetId) external view returns (Asset memory) {
         return assets[assetId];
+    }
+
+    /// @notice Outstanding (minted, not yet sold back) fraction count for an asset.
+    function getIssuedTokens(uint256 assetId) external view returns (uint256) {
+        return issuedTokens[assetId];
     }
 
     function getFractionalOwnership(uint256 assetId, address owner) external view returns (FractionalOwnership memory) {

@@ -237,9 +237,15 @@ contract DAO is Ownable, ReentrancyGuard, Pausable {
         emit ProposalExecuted(proposalId, passed);
     }
 
-    function cancelProposal(uint256 proposalId) external onlyOwner {
+    function cancelProposal(uint256 proposalId) external {
         Proposal storage proposal = proposals[proposalId];
-        require(proposal.state == ProposalState.PENDING || proposal.state == ProposalState.ACTIVE, "Cannot cancel");
+        require(msg.sender == owner() || msg.sender == proposal.proposer, "Not authorized");
+        require(!proposal.executed, "Already executed");
+        require(
+            proposal.state == ProposalState.PENDING || proposal.state == ProposalState.ACTIVE,
+            "Cannot cancel"
+        );
+
         proposal.state = ProposalState.CANCELLED;
         emit ProposalCancelled(proposalId, msg.sender);
     }
@@ -275,13 +281,13 @@ contract DAO is Ownable, ReentrancyGuard, Pausable {
         require(recipient != address(0), "Invalid recipient");
         require(amount > 0, "Amount must be > 0");
 
-        bytes memory callData = abi.encodeWithSignature("withdrawTreasury(uint256,address)", amount, recipient);
+        bytes memory callData = "";
 
         return createProposal(
             string(abi.encodePacked("Treasury Withdrawal: ", reason)),
             reason,
             callData,
-            address(this),
+            recipient,
             amount,
             ProposalType.TREASURY
         );
