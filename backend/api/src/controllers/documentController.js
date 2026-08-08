@@ -58,14 +58,42 @@ export async function uploadDriverDocument(req, res) {
       throw validationError;
     }
 
+    // Malware Scanning Block with AbortController Timeout Guard
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), SCAN_TIMEOUT_MS);
+
     try {
-      const scanResult = await scanDocument(req.file.buffer, req.file.originalname);
+      // Pass signal to scanDocument if supported, and race against an abort promise
+      const scanPromise = scanDocument(req.file.buffer, req.file.originalname, {
+        signal: controller.signal,
+      });
+
+      const abortPromise = new Promise((_, reject) => {
+        controller.signal.addEventListener('abort', () => {
+          const timeoutErr = new Error('Malware scanning timed out');
+          timeoutErr.name = 'TimeoutError';
+          reject(timeoutErr);
+        });
+      });
+
+      const scanResult = await Promise.race([scanPromise, abortPromise]);
+
       if (!scanResult.clean) {
         return res.status(422).json({
           error: 'Uploaded document failed malware scanning.',
         });
       }
     } catch (scanError) {
+      if (scanError.name === 'TimeoutError' || scanError.name === 'AbortError') {
+        logger.error(
+          { driverId, documentType, timeoutMs: SCAN_TIMEOUT_MS },
+          '[DocumentController] Malware scanner timed out',
+        );
+        return res.status(504).json({
+          error: 'Malware scan service timed out. Please try again.',
+        });
+      }
+
       if (scanError instanceof MalwareScanError) {
         logger.warn(
           { driverId, documentType, reason: scanError.message },
@@ -76,6 +104,8 @@ export async function uploadDriverDocument(req, res) {
         });
       }
       throw scanError;
+    } finally {
+      clearTimeout(timeoutId);
     }
 
     const extension = verifiedMimeType === 'application/pdf' ? 'pdf'

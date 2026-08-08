@@ -152,7 +152,7 @@ contract zkEVM is Ownable, ReentrancyGuard, Pausable {
         require(transactionsData.length > 0, "Empty batch");
         require(transactionsData.length <= MAX_BATCH_SIZE, "Batch too large");
 
-        // Verify proof; zero, empty, and malformed proofs are rejected
+        // Verify proof — fails closed until a real Groth16 verifier is deployed
         require(_verifyProof(proof), "Invalid proof");
 
         // Process transactions
@@ -166,7 +166,15 @@ contract zkEVM is Ownable, ReentrancyGuard, Pausable {
             txHashes[i] = txHash;
 
             require(!processedTxHashes[txHash], "Duplicate transaction");
+            require(!usedNonces[from][nonce], "Nonce already used");
+            require(currentState.balances[from] >= value + gasPrice * gasLimit, "Insufficient balance");
+
+            // Verify signature (same digest as executeTransaction)
+            bytes32 txHashForSig = keccak256(abi.encodePacked(from, to, value, data, nonce, gasPrice, gasLimit));
+            require(_verifySignature(txHashForSig, signature, from), "Invalid signature");
+
             processedTxHashes[txHash] = true;
+            usedNonces[from][nonce] = true;
 
             // Execute
             currentState.balances[from] -= value + gasPrice * gasLimit;
@@ -228,7 +236,7 @@ contract zkEVM is Ownable, ReentrancyGuard, Pausable {
         require(amount > 0, "Amount must be > 0");
         require(currentState.balances[msg.sender] >= amount, "Insufficient balance");
 
-        // Verify withdrawal proof; zero, empty, and malformed proofs are rejected
+        // Verify withdrawal proof — fails closed until a real Groth16 verifier is deployed
         require(_verifyProof(proof), "Invalid proof");
 
         currentState.balances[msg.sender] -= amount;

@@ -61,6 +61,7 @@ contract StateChannel is ReentrancyGuard {
         require(!channel.isClosed, "Channel closed");
         require(msg.sender == channel.userA || msg.sender == channel.userB, "Not participant");
         require(sequence >= channel.sequence, "Stale sequence");
+        require(balanceA + balanceB == channel.balanceA + channel.balanceB, "Invalid balance sum");
 
         bytes32 stateHash = keccak256(abi.encodePacked(channelId, sequence, balanceA, balanceB)).toEthSignedMessageHash();
         
