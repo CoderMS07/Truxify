@@ -168,6 +168,47 @@ describe('verifyDelivery escrow-before-RPC ordering (issue #4996)', () => {
     );
     expect(result.escrowUpdateFailed).toBe(false);
   });
+
+  it('routes all release-path writes through the service-role admin repository', async () => {
+    const readRepo = makeOrderRepository();
+    const adminRepo = {
+      updateOrder: vi.fn().mockResolvedValue({ data: { id: 'order-1' }, error: null }),
+      updateOrderGuardStatus: vi.fn().mockResolvedValue({ data: { id: 'order-1' }, error: null }),
+      updateWalletTransaction: vi.fn().mockResolvedValue({ data: null, error: null }),
+      executeRpc: vi.fn().mockResolvedValue({ data: null, error: null }),
+    };
+    const releaseFn = vi.fn().mockResolvedValue({ txHash: '0xADMIN' });
+
+    const svc = makeService({ escrowReleaseFn: releaseFn });
+    svc.orderRepository = readRepo;
+    svc.adminOrderRepository = adminRepo;
+    svc.assertDriverAtDropoff = vi.fn().mockResolvedValue();
+
+    const result = await svc.verifyDelivery(
+      { orderId: 'order-1', driverId: 'driver-1', otp: '123456' },
+      {},
+    );
+
+    // Release evidence persisted via the admin (service_role) repository
+    expect(adminRepo.updateOrder).toHaveBeenCalledWith(
+      'order-1',
+      expect.objectContaining({ escrow_status: 'released', release_tx_hash: '0xADMIN' }),
+    );
+    // Guard update and wallet description also on the admin repo
+    expect(adminRepo.updateOrderGuardStatus).toHaveBeenCalled();
+    expect(adminRepo.updateWalletTransaction).toHaveBeenCalled();
+    // The RPC itself goes through the read repository with the admin client
+    // (executeRpc requires an explicit per-call client); the admin repo never
+    // executes it, and reads (order lookup, post-RPC verification) stay on the
+    // user repo.
+    expect(adminRepo.executeRpc).not.toHaveBeenCalled();
+    expect(readRepo.executeRpc).toHaveBeenCalledWith(
+      'complete_trip_tx',
+      expect.objectContaining({ p_release_tx_hash: '0xADMIN' }),
+      expect.anything(),
+    );
+    expect(result.escrowUpdateFailed).toBe(false);
+  });
 });
 
 describe('verifyDelivery payout defense-in-depth (amount integrity)', () => {
