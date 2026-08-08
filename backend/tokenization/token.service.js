@@ -175,10 +175,11 @@ class TokenizationService {
     async getTradeOrder(assetId, orderIndex) {
         try {
             const orders = await this.token.getTradeOrders(assetId);
-            const order = orders[orderIndex];
-            if (!order) {
-                return null;
+
+            if (orderIndex < 0 || orderIndex >= orders.length) {
+                throw new Error(`Order index ${orderIndex} out of range for asset ${assetId}`);
             }
+            const order = orders[orderIndex];
             return {
                 orderId: order[0].toString(),
                 tokenId: order[1].toString(),
@@ -193,11 +194,16 @@ class TokenizationService {
             logger.error('Failed to get trade order:', error);
             throw error;
         }
-    }
+}
 
     async executeTradeOrder(assetId, orderIndex, buyerAddress) {
         try {
             const order = await this.getTradeOrder(assetId, orderIndex);
+
+            if (!order.isActive) {
+                throw new Error(`Trade order ${order.orderId} is not active`);
+            }
+
             const totalCost = parseFloat(order.price) * parseFloat(order.amount);
 
             const tx = await this.token.executeTradeOrder(

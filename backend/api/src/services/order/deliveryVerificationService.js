@@ -50,6 +50,11 @@ function toEpochMs(value) {
 export class DeliveryVerificationService {
   constructor(orderRepository, deps = {}) {
     this.orderRepository = orderRepository;
+    // All financial/release evidence writes MUST go through the service_role
+    // client: the anon-key client has no RLS policy on `orders` and
+    // `escrow_status`/`escrow_release_*` are REVOKE UPDATE from anon, so
+    // persisting via it would be a silent no-op and break reconciliation.
+    this.adminOrderRepository = deps.adminOrderRepository || null;
     this.orderTimelineService =
       deps.orderTimelineService || new OrderTimelineService(supabase);
     this.notificationService = deps.notificationService || {
@@ -61,6 +66,15 @@ export class DeliveryVerificationService {
     };
     this.escrowReleaseFn = deps.escrowReleaseFn || defaultEscrowRelease;
     this.trackingTokenService = deps.trackingTokenService || null;
+  }
+
+  /**
+   * Repository used for release-path DB writes (escrow status, release hash,
+   * guard updates, wallet description). Falls back to the read repository when
+   * no service-role repository was injected (tests, unconfigured admin client).
+   */
+  get _writeRepository() {
+    return this.adminOrderRepository || this.orderRepository;
   }
 
   async validateDeliveryOtp({ orderId, driverId, otp }) {
@@ -476,6 +490,9 @@ export class DeliveryVerificationService {
           order.escrow_status === "funded" ||
           order.escrow_status === "release_failed"
         ) {
+          try {
+            const releaseResult = await this.escrowReleaseFn(
+              order.order_display_id,
           // Payout defense-in-depth: resolve the authoritative escrow amount
           // and verify it is consistent with the payout figure (total_amount)
           // BEFORE any on-chain release. The actual on-chain booking amount is
@@ -575,6 +592,7 @@ export class DeliveryVerificationService {
           // retries with a NULL release hash.
           if (releaseTxHash || escrowAlreadyReleased) {
             const { error: persistReleaseErr } =
+              await this._writeRepository.updateOrder(orderId, {
               await this.orderRepository.updateOrder(orderId, {
                 escrow_status: "released",
                 escrow_release_error: null,
@@ -605,7 +623,7 @@ export class DeliveryVerificationService {
         let tripData = null;
 
         if (!isRetryForStuckEscrow) {
-          const guardResult = await this.orderRepository.updateOrderGuardStatus(
+          const guardResult = await this._writeRepository.updateOrderGuardStatus(
             orderId,
             { updated_at: new Date().toISOString() },
             ["cancelled", "payment_released"],
@@ -712,7 +730,7 @@ export class DeliveryVerificationService {
         let escrowUpdateFailed = false;
         if (releaseTxHash || escrowAlreadyReleased) {
           const { error: releaseUpdateErr } =
-            await this.orderRepository.updateOrder(orderId, {
+            await this._writeRepository.updateOrder(orderId, {
               escrow_status: "released",
               escrow_release_error: null,
               escrow_released_at: new Date().toISOString(),
@@ -731,7 +749,7 @@ export class DeliveryVerificationService {
               tripData?.order_display_id || order.order_display_id;
             if (resolvedDriverId) {
               const { error: walletErr } =
-                await this.orderRepository.updateWalletTransaction(
+                await this._writeRepository.updateWalletTransaction(
                   resolvedDriverId,
                   resolvedDisplayId,
                   { description: `Escrow payout for ${resolvedDisplayId}` },
