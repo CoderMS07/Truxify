@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { supabase } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import {
@@ -118,7 +119,7 @@ export async function uploadMaintenancePhotos(req, res) {
       }
 
       const ext = extensionForMime(verifiedMimeType);
-      const storagePath = `${driverId}/${ticketId}/${Date.now()}-${i}.${ext}`;
+      const storagePath = `${driverId}/${ticketId}/${Date.now()}-${randomUUID()}.${ext}`;
 
       const { error: storageError } = await supabase.storage
         .from('maintenance-photos')
@@ -152,22 +153,29 @@ export async function uploadMaintenancePhotos(req, res) {
       photoUrls.push(urlData.signedUrl);
     }
 
-    // Update the ticket with the new photo PATHS (not ephemeral URLs)
-    const allPaths = [...existingUrls, ...uploadedPaths];
-    const { error: updateError } = await supabase
-      .from('truck_maintenance_tickets')
-      .update({ photo_urls: allPaths })
-      .eq('id', ticketId);
+    // Atomically append new paths via PostgreSQL RPC to enforce MAX_PHOTOS and prevent race conditions
+    const { error: updateError } = await supabase.rpc('append_maintenance_photos', {
+      p_ticket_id: ticketId,
+      p_new_paths: uploadedPaths,
+      p_max_photos: MAX_PHOTOS,
+    });
 
     if (updateError) {
-      logger.error('[MaintenancePhotoController] Failed to update ticket:', updateError.message);
+      logger.error('[MaintenancePhotoController] Failed to update ticket photos atomically:', updateError.message);
       await cleanupStorage(uploadedPaths);
+
+      if (updateError.message.includes('MAX_PHOTOS_EXCEEDED')) {
+        return res.status(400).json({
+          error: `Cannot add ${uploadedPaths.length} photo(s). Maximum ${MAX_PHOTOS} photos allowed per ticket.`,
+        });
+      }
+
       return res.status(500).json({ error: 'Failed to save photo references' });
     }
 
     return res.status(200).json({
       success: true,
-      photo_urls: [...existingUrls, ...photoUrls], // Return signed URLs to the client for immediate rendering
+      photo_urls: [...existingUrls, ...photoUrls],
       uploaded_count: photoUrls.length,
     });
   } catch (err) {

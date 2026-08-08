@@ -72,6 +72,8 @@ router.post('/query', authenticate, userLimiter, upload.single('file'), async (r
   } catch (err) {
     logger.error('Voice AI query failed:', err);
     res.status(500).json({ error: err.message || 'Internal Server Error', stack: err.stack });
+    logger.error({ requestId: req.requestId, query: req.body?.query }, 'Voice AI query failed:', err);
+    res.status(500).json({ error: err.message || 'Internal Server Error' });
   }
 });
 
