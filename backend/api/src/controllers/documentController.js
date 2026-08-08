@@ -15,8 +15,7 @@ const ALLOWED_DOCUMENT_TYPES = Object.freeze([
   'other',
 ]);
 
-// Maximum time allowed for malware scanning before aborting (5 seconds)
-const SCAN_TIMEOUT_MS = 5000;
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 
 /**
  * Handles a driver KYC document upload. The file itself is validated
@@ -34,6 +33,13 @@ export async function uploadDriverDocument(req, res) {
 
     if (!req.file) {
       return res.status(400).json({ error: 'A document file is required' });
+    }
+
+    // Guard against oversized buffers before CPU/memory intensive operations
+    if (req.file.size > MAX_FILE_SIZE_BYTES || req.file.buffer?.length > MAX_FILE_SIZE_BYTES) {
+      return res.status(413).json({
+        error: `File size exceeds the maximum allowed limit of ${MAX_FILE_SIZE_BYTES / (1024 * 1024)}MB.`,
+      });
     }
 
     const documentType = req.body?.documentType;
