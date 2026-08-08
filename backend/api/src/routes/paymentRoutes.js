@@ -34,6 +34,7 @@ import {
   paisaToMaticWei,
   isEscrowEnabled,
   escrowLockPayment,
+  resolveExpectedDepositAmount,
 } from '../services/escrow.js';
 import { sendPushNotification } from '../services/notificationService.js';
 import upiPaymentService from '../services/payment/UpiPaymentService.js';
@@ -215,7 +216,7 @@ router.post(
       try {
         order = await orderValidationService.findOrderByIdOrDisplayId(
           order_id,
-          'id, order_display_id, customer_id, driver_id, total_amount, escrow_status, escrow_booking_id, wallet_address, escrow_driver_wallet, escrow_amount_wei'
+          'id, order_display_id, customer_id, driver_id, total_amount, escrow_status, escrow_booking_id, wallet_address, escrow_driver_wallet, escrow_amount_wei, pending_bid_acceptance'
         );
       } catch (err) {
         return res.status(500).json({ error: 'Failed to fetch order.' });
@@ -264,18 +265,30 @@ router.post(
       //    least the expected escrow amount. The client-supplied tx_hash is
       //    never trusted without on-chain verification (no dev trust path).
       const senderAddress = wallet_address || order.wallet_address;
+
+      // Resolve the authoritative expected deposit amount (cross-checked
+      // against the server-written bid context). If it cannot be resolved the
+      // deposit is rejected — the amount on-chain must always equal the amount
+      // the app recorded for this order.
+      const resolvedAmount = resolveExpectedDepositAmount(order);
+      if (resolvedAmount.error) {
+        return res.status(422).json({ error: resolvedAmount.error, code: resolvedAmount.code });
+      }
+      const expectedAmountWei = resolvedAmount.expectedAmountWei;
+
       const result = await recordDepositTx(
         bookingId,
         tx_hash,
         senderAddress,
         order.escrow_driver_wallet ?? null,
-        order.escrow_amount_wei ?? null
+        expectedAmountWei
       );
 
       if (result.error) {
         logger.warn(`[payments] recordDepositTx failed for ${order.order_display_id}: ${result.error}`);
         return res.status(422).json({
           error: `Transaction verification failed: ${result.error}`,
+          code: result.code,
           hint: 'Ensure the transaction is confirmed on Polygon and the wallet address matches your profile.',
         });
       }
@@ -289,8 +302,6 @@ router.post(
           escrow_status: 'funded',
           escrow_booking_id: bookingId,
           escrow_tx_hash: tx_hash,
-          escrow_deposited_at: new Date().toISOString(),
-          wallet_address: wallet_address || order.wallet_address,
           updated_at: new Date().toISOString(),
         },
         [{ op: 'neq', column: 'escrow_status', value: 'funded' }]
