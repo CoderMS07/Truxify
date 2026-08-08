@@ -272,23 +272,26 @@ describe("DeliveryVerificationService.geofenceAutoConfirm radius override", () =
     expect(result.autoConfirmed).toBe(true);
     expect(repo.updateOrder).toHaveBeenCalledWith(
       "order-geo-1",
-      expect.objectContaining({ geofence_confirmed: true }),
+      expect.objectContaining({ updated_at: expect.any(String) }),
     );
   });
 
   // 0.007 deg lng at this latitude ≈ 685m east of the drop; outside the env
   // default (500m) but inside a 1000m override.
-  it("accepts a driver outside the env radius when a larger override is provided", async () => {
+  it("rejects a driver outside the env radius even when a larger override is provided (clamped to env default)", async () => {
     mockTelemetryRecords = [makeTelemetry(28.6139, 77.216)];
     const { service } = makeService();
-    const result = await service.geofenceAutoConfirm({
-      orderId: "order-geo-1",
-      driverId: "driver-1",
-      driverLat: 28.6139,
-      driverLng: 77.216,
-      geofenceRadiusM: 1000,
-    });
-    expect(result.autoConfirmed).toBe(true);
+    const err = await captureDomainError(
+      service.geofenceAutoConfirm({
+        orderId: "order-geo-1",
+        driverId: "driver-1",
+        driverLat: 28.6139,
+        driverLng: 77.216,
+        geofenceRadiusM: 1000,
+      })
+    );
+    expect(err).toBeInstanceOf(DomainError);
+    expect(err.status).toBe(409);
   });
 
   it("rejects the same driver without the larger override", async () => {
@@ -317,7 +320,7 @@ describe("DeliveryVerificationService.verifyDelivery geofence gating", () => {
       driverId: "driver-1",
       otp: "123456",
     });
-    expect(escrowReleaseFn).toHaveBeenCalledWith("ORD-GEO");
+    expect(escrowReleaseFn).toHaveBeenCalledWith("ORD-GEO", null);
     expect(repo.executeRpc).toHaveBeenCalled();
     expect(result.escrowUpdateFailed).toBe(false);
   });
@@ -359,7 +362,7 @@ describe("DeliveryVerificationService.verifyDelivery geofence gating", () => {
       driverId: "driver-1",
       otp: "123456",
     });
-    expect(escrowReleaseFn).toHaveBeenCalledWith("ORD-GEO");
+    expect(escrowReleaseFn).toHaveBeenCalledWith("ORD-GEO", null);
     expect(repo.executeRpc).not.toHaveBeenCalled();
     expect(repo.updateOrder).toHaveBeenCalled();
     expect(result.escrowUpdateFailed).toBe(false);

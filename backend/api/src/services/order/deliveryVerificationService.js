@@ -347,13 +347,19 @@ export class DeliveryVerificationService {
         // The release gate must never be satisfied by self-reported coordinates.
         // assertDriverAtDropoff() proves physical presence using only telemetry
         // that was authenticated at ingestion and bound to this driver/order.
+        if (geofenceRadiusM !== undefined && geofenceRadiusM !== null) {
+          if (!Number.isFinite(geofenceRadiusM) || geofenceRadiusM <= 0) {
+            throw new DomainError(400, {
+              error: "Invalid geofenceRadiusM: must be a positive finite number.",
+            });
+          }
+        }
+
         // The radius is clamped to the server default so a client-supplied
-        // NaN/negative/oversized value can never bypass the distance check.
+        // oversized value can never bypass the distance check.
         const maxRadiusM = DELIVERY_GEOFENCE_RADIUS_KM * 1000;
         const radiusM =
-          geofenceRadiusM != null &&
-          Number.isFinite(geofenceRadiusM) &&
-          geofenceRadiusM > 0
+          geofenceRadiusM != null
             ? Math.min(geofenceRadiusM, maxRadiusM)
             : maxRadiusM;
         await this.assertDriverAtDropoff(order, radiusM);
@@ -486,9 +492,6 @@ export class DeliveryVerificationService {
           order.escrow_status === "funded" ||
           order.escrow_status === "release_failed"
         ) {
-          try {
-            const releaseResult = await this.escrowReleaseFn(
-              order.order_display_id,
           // Payout defense-in-depth: resolve the authoritative escrow amount
           // and verify it is consistent with the payout figure (total_amount)
           // BEFORE any on-chain release. The actual on-chain booking amount is
@@ -599,7 +602,6 @@ export class DeliveryVerificationService {
           // retries with a NULL release hash.
           if (releaseTxHash || escrowAlreadyReleased) {
             const { error: persistReleaseErr } =
-              await this._writeRepository.updateOrder(orderId, {
               await this.orderRepository.updateOrder(orderId, {
                 escrow_status: "released",
                 escrow_release_error: null,
