@@ -288,7 +288,7 @@ router.get('/', authenticate, userLimiter, requirePolicy('load-offer:browse'), a
       ...load,
       pickup: load.pickup_address,
       destination: load.drop_address,
-      estimated_price: load.freight_value / 100, // convert paisa to Rupees
+      estimated_price: load.freight_value / 100, // freight_value stored in paisa — divide by 100 for INR display
       vehicle_type: 'Truck'
     }));
 
@@ -321,10 +321,16 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), async (re
       return res.status(400).json({ error: 'Destination with lat/lng is required' });
     }
 
-    if (weight_tons === undefined || weight_tons === null || Number.isNaN(Number(weight_tons))) {
+    const parsedWeight = Number(weight_tons);
+    if (weight_tons === undefined || weight_tons === null || Number.isNaN(parsedWeight)) {
       return res.status(400).json({ error: 'Valid weight_tons is required' });
     }
-    if (expected_price === undefined || expected_price === null || Number.isNaN(Number(expected_price))) {
+    if (parsedWeight <= 0) {
+      return res.status(400).json({ error: 'weight_tons must be a positive number' });
+    }
+
+    const parsedPrice = Number(expected_price);
+    if (expected_price === undefined || expected_price === null || Number.isNaN(parsedPrice)) {
       return res.status(400).json({ error: 'Valid expected_price is required' });
     }
 
@@ -345,7 +351,7 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), async (re
         drop_lng: destination.lng,
         route_label: routeLabel,
         weight: `${weight_tons} tonnes`,
-        freight_value: Math.round(parseFloat(expected_price) * 100), // Assuming paisa representation
+        freight_value: Math.round(parseFloat(expected_price) * 100), // user input in INR — multiply by 100 to store as paisa
         goods_type: material_type || 'General',
         status: 'available'
       })
@@ -417,7 +423,7 @@ router.get('/:id', authenticate, userLimiter, requirePolicy('load-offer:browse')
       ...load,
       pickup: load.pickup_address,
       destination: load.drop_address,
-      estimated_price: load.freight_value / 100, // convert paisa to Rupees
+      estimated_price: load.freight_value / 100, // freight_value stored in paisa — divide by 100 for INR display
       vehicle_type: 'Truck'
     };
 

@@ -100,6 +100,7 @@ router.post(
   '/upi-intent',
   authenticate,
   lockLimiter,
+  requireIdempotency(3600),
   validateBody(upiIntentSchema),
   async (req, res) => {
     try {
@@ -320,7 +321,7 @@ router.post(
           order.driver_id,
           '💰 Payment Locked',
           `Customer payment for order ${order.order_display_id} is now locked in escrow. Proceed with delivery.`,
-          'payment_locked',
+          'payment',
           { order_display_id: order.order_display_id, tx_hash }
         ).catch(err => logger.warn('[payments] Driver FCM push failed:', err.message));
       }
