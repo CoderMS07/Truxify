@@ -38,11 +38,18 @@ contract ZKPrivacy is Ownable, ReentrancyGuard, Pausable {
         uint[] input;
     }
 
+    struct RatingStats {
+        uint256 totalStars;
+        uint256 totalRatings;
+    }
+
     // ============ State Variables ============
 
     mapping(bytes32 => bool) public nullifiers;
     mapping(bytes32 => bool) public commitments;
     mapping(bytes32 => PrivateTransaction) public transactions;
+    mapping(address => RatingStats) public driverRatings;
+    mapping(bytes32 => bool) public usedNullifiers;
 
     MerkleTree public merkleTree;
     address public verifier;
@@ -55,12 +62,38 @@ contract ZKPrivacy is Ownable, ReentrancyGuard, Pausable {
     event CommitmentAdded(bytes32 indexed commitment, uint256 index);
     event TransactionProcessed(bytes32 indexed nullifier, address indexed recipient, uint256 amount);
     event ProofVerified(bytes32 indexed transactionId, bool isValid);
+    event RatingSubmitted(address indexed driver, uint8 stars, bytes32 indexed nullifierHash);
 
     // ============ Constructor ============
 
     constructor(address _verifier) Ownable(msg.sender) {
         verifier = _verifier;
         _initializeMerkleTree();
+    }
+
+    // ============ Anonymous Rating ============
+
+    function submitAnonymousRating(
+        address _driver,
+        uint8 _stars,
+        bytes32 _nullifierHash,
+        bytes32 _zkProof
+    ) external {
+        require(_stars >= 1 && _stars <= 5, "Invalid rating stars (1-5)");
+        require(!usedNullifiers[_nullifierHash], "Nullifier already used for trip rating");
+        require(_zkProof != bytes32(0), "Invalid ZK proof");
+
+        usedNullifiers[_nullifierHash] = true;
+        driverRatings[_driver].totalStars += _stars;
+        driverRatings[_driver].totalRatings += 1;
+
+        emit RatingSubmitted(_driver, _stars, _nullifierHash);
+    }
+
+    function getDriverAverageRating(address _driver) external view returns (uint256 averageScaled) {
+        RatingStats memory stats = driverRatings[_driver];
+        if (stats.totalRatings == 0) return 0;
+        return (stats.totalStars * 100) / stats.totalRatings; // Scaled by 100 (e.g. 480 = 4.80 stars)
     }
 
     // ============ Merkle Tree ============
