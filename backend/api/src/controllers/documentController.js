@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { supabase } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import {
@@ -105,7 +106,10 @@ export async function uploadDriverDocument(req, res) {
     const extension = verifiedMimeType === 'application/pdf' ? 'pdf'
       : verifiedMimeType === 'image/png' ? 'png'
       : 'jpg';
-    const storagePath = `${driverId}/${documentType}-${Date.now()}.${extension}`;
+    
+    // Use crypto.randomUUID() alongside Date.now() to guarantee path uniqueness and prevent collisions
+    const uniqueId = crypto.randomUUID();
+    const storagePath = `${driverId}/${documentType}-${Date.now()}-${uniqueId}.${extension}`;
 
     const { error: storageError } = await supabase.storage
       .from('driver-documents')
