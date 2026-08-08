@@ -39,7 +39,7 @@ function buildRouteUrl({ pickupLat, pickupLng, dropLat, dropLng }) {
 }
 
 function buildCacheKey({ pickupLat, pickupLng, dropLat, dropLng }) {
-  const r = (n) => Number(n.toFixed(6));
+  const r = (n) => Number(n.toFixed(8));
   return `osrm:route:v2:${r(pickupLat)}:${r(pickupLng)}:${r(dropLat)}:${r(dropLng)}`;
 }
 
@@ -57,7 +57,13 @@ export async function getRouteEstimate({ pickupLat, pickupLng, dropLat, dropLng 
   if (redisClient) {
     try {
       const cached = await redisClient.get(cacheKey);
-      if (cached) return JSON.parse(cached);
+      // Only return cached result if it is a valid object.
+      // Stale null results (from transient failures) must not be served
+      // from cache — the next call should retry the OSRM API.
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed !== null) return parsed;
+      }
     } catch (err) {
       logger.error('[osrm] Redis get error:', err.message);
     }
@@ -161,7 +167,13 @@ export async function getRouteGeometry({ originLat, originLng, destLat, destLng 
   if (redisClient) {
     try {
       const cached = await redisClient.get(cacheKey);
-      if (cached) return JSON.parse(cached);
+      // Only return cached result if it is a valid object.
+      // Stale null results (from transient failures) must not be served
+      // from cache — the next call should retry the OSRM API.
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed !== null) return parsed;
+      }
     } catch (err) {
       logger.error('[osrm] Redis get error (geometry):', err.message);
     }

@@ -30,7 +30,9 @@ export async function verifyAuthToken(token) {
   let decoded;
   try {
     decoded = jwt.decode(token);
-  } catch (err) {}
+  } catch (err) {
+    // jwt.decode returns null for malformed or invalid tokens, which is handled in subsequent checks
+  }
 
   const isSupabaseToken =
     decoded &&
@@ -77,22 +79,48 @@ export async function verifyAuthToken(token) {
     const decodedToken = await firebaseAdmin.auth().verifyIdToken(token, true);
     firebaseUid = decodedToken.uid;
 
-    if (!supabase) {
-      throw new Error("Supabase client is not configured on this server.");
-    }
+    // Calculate token remaining lifetime to clamp cache TTL
+    const nowSec = Math.floor(Date.now() / 1000);
+    const tokenExp = decodedToken.exp || (nowSec + TTL_SECONDS);
+    const tokenRemaining = tokenExp - nowSec;
 
-    const userClient = createUserClient?.(token) || supabase;
-    const { data: profile, error } = await userClient
-      .from("profiles")
-      .select("id, firebase_uid, role, full_name, phone")
-      .eq("firebase_uid", firebaseUid)
-      .eq("is_active", true)
-      .maybeSingle();
+    // Try reading from cache first for Firebase path
+    const cached = await getCachedProfile(firebaseUid);
+    if (cached && isValidCachedProfile(firebaseUid, cached)) {
+      if (cached.isActive === false) {
+        throw new Error("User profile not found or inactive.");
+      }
+      userProfile = cached;
+    } else {
+      if (!supabase) {
+        throw new Error("Supabase client is not configured on this server.");
+      }
 
-    if (error) {
-      throw new Error("Database query failed verification: " + error.message);
+      const userClient = createUserClient?.(token) || supabase;
+      const { data: profile, error } = await userClient
+        .from("profiles")
+        .select("id, firebase_uid, role, full_name, phone")
+        .eq("firebase_uid", firebaseUid)
+        .eq("is_active", true)
+        .maybeSingle();
+
+      if (error) {
+        throw new Error("Database query failed verification: " + error.message);
+      }
+      userProfile = profile;
+
+      if (userProfile) {
+        const cacheTtl = Math.min(TTL_SECONDS, Math.max(1, tokenRemaining));
+        await setCachedProfile(firebaseUid, {
+          id: userProfile.id,
+          uid: userProfile.firebase_uid,
+          role: userProfile.role,
+          fullName: userProfile.full_name,
+          phone: userProfile.phone,
+          isActive: true,
+        }, cacheTtl);
+      }
     }
-    userProfile = profile;
   }
 
   if (!userProfile) {
@@ -462,6 +490,8 @@ export function requireRole(allowedRoles) {
     );
   }
 
+  const sanitizedAllowedRoles = allowedRoles.map(r => typeof r === "string" ? r.trim() : r);
+
   return (req, res, next) => {
     if (!req.user) {
       return res
@@ -471,18 +501,18 @@ export function requireRole(allowedRoles) {
 
     const userRole =
       typeof req.user.role === "string" ? req.user.role.trim() : "";
-    if (!allowedRoles.includes(userRole)) {
+    if (!sanitizedAllowedRoles.includes(userRole)) {
       const requestId = req.requestId || req.id;
       logger.warn(
         {
           event: "AUTH_DENIAL",
-          action: `requireRole(${allowedRoles.join(",")})`,
+          action: `requireRole(${sanitizedAllowedRoles.join(",")})`,
           userId: req.user.id,
           userRole: req.user.role,
-          allowedRoles,
+          allowedRoles: sanitizedAllowedRoles,
           requestId,
         },
-        `[Auth] Role denied: user=${req.user.id} role=${req.user.role} not in [${allowedRoles}]`,
+        `[Auth] Role denied: user=${req.user.id} role=${req.user.role} not in [${sanitizedAllowedRoles.join(",")}]`,
       );
 
       return res.status(403).json({
