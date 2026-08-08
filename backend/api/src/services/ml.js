@@ -37,6 +37,15 @@ function parseWeightKg(weight) {
   return match[2] === 'kg' ? value : value * 1000;
 }
 
+function parseWeightKgSafe(weight) {
+  const result = parseWeightKg(weight);
+  if (Number.isNaN(result)) {
+    logger.warn(`[ML] parseWeightKg received unparseable weight: ${weight}`);
+    return 0;
+  }
+  return result;
+}
+
 /**
  * Parse the free-text `dimensions` column of load_offers (e.g. '12 X 6 X 6 ft')
  * into length/width/height in meters. Falls back to 1 m per dimension when
@@ -369,7 +378,7 @@ export async function matchEnRouteLoads({
         length_m: dims.length,
         width_m: dims.width,
         height_m: dims.height,
-        pickup_deadline: new Date(Date.now() + ML_DEFAULT_PICKUP_LEAD_MS).toISOString(),
+        pickup_deadline: o.pickup_deadline ? new Date(o.pickup_deadline).toISOString() : new Date(Date.now() + ML_DEFAULT_PICKUP_LEAD_MS).toISOString(),
         payment_inr: Number(o.payment_inr || (o.freight_value ? o.freight_value / 100 : 0)),
       };
     })
@@ -391,7 +400,7 @@ export async function matchEnRouteLoads({
       const result = await matchDeadhead({
         driverDestination: { lat: currentLat, lng: currentLng },
         truckSpecs: specs,
-        arrivalTime: new Date(Date.now() + ML_DEFAULT_PICKUP_LEAD_MS).toISOString(),
+        arrivalTime: new Date().toISOString(),
         availableLoads,
       });
       recommendations = result.recommendations || [];
@@ -401,7 +410,7 @@ export async function matchEnRouteLoads({
     }
 
   // Haversine fallback — score by distance to pickup
-  if (!mlUsed) {
+  if (!mlUsed || recommendations.length === 0) {
     recommendations = offers
       .filter(o => o.pickup_lat && o.pickup_lng)
       .map(o => {
