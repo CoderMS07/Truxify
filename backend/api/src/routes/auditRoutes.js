@@ -199,7 +199,8 @@ router.get('/', authenticate, userLimiter, requirePolicy('admin:view-audit-logs'
 
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch audit logs.', details: err.message });
+    logger.error({ requestId: req.requestId }, "[AuditRoutes] Error:", err?.message || err);
+    res.status(500).json({ error: "Failed to fetch audit logs.", details: err?.message || err.message });
   }
 });
 
