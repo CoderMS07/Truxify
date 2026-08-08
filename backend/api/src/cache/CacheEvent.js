@@ -130,5 +130,3 @@ export function deserializeCacheEvent(json) {
     return null;
   }
 }
-
-export default { CacheEventType, createCacheEvent, serializeCacheEvent, deserializeCacheEvent };

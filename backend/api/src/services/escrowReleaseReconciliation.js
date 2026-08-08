@@ -39,7 +39,7 @@ export async function reconcilePendingEscrowReleases() {
     const instanceId = process.env.HOSTNAME || os.hostname();
     const { data: failedOrders, error } = await supabaseAdmin
       .from('orders')
-      .select('id, order_display_id, escrow_release_attempts, release_tx_hash')
+      .select('id, order_display_id, escrow_amount_wei, escrow_release_attempts, release_tx_hash')
       .eq('escrow_status', 'release_failed')
       .lt('escrow_release_attempts', MAX_RETRIES)
       .limit(50);
@@ -89,8 +89,31 @@ export async function reconcilePendingEscrowReleases() {
         const releaseAttemptedAt = new Date().toISOString();
         const releaseAttempts = (order.escrow_release_attempts || 0) + 1;
 
-        const { txHash, alreadyReleased } = await escrowRelease(order.order_display_id);
+        // The expected amount is passed so escrowRelease verifies the on-chain
+        // booking amount before submitting the release (defense-in-depth).
+        const result = await escrowRelease(order.order_display_id, order.escrow_amount_wei ?? null);
+        const { txHash, alreadyReleased } = result;
         if (!txHash && !alreadyReleased) {
+          if (result.code === 'DEPOSIT_AMOUNT_MISMATCH') {
+            // The on-chain amount will not change by retrying — record the
+            // reason and escalate to manual review instead of looping.
+            const releaseAttemptedAt = new Date().toISOString();
+            const releaseAttempts = (order.escrow_release_attempts || 0) + 1;
+            await supabaseAdmin
+              .from('orders')
+              .update({
+                escrow_release_attempts: releaseAttempts,
+                escrow_release_last_attempt_at: releaseAttemptedAt,
+                escrow_release_error: String(result.error).slice(0, 1000),
+                reconciled_by: null,
+                updated_at: releaseAttemptedAt,
+              })
+              .eq('id', order.id);
+            logger.error(
+              `[escrow-release-reconciliation] Order ${order.order_display_id} on-chain amount mismatch (${result.error}). Escalating to manual review.`
+            );
+            continue;
+          }
           throw new Error('Escrow release did not return a transaction hash');
         }
 

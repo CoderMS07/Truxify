@@ -10,6 +10,7 @@ import {
   submitEscrowCancelWithPenalty,
   confirmEscrowRefund,
   getEscrowBookingId,
+  resolveExpectedDepositAmount,
   paisaToMaticWei,
 } from '../escrow.js';
 import { computeOrderPricing } from '../../lib/pricing.js';
@@ -572,6 +573,13 @@ export class OrderLifecycleService {
           throw new DomainError(400, { error: 'Unable to compute new pricing for the requested drop.', details: pricingErr.message });
         }
 
+        // Rebalance the escrow booking alongside the re-priced total so the
+        // displayed price, the on-chain payout, and any refund all stay in
+        // sync. escrow_amount_wei is the authoritative payout figure (verified
+        // against at deposit time and on release), so it must track
+        // total_amount using the same canonical paisa→wei conversion the rest
+        // of the escrow pipeline uses.
+        const newAmountWei = paisaToMaticWei(pricing.totalAmount);
         const newAmountWei = BigInt(paisaToMaticWei(pricing.totalAmount));
 
         const updates = {
@@ -883,15 +891,25 @@ export class OrderLifecycleService {
         const customerWallet = customerProfile?.polygon_wallet_address ?? null;
 
         const bookingId = order.escrow_booking_id || getEscrowBookingId(order.order_display_id);
+
+        // Resolve the authoritative expected deposit amount (cross-checked
+        // against the server-written bid context) and reject the deposit if it
+        // cannot be pinned down or if the stored figures disagree.
+        const resolvedAmount = resolveExpectedDepositAmount(order);
+        if (resolvedAmount.error) {
+          throw new DomainError(422, { error: resolvedAmount.error, code: resolvedAmount.code });
+        }
+        const expectedAmountWei = resolvedAmount.expectedAmountWei;
+
         const result = await recordDepositTx(
           bookingId,
           txHash,
           customerWallet,
           order.escrow_driver_wallet ?? null,
-          order.escrow_amount_wei ?? null
+          expectedAmountWei
         );
 
-        if (result.error) throw new DomainError(422, { error: result.error });
+        if (result.error) throw new DomainError(422, { error: result.error, code: result.code });
 
         const { error: updateErr } = await this.orderRepository.updateOrder(orderId, {
           escrow_status: 'funded',
