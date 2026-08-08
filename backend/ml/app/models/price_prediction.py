@@ -3,7 +3,7 @@ import math
 import os
 import threading
 import time
-import requests
+import httpx
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -299,7 +299,8 @@ def _get_weather_multiplier(city: str) -> float:
         return 1.0
     try:
         url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}"
-        response = requests.get(url, timeout=2.0)
+        with httpx.Client(timeout=5.0) as client:
+        response = client.get(url, timeout=2.0)
         if response.status_code == 200:
             weather_main = response.json().get("weather", [{}])[0].get("main", "").lower()
             if weather_main in ["rain", "snow", "thunderstorm", "extreme", "squall", "tornado"]:
