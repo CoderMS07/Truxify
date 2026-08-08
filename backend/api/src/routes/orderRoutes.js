@@ -174,7 +174,6 @@ import {
   deliveryVerificationService,
   buildDepositTx,
   recordDepositTx,
-  submitEscrowRefund,
   confirmEscrowRefund,
 } from '../core/container.js';
 import { getEscrowBookingId, resolveExpectedDepositAmount, paisaToMaticWei } from '../services/escrow.js';
@@ -1185,6 +1184,14 @@ router.post(
       lng,
     }, 'Driver geofence confirm attempt');
 
+    const result = await orderLifecycleService.deliveryVerification.geofenceAutoConfirm({
+      orderId: req.params.id,
+      driverId: req.user.id,
+      driverLat: lat,
+      driverLng: lng,
+      geofenceRadiusM,
+    });
+
       'id, driver_id, customer_id',
     );
     orderValidationService.assertOrderFound(order);
@@ -1232,8 +1239,65 @@ router.post(
  *
  * This keeps the driver app URL surface clean while reusing identical logic.
  */
-router.post(
-  '/:id/confirm-otp',
+const handleDeliveryVerification = async (req, res) => {
+  try {
+    const order = await orderValidationService.findOrderByIdOrDisplayId(
+      req.params.id,
+      'id, driver_id, customer_id'
+    );
+    orderValidationService.assertOrderFound(order);
+    orderValidationService.assertDriverAssignment(order, req.user.id);
+
+    logger.info({
+      event: 'CONFIRM_OTP_ATTEMPT',
+      orderId: req.params.id,
+      driverId: req.user.id,
+    }, 'Driver OTP confirm attempt');
+
+    const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(
+      req.params.id,
+      req.user.id,
+      req.body.otp,
+      req.token ? createUserClient(req.token) : undefined
+    );
+
+    // Fetch the released amount to include in the response
+    const orderForAmount = await orderValidationService.findOrderByIdOrDisplayId(
+      req.params.id,
+      'total_amount, order_display_id'
+    );
+    const amountInr = orderForAmount?.total_amount
+      ? (orderForAmount.total_amount / 100).toFixed(0)
+      : null;
+
+    if (escrowUpdateFailed) {
+      logger.warn(`[confirm-otp] escrowUpdateFailed for order ${req.params.id} — reconciliation required`);
+      return res.status(202).json({
+        message: 'Delivery confirmed. Escrow payout is pending reconciliation — your payment will be credited shortly.',
+        payment_released: false,
+        reconciliation_required: true,
+        escrow_status: 'release_pending_reconciliation',
+        amount_inr: amountInr,
+      });
+    }
+
+    return res.json({
+      message: 'Delivery confirmed! Payment released to driver.',
+      payment_released: true,
+      escrow_status: 'released',
+      amount_inr: amountInr,
+      order_display_id: orderForAmount?.order_display_id,
+    });
+  } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
+    logger.error('[confirm-otp] Exception:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+const deliveryVerificationMiddleware = [
   authenticate,
   userLimiter,
   requirePolicy('delivery:verify'),
@@ -1242,6 +1306,7 @@ router.post(
   requireIdempotency(86400),
   validateParams(paramIdSchema),
   validateBody(verifyDeliverySchema),
+];
   async (req, res) => {
     try {
       const order = await orderValidationService.findOrderByIdOrDisplayId(
@@ -1287,22 +1352,8 @@ router.post(
         });
       }
 
-      return res.json({
-        message: 'Delivery confirmed! Payment released to driver.',
-        payment_released: true,
-        escrow_status: 'released',
-        amount_inr: amountInr,
-        order_display_id: orderForAmount?.order_display_id,
-      });
-    } catch (err) {
-      if (err instanceof DomainError) {
-        return res.status(err.status).json(err.payload);
-      }
-      logger.error('[confirm-otp] Exception:', err.message);
-      return res.status(500).json({ error: 'Internal Server Error' });
-    }
-  }
-);
+router.post('/:id/confirm-otp', deliveryVerificationMiddleware, handleDeliveryVerification);
+router.post('/:id/verify-delivery', deliveryVerificationMiddleware, handleDeliveryVerification);
 
 // ============================================================================
 // 14. RESEND DELIVERY OTP (DRIVER)
@@ -1382,7 +1433,7 @@ router.post('/:id/resend-otp', authenticate, userLimiter, resendOtpLimiter, requ
  *       429:
  *         description: Rate limited
  */
-router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, requirePolicy('order:change-drop'), auditLog({ action: 'order:change-drop', resourceType: 'order' }), validateParams(paramIdSchema), validateBody(changeDropSchema), async (req, res) => {
+router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, requirePolicy('order:change-drop'), auditLog({ action: 'order:change-drop', resourceType: 'order' }), requireIdempotency(86400), validateParams(paramIdSchema), validateBody(changeDropSchema), async (req, res) => {
   const { id: orderId } = req.params;
   const { drop_address, drop_lat, drop_lng } = req.body;
   try {
@@ -1556,7 +1607,7 @@ router.post('/:id/cancel', authenticate, userLimiter, requirePolicy('order:cance
  *       200:
  *         description: Deposit confirmed
  */
-router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('order:confirm-deposit'), auditLog({ action: 'order:confirm-deposit', resourceType: 'order' }), validateParams(paramIdSchema), validateBody(
+router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('order:confirm-deposit'), auditLog({ action: 'order:confirm-deposit', resourceType: 'order' }), requireIdempotency(86400), validateParams(paramIdSchema), validateBody(
   z.object({ txHash: z.string().regex(/^0x([A-Fa-f0-9]{64})$/, 'Invalid transaction hash') }),
 ), async (req, res) => {
   const orderId = req.params.id;
@@ -1645,7 +1696,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
         pending.driver_id,
         'Bid Accepted!',
         `Your bid for order ${pending.order_display_id} has been accepted. You are now assigned to this load.`,
-        'bid_accepted',
+        'order_update',
         { orderId, orderDisplayId: pending.order_display_id }
       ).catch((err) => logger.error(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
     };
@@ -1671,8 +1722,6 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
     if (result.alreadyFunded) {
       const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
         escrow_status: 'funded',
-        deposit_tx_hash: result.txHash,
-        escrow_deposited_at: new Date().toISOString(),
       }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
 
       if (!updateErr && updatedData) {
@@ -1688,8 +1737,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
 
     const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
       escrow_status: 'funded',
-      deposit_tx_hash: result.txHash,
-      escrow_deposited_at: new Date().toISOString(),
+      escrow_status: 'funded',
     }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
 
     if (updateErr) {
@@ -1969,7 +2017,7 @@ async function validateAndScanPodFile(file, label) {
 // PoD uploads are rate-limited per driver + order: each request may carry up to
 // 20MB and triggers a malware scan, so without a limiter a driver could exhaust
 // storage, RAM (multer memoryStorage), and scan CPU with an unbounded stream.
-router.post('/:id/pod', authenticate, requireRole(['driver']), podUploadLimiter, podUpload.fields([{ name: 'signature', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
+router.post('/:id/pod', authenticate, requireRole(['driver']), podUploadLimiter, requireIdempotency(86400), podUpload.fields([{ name: 'signature', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
   try {
     const orderId = req.params.id;
     const { data: order, error: orderErr } = await orderRepository.findOrderById(orderId);
@@ -2061,3 +2109,25 @@ router.post('/:id/pod', authenticate, requireRole(['driver']), podUploadLimiter,
 });
 
 export default router;
+
+// GET /api/orders/history
+router.get('/history', authenticate, userLimiter, requirePolicy('order:view-history'), async (req, res) => {
+  const { cursor } = req.query;
+
+  if (cursor !== undefined && (!Number.isInteger(Number(cursor)) || Number(cursor) < 1)) {
+    return res.status(400).json({ error: 'Invalid cursor parameter. Must be a valid positive integer.' });
+  }
+
+  const page = cursor ? parseInt(cursor, 10) : (parseInt(req.query.page, 10) || 1);
+  const limit = parseInt(req.query.limit, 10) || 20;
+
+  try {
+    const result = await orderLifecycleService.getOrderHistory(req.user.id, page, limit);
+    return res.json(result);
+  } catch (err) {
+    logger.error('Order history fetch error:', err);
+    return res.status(500).json({ error: 'Failed to fetch order history.' });
+  }
+});
+
+module.exports = router;

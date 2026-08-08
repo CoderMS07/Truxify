@@ -86,7 +86,7 @@ async function finalizeOrRevert(order, orderRepository) {
           pending.driver_id,
           'Bid Accepted!',
           `Your bid for order ${pending.order_display_id} has been accepted. You are now assigned to this load.`,
-          'bid_accepted',
+          'order_update',
           { orderId: order.id, orderDisplayId: pending.order_display_id }
         ).catch((err) => logger.error(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
       }
@@ -132,7 +132,7 @@ async function finalizeOrRevert(order, orderRepository) {
         order.customer_id,
         'Bid Acceptance Expired',
         `The escrow deposit for order ${order.order_display_id} was not completed in time, so the driver is no longer reserved. You can accept a bid again.`,
-        'BID_ACCEPTANCE_EXPIRED',
+        'order_update',
         { orderId: order.id }
       ).catch((err) => logger.error(`[FCM] Failed to notify customer of expired bid acceptance: ${err.message}`));
       logger.info(`[escrow-funding] Order ${order.order_display_id} reverted to pending (funding TTL expired).`);

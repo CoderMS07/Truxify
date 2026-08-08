@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { supabase } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import {
@@ -118,7 +119,7 @@ export async function uploadMaintenancePhotos(req, res) {
       }
 
       const ext = extensionForMime(verifiedMimeType);
-      const storagePath = `${driverId}/${ticketId}/${Date.now()}-${i}.${ext}`;
+      const storagePath = `${driverId}/${ticketId}/${Date.now()}-${randomUUID()}.${ext}`;
 
       const { error: storageError } = await supabase.storage
         .from('maintenance-photos')
