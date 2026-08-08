@@ -1,8 +1,4 @@
-
-﻿apiVersion: security.istio.io/v1beta1
-
 apiVersion: security.istio.io/v1beta1
-
 kind: AuthorizationPolicy
 metadata:
   name: truxify-auth-policy
@@ -27,6 +23,9 @@ spec:
         namespaces: ["istio-system"]
     to:
     - operation:
+        methods: ["GET", "POST", "PUT", "DELETE"]
+        paths: ["/api/*"]
+    - operation:
         methods: ["GET"]
         paths: ["/health", "/metrics"]---
 apiVersion: v1
@@ -46,3 +45,8 @@ spec:
   - from:
     - source:
         notPrincipals: ["cluster.local/ns/truxify/sa/api-service-account", "cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+        paths: ["/health", "/metrics"]
+
+  - to:
+    - operation:
+        ports: ["15020", "15021"]
