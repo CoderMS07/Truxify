@@ -679,7 +679,7 @@ export class OrderLifecycleService {
           throw new DomainError(409, { error: 'Cannot cancel: the shipment has already been picked up and is in transit.' });
         }
 
-        const requiresRefund = ['funded', 'refund_pending', 'refund_failed'].includes(currentOrder.escrow_status);
+        const requiresRefund = ['funding', 'funded', 'refund_pending', 'refund_failed'].includes(currentOrder.escrow_status);
         const penaltyBps = currentOrder.status === 'truck_assigned'
           ? 1000
           : ['arrived_pickup', 'picked_up', 'in_transit', 'delivered'].includes(currentOrder.status)
