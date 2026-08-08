@@ -336,7 +336,7 @@ export class OrderLifecycleService {
           offer.customer_id,
           'New Bid Received',
           `A driver has submitted a bid of ₹${bidAmount} for your order.`,
-          'new_bid',
+          'order_update',
           { loadOfferId, bidId: bid.id }
         ).catch(err => logger.error(`[FCM] Failed to notify customer of new bid: ${err.message}`));
 
@@ -957,7 +957,7 @@ export class OrderLifecycleService {
             pending.driver_id,
             'Bid Accepted!',
             `Your bid for order ${pending.order_display_id} has been accepted. You are now assigned to this load.`,
-            'bid_accepted',
+            'order_update',
             { orderId, orderDisplayId: pending.order_display_id }
           ).catch((err) => logger.error(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
         }

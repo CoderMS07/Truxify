@@ -782,7 +782,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
         pending.driver_id,
         'Bid Accepted!',
         `Your bid for order ${pending.order_display_id} has been accepted. You are now assigned to this load.`,
-        'bid_accepted',
+        'order_update',
         { orderId, orderDisplayId: pending.order_display_id }
       ).catch((err) => logger.error(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
     };
