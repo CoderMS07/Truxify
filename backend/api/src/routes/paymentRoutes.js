@@ -100,6 +100,7 @@ router.post(
   '/upi-intent',
   authenticate,
   lockLimiter,
+  requireIdempotency(3600),
   validateBody(upiIntentSchema),
   async (req, res) => {
     try {

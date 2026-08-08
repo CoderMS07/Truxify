@@ -519,7 +519,7 @@ router.post('/:id/resend-otp', authenticate, userLimiter, resendOtpLimiter, requ
  *       429:
  *         description: Rate limited
  */
-router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, requirePolicy('order:change-drop'), auditLog({ action: 'order:change-drop', resourceType: 'order' }), validateParams(paramIdSchema), validateBody(changeDropSchema), async (req, res) => {
+router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, requirePolicy('order:change-drop'), auditLog({ action: 'order:change-drop', resourceType: 'order' }), requireIdempotency(86400), validateParams(paramIdSchema), validateBody(changeDropSchema), async (req, res) => {
   const { id: orderId } = req.params;
   const { drop_address, drop_lat, drop_lng } = req.body;
   try {
@@ -693,7 +693,7 @@ router.post('/:id/cancel', authenticate, userLimiter, requirePolicy('order:cance
  *       200:
  *         description: Deposit confirmed
  */
-router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('order:confirm-deposit'), auditLog({ action: 'order:confirm-deposit', resourceType: 'order' }), validateParams(paramIdSchema), validateBody(
+router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('order:confirm-deposit'), auditLog({ action: 'order:confirm-deposit', resourceType: 'order' }), requireIdempotency(86400), validateParams(paramIdSchema), validateBody(
   z.object({ txHash: z.string().regex(/^0x([A-Fa-f0-9]{64})$/, 'Invalid transaction hash') }),
 ), async (req, res) => {
   const orderId = req.params.id;
@@ -1103,7 +1103,7 @@ async function validateAndScanPodFile(file, label) {
 // PoD uploads are rate-limited per driver + order: each request may carry up to
 // 20MB and triggers a malware scan, so without a limiter a driver could exhaust
 // storage, RAM (multer memoryStorage), and scan CPU with an unbounded stream.
-router.post('/:id/pod', authenticate, requireRole(['driver']), podUploadLimiter, podUpload.fields([{ name: 'signature', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
+router.post('/:id/pod', authenticate, requireRole(['driver']), podUploadLimiter, requireIdempotency(86400), podUpload.fields([{ name: 'signature', maxCount: 1 }, { name: 'photo', maxCount: 1 }]), async (req, res) => {
   try {
     const orderId = req.params.id;
     const { data: order, error: orderErr } = await orderRepository.findOrderById(orderId);
