@@ -1,3 +1,4 @@
+import os from 'os';
 import { supabaseAdmin } from '../config/db.js';
 import { escrowRelease, getEscrowBooking, getEscrowBookingId } from './escrow.js';
 import { acquireLock, releaseLock, renewLock, LockAcquisitionError } from '../lib/redisLock.js';
@@ -72,6 +73,7 @@ export async function reconcilePendingEscrowReleases(orderRepository) {
       return;
     }
 
+    const instanceId = process.env.HOSTNAME || os.hostname();
     const { data: pendingOrders, error } = await orderRepository.findPendingEscrowReleases();
     if (error) {
       logger.error('[escrow-release-reconciliation] Failed to load pending release orders:', error.message);
