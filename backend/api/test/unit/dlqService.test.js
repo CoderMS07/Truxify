@@ -398,3 +398,83 @@ describe('dlqService — helpers', () => {
     expect(getWorkerId()).toContain(String(process.pid));
   });
 });
+
+describe('dlqService — non-retryable (permanent) failures', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockState.rpcResult = { data: [], error: null };
+    mockState.insertResult = { error: null };
+    mockState.updateResultByStatus = {
+      resolved: { data: [{ id: 'row' }], error: null },
+      pending: { data: [{ id: 'row' }], error: null },
+      failed_permanently: { data: [{ id: 'row' }], error: null },
+    };
+    rpcCalls.length = 0;
+    updateCalls.length = 0;
+    insertCalls.length = 0;
+    backlogCalls.length = 0;
+  });
+
+  it('dead-letters a non-retryable error at enqueue time (failed_permanently, no retry)', async () => {
+    const error = new Error('Order mismatch');
+    error.retryable = false;
+    error.code = 'ORDER_MISMATCH';
+    const payload = { orderId: 'ORDER-9', txHash: '0xabc' };
+
+    expect(await dlqService.enqueueFailure('escrow', 'PaymentReleased', payload, error)).toBe(true);
+
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].payload.status).toBe('failed_permanently');
+    expect(insertCalls[0].payload.next_retry_at).toBeNull();
+    expect(insertCalls[0].payload.retry_count).toBe(0);
+    expect(insertCalls[0].payload.error_message).toContain('[ORDER_MISMATCH]');
+  });
+
+  it('keeps retryable errors on the retryable path at enqueue time', async () => {
+    const error = new Error('transient rpc error');
+
+    await dlqService.enqueueFailure('escrow', 'PaymentReleased', { orderId: 'ORDER-10', txHash: '0xabc' }, error);
+
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].payload.status).toBe('pending');
+    expect(insertCalls[0].payload.next_retry_at).not.toBeNull();
+  });
+
+  it('dead-letters a non-retryable processing error immediately, burning no retries', async () => {
+    const event = makeEvent({ event_type: 'PaymentReleased' });
+    mockState.rpcResult = { data: [event], error: null };
+    const procErr = new Error('PaymentReleased webhook requires a well-formed transaction hash');
+    procErr.retryable = false;
+    procErr.code = 'INVALID_TX_HASH';
+    const handler = vi.fn().mockRejectedValueOnce(procErr);
+
+    const summary = await dlqService.processQueue({ escrow: handler });
+
+    expect(summary.failed).toBe(1);
+    expect(summary.retried).toBe(0);
+    const fail = updateCalls.find(c => c.payload.status === 'failed_permanently');
+    expect(fail).toBeDefined();
+    expect(fail.payload.retry_count).toBe(1);
+    expect(fail.payload.error_message).toContain('[INVALID_TX_HASH]');
+    // No requeue happened: the row never returns to pending.
+    expect(updateCalls.filter(c => c.payload.status === 'pending')).toHaveLength(0);
+  });
+
+  it('never retries a permanent failure even with backoff headroom remaining', async () => {
+    const event = makeEvent({ retry_count: 0 });
+    mockState.rpcResult = { data: [event], error: null };
+    const procErr = new Error('replay detected');
+    procErr.retryable = false;
+    procErr.code = 'TX_HASH_REPLAY';
+    const handler = vi.fn().mockRejectedValueOnce(procErr);
+
+    const summary = await dlqService.processQueue({ escrow: handler });
+
+    expect(summary.failed).toBe(1);
+    expect(summary.retried).toBe(0);
+    expect(updateCalls.filter(c => c.payload.status === 'pending')).toHaveLength(0);
+    const fail = updateCalls.find(c => c.payload.status === 'failed_permanently');
+    expect(fail).toBeDefined();
+    expect(fail.payload.retry_count).toBe(1);
+  });
+});

@@ -91,6 +91,20 @@ describe('Webhook Routes — HMAC Signature Verification', () => {
     vi.doMock('../../src/services/webhook/dlqService.js', () => ({
       dlqService: { enqueueFailure: mockEnqueueFailure }
     }));
+    vi.doMock('../../src/services/webhook/escrowWebhookProcessor.js', () => ({
+      processEscrowWebhookEvent: vi.fn(async (eventType, payload = {}) => {
+        if (payload.simulateFailure) {
+          throw new Error('Simulated database lock or processing failure');
+        }
+        if (payload.permanentError) {
+          const err = new Error('Transaction 0x123 does not target the escrow contract 0xdeadbeef');
+          err.code = 'WRONG_CONTRACT';
+          err.retryable = false;
+          throw err;
+        }
+        return { received: true };
+      }),
+    }));
 
     const mod = await import('../../src/routes/webhookRoutes.js');
     webhookRouter = mod.default;
@@ -234,6 +248,50 @@ describe('Webhook Routes — HMAC Signature Verification', () => {
       expect(res.body.error).toBe(
         'Webhook processing failed and the event could not be queued for retry'
       );
+      expect(mockEnqueueFailure).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not leak internal processing details back to the webhook provider (retryable)', async () => {
+      const payload = {
+        eventType: 'PaymentReleased',
+        orderId: 'order-777',
+        txHash: `0x${'ab'.repeat(32)}`,
+        simulateFailure: true
+      };
+      const signature = signPayload(payload);
+
+      const res = await request(app)
+        .post('/api/webhooks/escrow')
+        .set('X-Webhook-Signature', signature)
+        .send(payload);
+
+      expect(res.status).toBe(202);
+      expect(res.body.status).toBe('queued_for_retry');
+      expect(res.body.error).toContain('order-777');
+      expect(res.body.error).not.toContain('Simulated database lock');
+      expect(res.body.error).not.toContain('database');
+    });
+
+    it('dead-letters permanent verification failures and exposes only a safe code', async () => {
+      const payload = {
+        eventType: 'PaymentReleased',
+        orderId: 'order-888',
+        txHash: `0x${'cd'.repeat(32)}`,
+        permanentError: true
+      };
+      const signature = signPayload(payload);
+
+      const res = await request(app)
+        .post('/api/webhooks/escrow')
+        .set('X-Webhook-Signature', signature)
+        .send(payload);
+
+      expect(res.status).toBe(202);
+      expect(res.body.status).toBe('dead_lettered');
+      expect(res.body.error).toContain('WRONG_CONTRACT');
+      // Contract addresses / raw provider details must never reach the client.
+      expect(res.body.error).not.toContain('0x123');
+      expect(res.body.error).not.toContain('0xdeadbeef');
       expect(mockEnqueueFailure).toHaveBeenCalledTimes(1);
     });
   });

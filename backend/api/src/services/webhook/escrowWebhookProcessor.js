@@ -1,6 +1,11 @@
-import { ethers } from 'ethers';
 import { supabaseAdmin } from '../../config/db.js';
 import logger from '../../middleware/logger.js';
+import {
+  normalizeTxHash,
+  verifyPolygonEscrowTransaction,
+  verifyPolygonWithdrawalTransaction,
+  EscrowVerificationError,
+} from './escrowVerification.js';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -8,6 +13,11 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 const RELEASE_RECONCILABLE_STATUSES = ['funded', 'release_failed'];
 // Escrow statuses a cancellation/refund webhook may legitimately reconcile.
 const REFUND_RECONCILABLE_STATUSES = ['funded', 'refund_pending', 'refund_failed'];
+const RELEASE_TARGET_STATUSES = [...RELEASE_RECONCILABLE_STATUSES, 'released'];
+const REFUND_TARGET_STATUSES = [...REFUND_RECONCILABLE_STATUSES, 'refunded'];
+
+const ORDER_COLUMNS =
+  'id, order_display_id, driver_id, escrow_status, release_tx_hash, refund_tx_hash, escrow_amount_wei, escrow_disabled, status';
 
 function requireDb() {
   if (!supabaseAdmin) {
@@ -22,12 +32,10 @@ async function findOrderByIdOrDisplayId(orderId) {
     throw new Error('Missing orderId in escrow webhook payload');
   }
 
-  const columns = 'id, order_display_id, driver_id, escrow_status, release_tx_hash, refund_tx_hash';
-
   if (UUID_REGEX.test(orderId)) {
     const { data, error } = await db
       .from('orders')
-      .select(columns)
+      .select(ORDER_COLUMNS)
       .eq('id', orderId)
       .maybeSingle();
     if (!error && data) {
@@ -37,7 +45,7 @@ async function findOrderByIdOrDisplayId(orderId) {
 
   const { data, error } = await db
     .from('orders')
-    .select(columns)
+    .select(ORDER_COLUMNS)
     .eq('order_display_id', orderId)
     .maybeSingle();
 
@@ -69,66 +77,77 @@ async function reconcileWalletLedger(order, txHash) {
   }
 }
 
-async function getPolygonProvider() {
-  const rpcUrl = process.env.POLYGON_RPC_URL;
-  if (!rpcUrl) {
-    throw new Error('POLYGON_RPC_URL is not configured for Polygon receipt validation');
+// Soft driver-wallet lookup for the on-chain correlation check. Never fatal:
+// a failed lookup just skips the soft check (bookingId correlation remains the
+// authoritative binding between a transaction and an order).
+async function findDriverPolygonWallet(driverId) {
+  if (!driverId) return null;
+  try {
+    const { data, error } = await requireDb()
+      .from('driver_details')
+      .select('polygon_wallet_address')
+      .eq('user_id', driverId)
+      .maybeSingle();
+    if (error || !data) return null;
+    return data.polygon_wallet_address || null;
+  } catch (err) {
+    logger.warn(`[Webhook] Failed to load driver polygon wallet for ${driverId}: ${err?.message}`);
+    return null;
   }
-  return new ethers.JsonRpcProvider(rpcUrl);
 }
 
-async function verifyPolygonTransactionReceipt(txHash) {
-  if (!txHash) {
-    throw new Error('Missing transaction hash for Polygon receipt validation');
-  }
-  logger.info(`[Webhook] Verifying Polygon transaction receipt for tx: ${txHash}`);
-
-  const provider = await getPolygonProvider();
-  const receipt = await provider.getTransactionReceipt(txHash);
-  if (!receipt) {
-    throw new Error(`Polygon transaction receipt not found for tx: ${txHash}`);
-  }
-
-  const status = receipt.status;
-  if (status !== 1 && status !== 1n) {
-    throw new Error(`Polygon transaction failed or reverted (status=${status}) for tx: ${txHash}`);
-  }
-
-  const escrowAddress = process.env.ESCROW_CONTRACT_ADDRESS;
-  if (escrowAddress && receipt.to) {
-    if (String(receipt.to).toLowerCase() !== String(escrowAddress).toLowerCase()) {
-      throw new Error(
-        `Transaction ${txHash} was not sent to the configured escrow contract (${escrowAddress})`
-      );
-    }
-  }
-
-  return true;
+function isUniqueViolation(error) {
+  if (!error) return false;
+  if (String(error.code) === '23505') return true;
+  return /duplicate key value violates unique constraint/i.test(error.message || '');
 }
 
-async function handlePaymentReleased(payload) {
-  if (payload.txHash) {
-    await verifyPolygonTransactionReceipt(payload.txHash);
+function assertEscrowEnabled(order) {
+  if (order.escrow_disabled) {
+    throw new EscrowVerificationError(
+      'ESCROW_DISABLED',
+      `Order ${order.order_display_id} is not escrow-backed; refusing to reconcile release webhook`,
+      { retryable: false },
+    );
   }
-  const order = await findOrderByIdOrDisplayId(payload.orderId);
-  const now = new Date().toISOString();
+  if (order.status === 'cancelled') {
+    throw new EscrowVerificationError(
+      'ORDER_CANCELLED',
+      `Order ${order.order_display_id} is cancelled; refusing to reconcile release webhook`,
+      { retryable: false },
+    );
+  }
+}
 
-  // Idempotency: a release event is only ever emitted once per booking
-  // on-chain, but the DLQ may re-deliver it after a crash. If the order is
-  // already released, the order-level effect already happened — still confirm
-  // the (idempotent) wallet ledger so a crash between the order update and the
-  // wallet update is healed, then short-circuit without re-applying effects.
-  if (order.escrow_status === 'released') {
-    await reconcileWalletLedger(order, payload.txHash || order.release_tx_hash);
-    logger.info(`[Webhook] Order ${order.order_display_id} already released — duplicate delivery ignored.`);
-    return;
+// Mark an order escrow-released after on-chain verification, protecting against
+// the same transaction hash being recorded against a different order (replay).
+async function releaseOrder({ order, txHash, now }) {
+  const db = requireDb();
+
+  // Pre-emptive replay check. The unique partial index on release_tx_hash is
+  // the durable guarantee; this gives a clean permanent error before any write.
+  const replayCheck = await db
+    .from('orders')
+    .select('id, order_display_id')
+    .eq('release_tx_hash', txHash)
+    .neq('id', order.id)
+    .maybeSingle();
+  if (replayCheck.error) {
+    throw new Error(`Failed to check release_tx_hash replay for ${order.order_display_id}: ${replayCheck.error.message}`);
+  }
+  if (replayCheck.data) {
+    throw new EscrowVerificationError(
+      'TX_HASH_REPLAY',
+      `Transaction ${txHash} is already recorded against order ${replayCheck.data.order_display_id || replayCheck.data.id}`,
+      { retryable: false },
+    );
   }
 
-  const { error } = await requireDb()
+  const { error } = await db
     .from('orders')
     .update({
       escrow_status: 'released',
-      release_tx_hash: payload.txHash || order.release_tx_hash || null,
+      release_tx_hash: txHash,
       escrow_released_at: now,
       escrow_release_error: null,
       updated_at: now,
@@ -137,11 +156,103 @@ async function handlePaymentReleased(payload) {
     .in('escrow_status', RELEASE_RECONCILABLE_STATUSES);
 
   if (error) {
+    if (isUniqueViolation(error)) {
+      throw new EscrowVerificationError(
+        'TX_HASH_REPLAY',
+        `Transaction ${txHash} is already recorded against another order`,
+        { retryable: false },
+      );
+    }
     throw new Error(`Failed to mark order ${order.order_display_id} as released: ${error.message}`);
   }
 
-  await reconcileWalletLedger(order, payload.txHash);
-  logger.info(`[Webhook] Order ${order.order_display_id} marked escrow released (tx: ${payload.txHash})`);
+  await reconcileWalletLedger(order, txHash);
+  logger.info(`[Webhook] Order ${order.order_display_id} marked escrow released after on-chain verification (tx: ${txHash})`);
+}
+
+async function handlePaymentReleased(payload) {
+  const order = await findOrderByIdOrDisplayId(payload.orderId);
+  const now = new Date().toISOString();
+
+  // Idempotent duplicate delivery: the release was already applied. Re-confirm
+  // the (idempotent) wallet ledger so a crash between the order update and the
+  // wallet update is healed, then short-circuit without re-applying effects.
+  if (order.escrow_status === 'released') {
+    const payloadHash = normalizeTxHash(payload.txHash);
+    if (order.release_tx_hash) {
+      if (payloadHash && payloadHash !== order.release_tx_hash.toLowerCase()) {
+        throw new EscrowVerificationError(
+          'TX_HASH_CONFLICT',
+          `Order ${order.order_display_id} is already released with a different transaction hash`,
+          { retryable: false },
+        );
+      }
+      await reconcileWalletLedger(order, order.release_tx_hash);
+      logger.info(`[Webhook] Order ${order.order_display_id} already released — duplicate delivery ignored.`);
+      return;
+    }
+    // Released but no hash on file (heal path): verify and persist the evidence.
+    if (!payloadHash) {
+      throw new EscrowVerificationError(
+        'INVALID_TX_HASH',
+        'Released order is missing release_tx_hash; a well-formed transaction hash is required to heal it',
+        { retryable: false },
+      );
+    }
+    assertEscrowEnabled(order);
+    const verification = await verifyPolygonEscrowTransaction({
+      txHash: payloadHash,
+      orderDisplayId: order.order_display_id,
+      driverWalletAddress: await findDriverPolygonWallet(order.driver_id),
+      expectedAmountWei: order.escrow_amount_wei,
+    });
+    const { error } = await requireDb()
+      .from('orders')
+      .update({ release_tx_hash: verification.txHash, updated_at: now })
+      .eq('id', order.id)
+      .eq('escrow_status', 'released');
+    if (error) {
+      if (isUniqueViolation(error)) {
+        throw new EscrowVerificationError(
+          'TX_HASH_REPLAY',
+          `Transaction ${verification.txHash} is already recorded against another order`,
+          { retryable: false },
+        );
+      }
+      throw new Error(`Failed to persist release_tx_hash for ${order.order_display_id}: ${error.message}`);
+    }
+    await reconcileWalletLedger(order, verification.txHash);
+    logger.info(`[Webhook] Order ${order.order_display_id} release_tx_hash healed after on-chain verification (tx: ${verification.txHash})`);
+    return;
+  }
+
+  // Active path: the order is not yet released. Refuse orders that cannot be
+  // released and require a well-formed hash BEFORE any on-chain or DB work.
+  assertEscrowEnabled(order);
+  if (!RELEASE_RECONCILABLE_STATUSES.includes(order.escrow_status)) {
+    throw new EscrowVerificationError(
+      'UNEXPECTED_ESCROW_STATUS',
+      `Order ${order.order_display_id} has escrow_status ${order.escrow_status}; cannot be released by PaymentReleased webhook`,
+      { retryable: false },
+    );
+  }
+  const txHash = normalizeTxHash(payload.txHash);
+  if (!txHash) {
+    throw new EscrowVerificationError(
+      'INVALID_TX_HASH',
+      'PaymentReleased webhook requires a well-formed 32-byte transaction hash (0x + 64 hex chars)',
+      { retryable: false },
+    );
+  }
+
+  const verification = await verifyPolygonEscrowTransaction({
+    txHash,
+    orderDisplayId: order.order_display_id,
+    driverWalletAddress: await findDriverPolygonWallet(order.driver_id),
+    expectedAmountWei: order.escrow_amount_wei,
+  });
+
+  await releaseOrder({ order, txHash: verification.txHash, now });
 }
 
 async function handleBookingCancelled(payload) {
@@ -151,6 +262,13 @@ async function handleBookingCancelled(payload) {
   if (order.escrow_status === 'refunded') {
     logger.info(`[Webhook] Order ${order.order_display_id} already refunded — duplicate delivery ignored.`);
     return;
+  }
+  if (!REFUND_RECONCILABLE_STATUSES.includes(order.escrow_status)) {
+    throw new EscrowVerificationError(
+      'UNEXPECTED_ESCROW_STATUS',
+      `Order ${order.order_display_id} has escrow_status ${order.escrow_status}; cannot be refunded by BookingCancelled webhook`,
+      { retryable: false },
+    );
   }
 
   const { error } = await requireDb()
@@ -176,51 +294,78 @@ async function handleBookingCancelled(payload) {
 async function handleWithdrawalSettled(payload) {
   const order = await findOrderByIdOrDisplayId(payload.orderId);
   const now = new Date().toISOString();
-  const txHash = payload.txHash || null;
+  const txHash = normalizeTxHash(payload.txHash);
 
   const isRefund = ['refund_pending', 'refund_failed'].includes(order.escrow_status);
-
-  // Idempotency: the same withdrawal webhook may be delivered more than once.
-  // If the order already reflects the intended terminal state, short-circuit.
   const targetStatus = isRefund ? 'refunded' : 'released';
+  const targetStatuses = isRefund ? REFUND_TARGET_STATUSES : RELEASE_TARGET_STATUSES;
+
+  // Idempotent duplicate delivery: the withdrawal was already reconciled.
   if (order.escrow_status === targetStatus) {
+    if (txHash && order.release_tx_hash && txHash !== order.release_tx_hash.toLowerCase()) {
+      throw new EscrowVerificationError(
+        'TX_HASH_CONFLICT',
+        `Order ${order.order_display_id} is already ${targetStatus} with a different transaction hash`,
+        { retryable: false },
+      );
+    }
     if (!isRefund) {
-      await reconcileWalletLedger(order, txHash);
+      await reconcileWalletLedger(order, txHash || order.release_tx_hash);
     }
     logger.info(`[Webhook] Order ${order.order_display_id} already ${targetStatus} — duplicate delivery ignored.`);
     return;
   }
 
-  // Persist the settlement hash under the column that matches the outcome, so
-  // the on-chain evidence survives on the order either way. Falls back to any
-  // hash already on file when the webhook payload omits one.
+  assertEscrowEnabled(order);
+  if (!targetStatuses.includes(order.escrow_status)) {
+    throw new EscrowVerificationError(
+      'UNEXPECTED_ESCROW_STATUS',
+      `Order ${order.order_display_id} has escrow_status ${order.escrow_status}; cannot be reconciled by withdrawal webhook`,
+      { retryable: false },
+    );
+  }
+  if (!txHash) {
+    throw new EscrowVerificationError(
+      'INVALID_TX_HASH',
+      'Withdrawal webhook requires a well-formed 32-byte transaction hash (0x + 64 hex chars)',
+      { retryable: false },
+    );
+  }
+
+  const verification = await verifyPolygonWithdrawalTransaction({ txHash });
+
   const settlement = isRefund
-    ? { escrow_status: 'refunded', refund_tx_hash: txHash || order.refund_tx_hash || null }
+    ? { escrow_status: 'refunded', refund_tx_hash: verification.txHash, updated_at: now }
     : {
         escrow_status: 'released',
-        release_tx_hash: txHash || order.release_tx_hash || null,
+        release_tx_hash: verification.txHash,
         escrow_released_at: now,
         escrow_release_error: null,
+        updated_at: now,
       };
 
   const { error } = await requireDb()
     .from('orders')
-    .update({
-      ...settlement,
-      updated_at: now,
-    })
+    .update(settlement)
     .eq('id', order.id)
-    .in('escrow_status', [...REFUND_RECONCILABLE_STATUSES, ...RELEASE_RECONCILABLE_STATUSES]);
+    .in('escrow_status', targetStatuses);
 
   if (error) {
+    if (!isRefund && isUniqueViolation(error)) {
+      throw new EscrowVerificationError(
+        'TX_HASH_REPLAY',
+        `Transaction ${verification.txHash} is already recorded against another order`,
+        { retryable: false },
+      );
+    }
     throw new Error(`Failed to settle order ${order.order_display_id} from withdrawal webhook: ${error.message}`);
   }
 
   if (!isRefund) {
-    await reconcileWalletLedger(order, txHash);
+    await reconcileWalletLedger(order, verification.txHash);
   }
 
-  logger.info(`[Webhook] Order ${order.order_display_id} settled as ${isRefund ? 'refunded' : 'released'} (tx: ${txHash})`);
+  logger.info(`[Webhook] Order ${order.order_display_id} settled as ${isRefund ? 'refunded' : 'released'} after on-chain verification (tx: ${verification.txHash})`);
 }
 
 const EVENT_HANDLERS = {

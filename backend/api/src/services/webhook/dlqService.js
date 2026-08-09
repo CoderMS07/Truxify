@@ -48,8 +48,14 @@ export function buildDedupeKey(provider, eventType, payload = {}) {
 
 function sanitizeError(error) {
   if (!error) return null;
+  const code = typeof error === 'object' && error !== null ? error.code : undefined;
   const message = typeof error === 'string' ? error : (error.message || String(error));
-  return message.slice(0, 1000);
+  const full = code ? `[${code}] ${message}` : message;
+  return full.slice(0, 1000);
+}
+
+function isPermanentFailure(error) {
+  return Boolean(error && typeof error === 'object' && error.retryable === false);
 }
 
 function isUniqueViolation(error) {
@@ -76,6 +82,7 @@ export const dlqService = {
    */
   async enqueueFailure(provider, eventType, payload, error) {
     try {
+      const permanent = isPermanentFailure(error);
       const { error: insertErr } = await dlqDb()
         .from('webhook_failures')
         .insert({
@@ -84,7 +91,10 @@ export const dlqService = {
           payload,
           error_message: sanitizeError(error),
           retry_count: 0,
-          next_retry_at: new Date(Date.now() + RETRY_BACKOFF[0] * 60000).toISOString(),
+          next_retry_at: permanent
+            ? null
+            : new Date(Date.now() + RETRY_BACKOFF[0] * 60000).toISOString(),
+          status: permanent ? 'failed_permanently' : 'pending',
           dedupe_key: buildDedupeKey(provider, eventType, payload),
         });
 
@@ -97,7 +107,11 @@ export const dlqService = {
         return false;
       }
 
-      logger.info(`[DLQ] Webhook failure enqueued successfully for ${provider} - ${eventType}`);
+      logger.info(
+        permanent
+          ? `[DLQ] Webhook failure dead-lettered (failed_permanently) for ${provider} - ${eventType}`
+          : `[DLQ] Webhook failure enqueued successfully for ${provider} - ${eventType}`,
+      );
       return true;
     } catch (err) {
       logger.error(`[DLQ] Critical error enqueueing webhook failure: ${err.message}`);
@@ -319,6 +333,14 @@ export const dlqService = {
     const newRetryCount = (event.retry_count ?? 0) + 1;
     const nextBackoffMin = RETRY_BACKOFF[newRetryCount];
     const now = Date.now();
+
+    // Non-retryable failures (malformed payload, order mismatch, replay, …)
+    // can never succeed on a retry, so dead-letter them immediately instead of
+    // burning retries and delaying operator visibility.
+    if (isPermanentFailure(procErr)) {
+      const owned = await this.failClaim(event.id, workerId, newRetryCount, procErr);
+      return owned ? 'permanent' : 'lost';
+    }
 
     if (nextBackoffMin === undefined) {
       const owned = await this.failClaim(event.id, workerId, newRetryCount, procErr);

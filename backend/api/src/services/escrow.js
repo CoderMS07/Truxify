@@ -891,4 +891,4 @@ async function verifyOnChainEscrowBalance(bookingId, expectedWei) {
   };
 }
 
-module.exports.verifyOnChainEscrowBalance = verifyOnChainEscrowBalance;
+export { verifyOnChainEscrowBalance };
