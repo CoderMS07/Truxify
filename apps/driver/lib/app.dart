@@ -15,6 +15,7 @@ import 'screens/past_trips_screen.dart';
 import 'models/app_models.dart';
 import 'theme/app_theme.dart';
 import 'widgets/app_page_route.dart';
+import 'widgets/offline_banner_overlay.dart';
 
 class TruxifyApp extends StatefulWidget {
   const TruxifyApp({super.key});
@@ -53,6 +54,9 @@ class _TruxifyAppState extends State<TruxifyApp> {
       controller: _controller,
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
+        builder: (context, child) {
+          return OfflineBannerOverlay(child: child!);
+        },
         onGenerateTitle: (context) => AppLocalizations.of(context)!.appTitle,
         theme: TruxifyTheme.light(),
         darkTheme: TruxifyTheme.dark(),

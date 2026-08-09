@@ -10,6 +10,9 @@ import 'core/firebase_config.dart';
 import 'package:truxify_driver/config/env.dart';
 import 'services/background_sync_service.dart';
 
+import 'package:provider/provider.dart';
+import 'providers/network_provider.dart';
+
 Future<void> main() async {
   // Ensure Flutter engine is initialized.
   WidgetsFlutterBinding.ensureInitialized();
@@ -69,7 +72,14 @@ Future<void> main() async {
 
   // Wrap runApp in a guarded zone to capture uncaught async errors.
   runZonedGuarded(() {
-    runApp(const TruxifyApp());
+    runApp(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider(create: (_) => NetworkProvider()),
+        ],
+        child: const TruxifyApp(),
+      ),
+    );
   }, (error, stackTrace) {
     CrashReportingService.captureException(
       error,
