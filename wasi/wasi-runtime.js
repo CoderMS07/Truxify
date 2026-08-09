@@ -52,23 +52,36 @@ class WASIRuntime {
         try {
             await this.initialize();
             
-            // Path traversal protection
-            const normalized = path.normalize(wasmPath).replace(/^(\.\.[\/\\])+/, '');
-            const resolvedPath = path.resolve(normalized);
+            // Path traversal protection: resolve the full path, collapse
+            // traversal segments, and require the result to stay inside an
+            // allowed root before the file is read.
+            const resolvedPath = path.resolve(path.normalize(wasmPath));
+            const allowedBaseDir = path.resolve(process.cwd());
+            if (!resolvedPath.startsWith(allowedBaseDir + path.sep) && resolvedPath !== allowedBaseDir) {
+                throw new Error('Security Error: Path traversal outside allowed runtime sandbox directory');
+            }
             if (!resolvedPath.endsWith('.wasm')) {
                 throw new Error('Security Error: Only .wasm files are permitted');
+            }
+
+            const withinAllowedRoot = this.capabilities.allowedPaths.some(p => {
+                const rootBase = path.resolve(path.normalize(p)).replace(/[\/\\]+$/, '');
+                return resolvedPath === rootBase || resolvedPath.startsWith(rootBase + path.sep);
+            });
+            if (!withinAllowedRoot) {
+                throw new Error(`Security Error: Access denied: ${wasmPath}`);
             }
             
             // Read WASM file
             const wasmBytes = fs.readFileSync(resolvedPath);
             
-            // Create WASI instance with capabilities
+            // Create WASI instance with capabilities. Never expose
+            // process.env to untrusted WASM, and do not preopen the working
+            // directory — the sandbox gets no host filesystem access by default.
             const wasi = new WASI({
                 args: [],
-                env: process.env,
-                preopens: {
-                    '/': './'
-                },
+                env: {},
+                preopens: {},
                 returnOnExit: true,
             });
             
@@ -188,16 +201,37 @@ class WASIRuntime {
         return await this.executeFunction(instanceId, 'wasi_get_current_dir');
     }
 
-    validatePath(path) {
-        const allowed = this.capabilities.allowedPaths.some(p => path.startsWith(p));
+    validatePath(requestedPath) {
+        // Path traversal protection: resolve the full path lexically
+        // (collapse `.`/`..` segments), then require the resolved path to
+        // stay inside an allowed root at a separator boundary. Embedded
+        // traversal such as `/tmp/truxify/../../etc/passwd` resolves outside
+        // every root and is rejected.
+        const normalized = path.normalize(requestedPath);
+        const allowed = this.capabilities.allowedPaths.some(p => {
+            const rootBase = path.normalize(p).replace(/[\/\\]+$/, '');
+            return normalized === rootBase || normalized.startsWith(rootBase + path.sep);
+        });
         if (!allowed) {
-            throw new Error(`Access denied: ${path}`);
+            throw new Error(`Access denied: ${requestedPath}`);
         }
         return true;
     }
 
     validateUrl(url) {
-        const allowed = this.capabilities.allowedDomains.some(d => url.includes(d));
+        let parsed;
+        try {
+            parsed = new URL(url);
+        } catch (err) {
+            throw new Error(`Invalid URL: ${url}`);
+        }
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+            throw new Error(`Invalid URL protocol: ${url}`);
+        }
+        const hostname = parsed.hostname.toLowerCase();
+        // Exact host match only — an "includes" check is bypassable with
+        // http://api.truxify.com.evil.com.
+        const allowed = this.capabilities.allowedDomains.some(d => hostname === d.toLowerCase());
         if (!allowed) {
             throw new Error(`Access denied: ${url}`);
         }
