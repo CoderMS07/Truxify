@@ -1,5 +1,5 @@
-const { authenticate } = require('../middleware/auth.middleware');
 import express from 'express';
+import { authenticate } from '../middleware/auth.js';
 import zkpService from '../services/zkp/zkp.service.js';
 import { LockAcquisitionError } from '../lib/redisLock.js';
 import { redisRateLimiter } from '../middleware/redisRateLimiter.js';
@@ -23,6 +23,7 @@ const zkpVerifyLimiter = redisRateLimiter({
   routeKey: 'zkp_verify',
   limit: Number(process.env.ZKP_RATE_LIMIT_MAX) || 5,
   windowMs: Number(process.env.ZKP_RATE_LIMIT_WINDOW_MS) || 60 * 60 * 1000,
+  failClosed: true,
 });
 
 /**
@@ -58,6 +59,9 @@ router.post('/verify', authenticate, zkpVerifyLimiter, async (req, res) => {
 
     if (!userId) {
       return res.status(400).json({ success: false, error: 'userId is required' });
+    }
+    if (userId !== req.user.id) {
+      return res.status(403).json({ success: false, error: 'Forbidden' });
     }
 
     const result = await zkpService.verifyDriver({
@@ -101,6 +105,9 @@ router.post('/verify', authenticate, zkpVerifyLimiter, async (req, res) => {
 router.get('/status/:userId', authenticate, async (req, res) => {
   try {
     const { userId } = req.params;
+    if (userId !== req.user.id) {
+      return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
     const verified = await zkpService.isVerified(userId);
     return res.status(200).json({ success: true, verified });
   } catch (error) {

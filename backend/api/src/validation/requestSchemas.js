@@ -249,6 +249,19 @@ export const earningsSummarySchema = z.object({
   period: z.enum(['weekly', 'monthly']).optional(),
 }).strict();
 
+export const updateDocumentStatusSchema = z.object({
+  status: z.enum(['Approved', 'Rejected', 'Pending']),
+  rejection_reason: z.string().optional()
+});
+
+export const syncWeightSchema = z.object({
+  truck_id: z.string().min(1, "Truck ID is required"),
+  axles: z.array(z.object({
+    position: z.string().min(1, "Axle position is required"),
+    pressure_psi: coerceNumber(z.number().positive("Pressure must be positive"))
+  })).min(1, "At least one axle reading is required")
+}).strict();
+
 // Indian vehicle registration plate: 2 letters, 2 digits, up to 3 letters, up to 4 digits
 // e.g. MH12AB1234 or DL01C1234
 const numberPlateRegex = /^[A-Z]{2}\d{2}[A-Z]{1,3}\d{1,4}$/;
@@ -285,7 +298,6 @@ export const updateProfileSchema = z.object({
   language: z.string().min(2, 'Invalid language code').max(10, 'Invalid language code').refine((v) => VALID_LANGUAGES.includes(v), { message: 'Unsupported language code' }).optional(),
   dark_mode: z.boolean().optional(),
   is_online: z.boolean().optional(),
-  verification_status: z.enum(['pending', 'verified', 'rejected']).optional(),
 }).strict();
 
 // ── Oracle & Verification schemas ───────────────────────────────────────

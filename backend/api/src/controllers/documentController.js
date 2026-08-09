@@ -15,6 +15,15 @@ const ALLOWED_DOCUMENT_TYPES = Object.freeze([
   'other',
 ]);
 
+const MIME_EXTENSION_MAP = Object.freeze({
+  'application/pdf': 'pdf',
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/webp': 'webp',
+  'image/heic': 'heic',
+});
+
 /**
  * Handles a driver KYC document upload. The file itself is validated
  * server-side by inspecting its magic bytes (see lib/documentValidation.js)
@@ -31,6 +40,13 @@ export async function uploadDriverDocument(req, res) {
 
     if (!req.file) {
       return res.status(400).json({ error: 'A document file is required' });
+    }
+
+    // Guard against oversized buffers before CPU/memory intensive operations
+    if (req.file.size > MAX_FILE_SIZE_BYTES || req.file.buffer?.length > MAX_FILE_SIZE_BYTES) {
+      return res.status(413).json({
+        error: `File size exceeds the maximum allowed limit of ${MAX_FILE_SIZE_BYTES / (1024 * 1024)}MB.`,
+      });
     }
 
     const documentType = req.body?.documentType;
@@ -50,14 +66,42 @@ export async function uploadDriverDocument(req, res) {
       throw validationError;
     }
 
+    // Malware Scanning Block with AbortController Timeout Guard
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), SCAN_TIMEOUT_MS);
+
     try {
-      const scanResult = await scanDocument(req.file.buffer, req.file.originalname);
+      // Pass signal to scanDocument if supported, and race against an abort promise
+      const scanPromise = scanDocument(req.file.buffer, req.file.originalname, {
+        signal: controller.signal,
+      });
+
+      const abortPromise = new Promise((_, reject) => {
+        controller.signal.addEventListener('abort', () => {
+          const timeoutErr = new Error('Malware scanning timed out');
+          timeoutErr.name = 'TimeoutError';
+          reject(timeoutErr);
+        });
+      });
+
+      const scanResult = await Promise.race([scanPromise, abortPromise]);
+
       if (!scanResult.clean) {
         return res.status(422).json({
           error: 'Uploaded document failed malware scanning.',
         });
       }
     } catch (scanError) {
+      if (scanError.name === 'TimeoutError' || scanError.name === 'AbortError') {
+        logger.error(
+          { driverId, documentType, timeoutMs: SCAN_TIMEOUT_MS },
+          '[DocumentController] Malware scanner timed out',
+        );
+        return res.status(504).json({
+          error: 'Malware scan service timed out. Please try again.',
+        });
+      }
+
       if (scanError instanceof MalwareScanError) {
         logger.warn(
           { driverId, documentType, reason: scanError.message },
@@ -68,6 +112,15 @@ export async function uploadDriverDocument(req, res) {
         });
       }
       throw scanError;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    const extension = MIME_EXTENSION_MAP[verifiedMimeType];
+    if (!extension) {
+      return res.status(422).json({
+        error: `Unsupported file extension for MIME type: ${verifiedMimeType}`,
+      });
     }
 
     const extension = verifiedMimeType === 'application/pdf' ? 'pdf'
@@ -89,27 +142,70 @@ export async function uploadDriverDocument(req, res) {
       return res.status(500).json({ error: 'Failed to store document' });
     }
 
-    const { data: record, error: insertError } = await supabase
-      .from('driver_documents')
-      .insert({
-        driver_id: driverId,
-        document_type: documentType,
-        storage_path: storagePath,
-        mime_type: verifiedMimeType,
-        status: 'pending_review',
-      })
-      .select('id, document_type, status, created_at')
-      .single();
+    let record;
+    let dbError;
 
-    if (insertError) {
-      logger.error('[DocumentController] Failed to record document metadata:', insertError.message);
+    if (existingDoc) {
+      // Update existing record (Supersede)
+      const { data: updatedRecord, error: updateErr } = await supabase
+        .from('driver_documents')
+        .update({
+          storage_path: storagePath,
+          mime_type: verifiedMimeType,
+          status: 'pending_review',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existingDoc.id)
+        .select('id, document_type, status, created_at')
+        .single();
+
+      record = updatedRecord;
+      dbError = updateErr;
+    } else {
+      // Insert new document record
+      const { data: insertedRecord, error: insertErr } = await supabase
+        .from('driver_documents')
+        .insert({
+          driver_id: driverId,
+          document_type: documentType,
+          storage_path: storagePath,
+          mime_type: verifiedMimeType,
+          status: 'pending_review',
+        })
+        .select('id, document_type, status, created_at')
+        .single();
+
+      record = insertedRecord;
+      dbError = insertErr;
+    }
+
+    if (dbError) {
+      logger.error('[DocumentController] Failed to record document metadata:', dbError.message);
       await supabase.storage.from('driver-documents').remove([storagePath]).catch((storageCleanErr) => {
         logger.error('[DocumentController] Failed to clean up document storage path:', storageCleanErr.message);
       });
+
+      // Handle Postgres unique constraint violation explicitly (HTTP 409 Conflict)
+      if (dbError.code === '23505') {
+        return res.status(409).json({
+          error: `A document of type '${documentType}' already exists for this driver.`,
+        });
+      }
+
       return res.status(500).json({ error: 'Failed to store document' });
     }
 
-    return res.status(201).json({
+    // Clean up old file from storage to prevent orphaned files
+    if (existingDoc?.storage_path) {
+      await supabase.storage
+        .from('driver-documents')
+        .remove([existingDoc.storage_path])
+        .catch((cleanupErr) => {
+          logger.warn('[DocumentController] Failed to delete superseded storage file:', cleanupErr.message);
+        });
+    }
+
+    return res.status(existingDoc ? 200 : 201).json({
       success: true,
       document: record,
     });
