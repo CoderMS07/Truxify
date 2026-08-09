@@ -321,8 +321,8 @@ describe("DeliveryVerificationService.verifyDelivery geofence gating", () => {
           .fn()
           .mockResolvedValueOnce({
             data: makeOrder({
-              total_amount: 375000,
-              escrow_amount_wei: 1500000000000000000n.toString(),
+              total_amount: 150000,
+              escrow_amount_wei: 600000000000000000n.toString(),
             }),
             error: null,
           })
@@ -341,7 +341,7 @@ describe("DeliveryVerificationService.verifyDelivery geofence gating", () => {
       driverId: "driver-1",
       otp: "123456",
     });
-    expect(escrowReleaseFn).toHaveBeenCalledWith("ORD-GEO", 1500000000000000000n);
+    expect(escrowReleaseFn).toHaveBeenCalledWith("ORD-GEO", 600000000000000000n);
     expect(repo.executeRpc).toHaveBeenCalled();
     expect(result.escrowUpdateFailed).toBe(false);
   });
@@ -356,8 +356,8 @@ describe("DeliveryVerificationService.verifyDelivery geofence gating", () => {
           .fn()
           .mockResolvedValueOnce({
             data: makeOrder({
-              total_amount: 375000,
-              escrow_amount_wei: 1500000000000000000n.toString(), // 1.5 ETH (matic equivalent)
+              total_amount: 150000,
+              escrow_amount_wei: 600000000000000000n.toString(),
             }),
             error: null,
           })
@@ -377,7 +377,7 @@ describe("DeliveryVerificationService.verifyDelivery geofence gating", () => {
       otp: "123456",
     });
     // paisaToMaticWei(150000) -> 1.5 * 10^18 -> 1500000000000000000n
-    expect(escrowReleaseFn).toHaveBeenCalledWith("ORD-GEO", 1500000000000000000n);
+    expect(escrowReleaseFn).toHaveBeenCalledWith("ORD-GEO", 600000000000000000n);
     expect(repo.executeRpc).toHaveBeenCalled();
     expect(result.escrowUpdateFailed).toBe(false);
   });
@@ -454,8 +454,8 @@ describe("DeliveryVerificationService.verifyDelivery geofence gating", () => {
             data: makeOrder({
               status: "payment_released",
               escrow_status: "funded",
-              total_amount: 375000,
-              escrow_amount_wei: 1500000000000000000n.toString(),
+              total_amount: 150000,
+              escrow_amount_wei: 600000000000000000n.toString(),
             }),
             error: null,
           })
@@ -474,7 +474,7 @@ describe("DeliveryVerificationService.verifyDelivery geofence gating", () => {
       driverId: "driver-1",
       otp: "123456",
     });
-    expect(escrowReleaseFn).toHaveBeenCalledWith("ORD-GEO", 1500000000000000000n);
+    expect(escrowReleaseFn).toHaveBeenCalledWith("ORD-GEO", 600000000000000000n);
     expect(repo.executeRpc).not.toHaveBeenCalled();
     expect(repo.updateOrder).toHaveBeenCalled();
     expect(result.escrowUpdateFailed).toBe(false);
