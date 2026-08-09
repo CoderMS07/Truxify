@@ -47,6 +47,8 @@ contract ZKPrivacy is Ownable, ReentrancyGuard, Pausable {
 
     mapping(bytes32 => bool) public nullifiers;
     mapping(bytes32 => bool) public commitments;
+    mapping(bytes32 => uint256) public commitmentAmounts;
+    mapping(bytes32 => bool) public spentCommitments;
     mapping(bytes32 => PrivateTransaction) public transactions;
     mapping(address => RatingStats) public driverRatings;
     mapping(bytes32 => bool) public usedNullifiers;
@@ -61,6 +63,7 @@ contract ZKPrivacy is Ownable, ReentrancyGuard, Pausable {
     // Events
     event CommitmentAdded(bytes32 indexed commitment, uint256 index);
     event TransactionProcessed(bytes32 indexed nullifier, address indexed recipient, uint256 amount);
+    event Deposit(bytes32 indexed commitment, uint256 amount, uint256 index);
     event ProofVerified(bytes32 indexed transactionId, bool isValid);
     event RatingSubmitted(address indexed driver, uint8 stars, bytes32 indexed nullifierHash);
 
@@ -156,6 +159,20 @@ contract ZKPrivacy is Ownable, ReentrancyGuard, Pausable {
         return isValid;
     }
 
+    // ============ Deposit ============
+
+    function deposit(bytes32 commitment) external payable whenNotPaused nonReentrant {
+        require(msg.value > 0, "Deposit amount must be > 0");
+        require(commitment != bytes32(0), "Invalid commitment");
+        require(!commitments[commitment], "Commitment already exists");
+
+        commitments[commitment] = true;
+        commitmentAmounts[commitment] = msg.value;
+
+        uint256 index = _insertCommitment(commitment);
+        emit Deposit(commitment, msg.value, index);
+    }
+
     function processPrivateTransaction(
         bytes32 nullifier,
         bytes32 commitment,
@@ -164,7 +181,9 @@ contract ZKPrivacy is Ownable, ReentrancyGuard, Pausable {
         Proof memory proof
     ) external nonReentrant whenNotPaused {
         require(!nullifiers[nullifier], "Nullifier already used");
-        require(!commitments[commitment], "Commitment already used");
+        require(commitments[commitment], "Commitment does not exist");
+        require(!spentCommitments[commitment], "Commitment already spent");
+        require(commitmentAmounts[commitment] >= amount, "Insufficient deposit amount");
         require(recipient != address(0), "Invalid recipient");
         require(amount > 0, "Amount must be > 0");
 
@@ -197,10 +216,7 @@ contract ZKPrivacy is Ownable, ReentrancyGuard, Pausable {
         });
 
         nullifiers[nullifier] = true;
-        commitments[commitment] = true;
-
-        // Insert into Merkle tree
-        _insertCommitment(commitment);
+        spentCommitments[commitment] = true;
 
         emit TransactionProcessed(nullifier, recipient, amount);
     }
