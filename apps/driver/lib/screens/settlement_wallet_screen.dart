@@ -33,6 +33,12 @@ class _SettlementWalletScreenState extends State<SettlementWalletScreen> {
 
   Future<void> _processPayout(FreightSmartContract contract) async {
     if (contract.status == 'RELEASED') return;
+    if (!contract.isGeofenceConfirmed || !contract.isPodUploaded) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('PoD upload and GPS arrival required before payout.')),
+      );
+      return;
+    }
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Verifying conditions and executing smart contract...')),
