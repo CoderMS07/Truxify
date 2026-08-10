@@ -196,7 +196,7 @@ const router = express.Router();
 const getOrderResource = async (req) => {
   const { id } = req.params;
   if (!id) return null;
-  return await orderService.getOrderById(id);
+  return await orderRepository.findOrderById(id);
 };
 
 
@@ -1193,4 +1193,4 @@ router.get('/:id', authenticate, userLimiter, requirePolicy('order:view', async 
   }
 });
 
-module.exports = router;
+export default router;
