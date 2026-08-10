@@ -475,11 +475,29 @@ router.get(
     return res.status(400).json({ error: stackableFilter.error });
   }
 
-  const VALID_TRUCK_TYPES = ['Open Body', 'Closed Body', 'Container', 'Refrigerated'];
+  const VALID_TRUCK_TYPES = ['Open Body', 'Flatbed', 'Closed Body', 'Refrigerated', 'Tanker', 'Container', 'Mini Truck'];
   if (truck_type !== undefined && truck_type !== '') {
     if (!VALID_TRUCK_TYPES.includes(truck_type)) {
       return res.status(400).json({ error: `Invalid truck_type. Must be one of: ${VALID_TRUCK_TYPES.join(', ')}` });
     }
+  }
+
+  const rawTruckTypes = req.query.truck_types || req.query.truckTypes;
+  let parsedTruckTypes = [];
+  if (rawTruckTypes) {
+    parsedTruckTypes = Array.isArray(rawTruckTypes)
+      ? rawTruckTypes
+      : String(rawTruckTypes).split(',').map(s => s.trim()).filter(Boolean);
+  } else if (truck_type) {
+    parsedTruckTypes = [truck_type];
+  }
+
+  const rawCargoCategories = req.query.cargo_categories || req.query.cargoCategories || req.query.cargo_types;
+  let parsedCargoCategories = [];
+  if (rawCargoCategories) {
+    parsedCargoCategories = Array.isArray(rawCargoCategories)
+      ? rawCargoCategories
+      : String(rawCargoCategories).split(',').map(s => s.trim()).filter(Boolean);
   }
 
   const VALID_MATERIAL_TYPES = ['Textile', 'Electronics', 'Food', 'Machinery', 'Furniture'];
@@ -512,6 +530,8 @@ router.get(
     isFragile: fragileFilter.value,
     isStackable: stackableFilter.value,
     truckType: truck_type || '',
+    truckTypes: parsedTruckTypes.join(','),
+    cargoCategories: parsedCargoCategories.join(','),
     minCapacity: minCapFilter.value ?? '',
     maxCapacity: maxCapFilter.value ?? '',
     materialType: material_type || '',
@@ -625,7 +645,7 @@ router.get(
     const driverIds = drivers.map(d => d.user_id);
 
     const [trucksRes, profilesRes] = await Promise.all([
-      supabase.from('trucks').select('id, name, truck_type, number_plate, max_capacity_tons').in('id', truckIds),
+      supabase.from('trucks').select('id, name, truck_type, number_plate, max_capacity_tons, supported_cargo_types').in('id', truckIds),
       supabase.from('profiles').select('id, full_name, avatar_url, is_digilocker_verified').in('id', driverIds),
     ]);
 
@@ -646,9 +666,13 @@ router.get(
       ? Math.round(routeEstimate.durationSeconds / 60)
       : null;
 
-    const results = drivers.map(d => {
+    let results = drivers.map(d => {
       const profile = profileMap[d.user_id] || {};
       const truck = truckMap[d.truck_id] || {};
+      const supportedCargo = Array.isArray(truck.supported_cargo_types)
+        ? truck.supported_cargo_types
+        : ['General', 'Fragile', 'Solid'];
+
       return {
         driver: profile.full_name || 'Unknown Driver',
         driverId: d.user_id,
@@ -657,7 +681,8 @@ router.get(
         truckNumber: truck.number_plate || '',
         capacity: truck.max_capacity_tons ? `${truck.max_capacity_tons} tonnes` : '',
         capacityTons: truck.max_capacity_tons || 0,
-        truckType: truck.truck_type || '',
+        truckType: truck.truck_type || 'Open Body',
+        supportedCargoTypes: supportedCargo,
         price: finalTotalAmount,
         baseFreight: finalBaseFreight,
         tollEstimate: finalTollEstimate,
@@ -667,6 +692,18 @@ router.get(
         isDigilockerVerified: profile.is_digilocker_verified || false,
       };
     });
+
+    if (parsedTruckTypes.length > 0) {
+      const normalizedTypes = parsedTruckTypes.map(t => t.toLowerCase());
+      results = results.filter(r => normalizedTypes.includes(r.truckType.toLowerCase()));
+    }
+
+    if (parsedCargoCategories.length > 0) {
+      const normalizedCategories = parsedCargoCategories.map(c => c.toLowerCase());
+      results = results.filter(r =>
+        r.supportedCargoTypes.some(sc => normalizedCategories.includes(sc.toLowerCase()))
+      );
+    }
 
     const filteredResults = results.filter(truck => {
       if (minCapFilter.value !== undefined && truck.capacityTons < minCapFilter.value) {
@@ -689,7 +726,7 @@ router.get(
       return true;
     });
 
-    const responseResults = filteredResults.map(({ capacityTons, truckType, ...rest }) => rest);
+    const responseResults = filteredResults.map(({ capacityTons, ...rest }) => rest);
 
     if (redisClient) {
       try {

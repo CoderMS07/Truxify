@@ -49,6 +49,8 @@ class _FindTrucksScreenState extends State<FindTrucksScreen> {
   };
 
   String _filterTruckType = 'Any';
+  Set<String> _selectedFilterTruckTypes = {};
+  Set<String> _selectedFilterCargoCategories = {};
   double _filterMinCapacity = 0;
   double _filterMaxCapacity = 25;
   String _filterMaterialType = 'Any';
@@ -332,6 +334,8 @@ class _FindTrucksScreenState extends State<FindTrucksScreen> {
       dropLat: _dropPoint?.latitude,
       dropLng: _dropPoint?.longitude,
       truckType: _filterTruckType != 'Any' ? _filterTruckType : null,
+      selectedTruckTypes: _selectedFilterTruckTypes.isNotEmpty ? _selectedFilterTruckTypes.toList() : null,
+      selectedCargoCategories: _selectedFilterCargoCategories.isNotEmpty ? _selectedFilterCargoCategories.toList() : null,
       minCapacity: _filterMinCapacity > 0 ? _filterMinCapacity : null,
       maxCapacity: _filterMaxCapacity < 25 ? _filterMaxCapacity : null,
       materialType: _filterMaterialType != 'Any' ? _filterMaterialType : null,
@@ -675,7 +679,8 @@ class _FindTrucksScreenState extends State<FindTrucksScreen> {
   }
 
   void _showFilterSheet() {
-    final truckTypes = ['Any', 'Open Body', 'Closed Body', 'Container', 'Refrigerated'];
+    final availableTruckTypes = ['Flatbed', 'Closed Body', 'Refrigerated', 'Tanker', 'Container', 'Mini Truck'];
+    final availableCargoCategories = ['General', 'Fragile', 'Perishable', 'Hazardous', 'Livestock', 'Oversized'];
     final materialTypes = ['Any', 'Textile', 'Electronics', 'Food', 'Machinery', 'Furniture'];
 
     showModalBottomSheet<void>(
@@ -691,128 +696,165 @@ class _FindTrucksScreenState extends State<FindTrucksScreen> {
             return Padding(
               padding: EdgeInsets.fromLTRB(
                   20, 10, 20, MediaQuery.of(context).viewInsets.bottom + 20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Center(
-                    child: Container(
-                      width: 40,
-                      height: 4,
-                      margin: const EdgeInsets.only(bottom: 20),
-                      decoration: BoxDecoration(
-                        color: TruxifyColors.hintText,
-                        borderRadius: BorderRadius.circular(2),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 20),
+                        decoration: BoxDecoration(
+                          color: TruxifyColors.hintText,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
                       ),
                     ),
-                  ),
-                  Text(
-                    'Filter Trucks',
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleMedium
-                        ?.copyWith(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 20),
-                  Text('Truck Type',
-                      style: Theme.of(context).textTheme.labelMedium),
-                  const SizedBox(height: 8),
-                  DropdownButtonFormField<String>(
-                    value: _filterTruckType,
-                    items: truckTypes
-                        .map((t) => DropdownMenuItem(value: t, child: Text(t)))
-                        .toList(),
-                    onChanged: (v) => setSheetState(() => _filterTruckType = v ?? 'Any'),
-                    decoration: InputDecoration(
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8)),
-                      contentPadding:
-                          const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    Text(
+                      'Filter Trucks',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.bold),
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  Text('Capacity (tonnes)',
-                      style: Theme.of(context).textTheme.labelMedium),
-                  const SizedBox(height: 8),
-                  RangeSlider(
-                    values: RangeValues(_filterMinCapacity, _filterMaxCapacity),
-                    min: 0,
-                    max: 25,
-                    divisions: 25,
-                    labels: RangeLabels(
-                      '${_filterMinCapacity.toInt()}t',
-                      '${_filterMaxCapacity.toInt()}t',
-                    ),
-                    onChanged: (v) => setSheetState(() {
-                      _filterMinCapacity = v.start;
-                      _filterMaxCapacity = v.end;
-                    }),
-                  ),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('${_filterMinCapacity.toInt()} tonnes',
-                          style: Theme.of(context).textTheme.bodySmall),
-                      Text('${_filterMaxCapacity.toInt()} tonnes',
-                          style: Theme.of(context).textTheme.bodySmall),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  Text('Material Type',
-                      style: Theme.of(context).textTheme.labelMedium),
-                  const SizedBox(height: 8),
-                  DropdownButtonFormField<String>(
-                    value: _filterMaterialType,
-                    items: materialTypes
-                        .map((m) => DropdownMenuItem(value: m, child: Text(m)))
-                        .toList(),
-                    onChanged: (v) => setSheetState(() => _filterMaterialType = v ?? 'Any'),
-                    decoration: InputDecoration(
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8)),
-                      contentPadding:
-                          const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: () {
+                    const SizedBox(height: 16),
+                    Text('Truck Type (Multi-select)',
+                        style: Theme.of(context).textTheme.labelMedium),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: availableTruckTypes.map((t) {
+                        final isSelected = _selectedFilterTruckTypes.contains(t);
+                        return FilterChip(
+                          label: Text(t),
+                          selected: isSelected,
+                          onSelected: (selected) {
                             setSheetState(() {
-                              _filterTruckType = 'Any';
-                              _filterMinCapacity = 0;
-                              _filterMaxCapacity = 25;
-                              _filterMaterialType = 'Any';
+                              if (selected) {
+                                _selectedFilterTruckTypes.add(t);
+                              } else {
+                                _selectedFilterTruckTypes.remove(t);
+                              }
                             });
                           },
-                          child: const Text('Reset'),
-                        ),
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 16),
+                    Text('Cargo Category (Multi-select)',
+                        style: Theme.of(context).textTheme.labelMedium),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: availableCargoCategories.map((c) {
+                        final isSelected = _selectedFilterCargoCategories.contains(c);
+                        return FilterChip(
+                          label: Text(c),
+                          selected: isSelected,
+                          onSelected: (selected) {
+                            setSheetState(() {
+                              if (selected) {
+                                _selectedFilterCargoCategories.add(c);
+                              } else {
+                                _selectedFilterCargoCategories.remove(c);
+                              }
+                            });
+                          },
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 16),
+                    Text('Capacity (tonnes)',
+                        style: Theme.of(context).textTheme.labelMedium),
+                    const SizedBox(height: 8),
+                    RangeSlider(
+                      values: RangeValues(_filterMinCapacity, _filterMaxCapacity),
+                      min: 0,
+                      max: 25,
+                      divisions: 25,
+                      labels: RangeLabels(
+                        '${_filterMinCapacity.toInt()}t',
+                        '${_filterMaxCapacity.toInt()}t',
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: () {
-                            setState(() {
-                              _hasActiveFilters =
-                                  _filterTruckType != 'Any' ||
-                                  _filterMaterialType != 'Any' ||
-                                  _filterMinCapacity > 0 ||
-                                  _filterMaxCapacity < 25;
-                            });
-                            Navigator.of(context).pop();
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: TruxifyColors.accent,
-                            foregroundColor: Colors.white,
+                      onChanged: (v) => setSheetState(() {
+                        _filterMinCapacity = v.start;
+                        _filterMaxCapacity = v.end;
+                      }),
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('${_filterMinCapacity.toInt()} tonnes',
+                            style: Theme.of(context).textTheme.bodySmall),
+                        Text('${_filterMaxCapacity.toInt()} tonnes',
+                            style: Theme.of(context).textTheme.bodySmall),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Text('Material Type',
+                        style: Theme.of(context).textTheme.labelMedium),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<String>(
+                      value: _filterMaterialType,
+                      items: materialTypes
+                          .map((m) => DropdownMenuItem(value: m, child: Text(m)))
+                          .toList(),
+                      onChanged: (v) => setSheetState(() => _filterMaterialType = v ?? 'Any'),
+                      decoration: InputDecoration(
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                        contentPadding:
+                            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () {
+                              setSheetState(() {
+                                _filterTruckType = 'Any';
+                                _selectedFilterTruckTypes.clear();
+                                _selectedFilterCargoCategories.clear();
+                                _filterMinCapacity = 0;
+                                _filterMaxCapacity = 25;
+                                _filterMaterialType = 'Any';
+                              });
+                            },
+                            child: const Text('Reset'),
                           ),
-                          child: const Text('Apply'),
                         ),
-                      ),
-                    ],
-                  ),
-                ],
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () {
+                              setState(() {
+                                _hasActiveFilters =
+                                    _filterTruckType != 'Any' ||
+                                    _selectedFilterTruckTypes.isNotEmpty ||
+                                    _selectedFilterCargoCategories.isNotEmpty ||
+                                    _filterMaterialType != 'Any' ||
+                                    _filterMinCapacity > 0 ||
+                                    _filterMaxCapacity < 25;
+                              });
+                              Navigator.of(context).pop();
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: TruxifyColors.accent,
+                              foregroundColor: Colors.white,
+                            ),
+                            child: const Text('Apply'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             );
           },

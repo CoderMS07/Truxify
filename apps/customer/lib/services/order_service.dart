@@ -218,6 +218,8 @@ class OrderService {
     bool isFragile = false,
     bool isStackable = true,
     String? truckType,
+    List<String>? selectedTruckTypes,
+    List<String>? selectedCargoCategories,
     double? minCapacity,
     double? maxCapacity,
     String? materialType,
@@ -231,6 +233,10 @@ class OrderService {
       'is_fragile': isFragile.toString(),
       'is_stackable': isStackable.toString(),
       if (truckType != null) 'truck_type': truckType,
+      if (selectedTruckTypes != null && selectedTruckTypes.isNotEmpty)
+        'truck_types': selectedTruckTypes.join(','),
+      if (selectedCargoCategories != null && selectedCargoCategories.isNotEmpty)
+        'cargo_categories': selectedCargoCategories.join(','),
       if (minCapacity != null) 'min_capacity': minCapacity.toString(),
       if (maxCapacity != null) 'max_capacity': maxCapacity.toString(),
       if (materialType != null) 'material_type': materialType,

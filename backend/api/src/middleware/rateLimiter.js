@@ -358,6 +358,72 @@ const adminWindowMs =
 const adminMaxRequests =
   Number(process.env.ADMIN_RATE_LIMIT_MAX_REQUESTS) || 50;
 
+export const verifyDeliveryLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: userKeyGenerator,
+  store: createStore("rl:verify-delivery:"),
+  skip: () => process.env.NODE_ENV === "test",
+  handler: sentryAlertHandler("verifyDeliveryLimiter"),
+});
+
+export const resendOtpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: userKeyGenerator,
+  store: createStore("rl:resend-otp:"),
+  skip: () => process.env.NODE_ENV === "test",
+  handler: sentryAlertHandler("resendOtpLimiter"),
+});
+
+export const changeDropLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: userKeyGenerator,
+  store: createStore("rl:change-drop:"),
+  skip: () => process.env.NODE_ENV === "test",
+  handler: sentryAlertHandler("changeDropLimiter"),
+});
+
+export const cancelOrderLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: userKeyGenerator,
+  store: createStore("rl:cancel-order:"),
+  skip: () => process.env.NODE_ENV === "test",
+  handler: sentryAlertHandler("cancelOrderLimiter"),
+});
+
+export const predictDemandLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: userKeyGenerator,
+  store: createStore("rl:predict-demand:"),
+  skip: () => process.env.NODE_ENV === "test",
+  handler: sentryAlertHandler("predictDemandLimiter"),
+});
+
+export const telemetryLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: userKeyGenerator,
+  store: createStore("rl:telemetry:"),
+  skip: () => process.env.NODE_ENV === "test",
+  handler: sentryAlertHandler("telemetryLimiter"),
+});
+
 export const adminRateLimiter = rateLimit({
   windowMs: adminWindowMs,
   max: adminMaxRequests,

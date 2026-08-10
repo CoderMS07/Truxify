@@ -144,7 +144,7 @@ import multer from 'multer';
 import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 
-import { bidLimiter, userLimiter, userKeyGenerator, podUploadLimiter, createStore } from '../middleware/rateLimiter.js';
+import { bidLimiter, userLimiter, userKeyGenerator, podUploadLimiter, verifyDeliveryLimiter, resendOtpLimiter, changeDropLimiter, cancelOrderLimiter, predictDemandLimiter, telemetryLimiter, createStore } from '../middleware/rateLimiter.js';
 import { mongoDb, supabase, redisClient, createUserClient, supabaseAdmin } from '../config/db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
@@ -183,7 +183,7 @@ import { computeOrderPricing } from '../lib/pricing.js';
 
 const router = express.Router();
 
-router.post('/api/deliveries/:id/geofence-confirm', (req, res) => {
+router.post('/api/deliveries/:id/geofence-confirm', async (req, res) => {
   const { driver_lat, driver_lng, geofence_radius_m } = req.body;
 
   const lat = parseFloat(driver_lat);
@@ -200,11 +200,12 @@ router.post('/api/deliveries/:id/geofence-confirm', (req, res) => {
     }
   }
 
-      // Verify the order exists and the requesting driver is assigned to it
-      const order = await orderValidationService.findOrderByIdOrDisplayId(
-        req.params.id,
-        'id, driver_id, customer_id'
-      );
+  try {
+    // Verify the order exists and the requesting driver is assigned to it
+    const order = await orderValidationService.findOrderByIdOrDisplayId(
+      req.params.id,
+      'id, driver_id, customer_id'
+    );
       orderValidationService.assertOrderFound(order);
       orderValidationService.assertDriverAssignment(order, req.user.id);
 
