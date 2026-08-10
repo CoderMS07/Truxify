@@ -63,6 +63,7 @@ import userRoutes from './routes/userRoutes.js'
 import voiceRoutes from './routes/voiceRoutes.js'
 import voiceAssistantRoutes from './routes/voice.routes.js'
 import demandRoutes from './routes/demandRoutes.js'
+import roadConditionRoutes from './routes/roadConditionRoutes.js'
 import escortWalletRoutes from './routes/escortWalletRoutes.js'
 
 // ============================================================================
@@ -498,6 +499,7 @@ app.use('/api/v1/admin/audit-logs', auditRoutes)
 app.use('/api/voice', voiceRoutes)
 app.use('/api/v1/voice', voiceAssistantRoutes)
 app.use('/api/demand-heatmap', demandRoutes)
+app.use('/api/road-conditions', roadConditionRoutes)
 app.use('/api/escorts/wallet', escortWalletRoutes)
 
 // ============================================================================
