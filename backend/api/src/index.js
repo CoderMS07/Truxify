@@ -38,6 +38,7 @@ import {
   securityHeaders,
   suspiciousRequests,
   responseSanitizer,
+  mongoSanitize,
 } from "./middleware/index.js";
 // Load REST routes
 import orderRoutes from './routes/orderRoutes.js'
@@ -400,6 +401,9 @@ app.use(
     limit: urlEncodedBodyLimit,
   })
 );
+
+// Prevent NoSQL Injection attacks on body, query, and params
+app.use(mongoSanitize());
 
 // ============================================================================
 // 🆕 OPENTELEMETRY TRACING MIDDLEWARE
