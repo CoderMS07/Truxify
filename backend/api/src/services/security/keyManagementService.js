@@ -14,10 +14,11 @@ class KeyManagementService {
     this.encryptionKeyCache = new Map();
   }
 
-  async deriveDeviceEncryptionKey(deviceId, masterSecret) {
+  async deriveDeviceEncryptionKey(deviceId, masterSecret, salt) {
     return measureExecution('KeyManagementService.deriveDeviceEncryptionKey', async () => {
+      const saltHex = salt || '';
       const secretHash = crypto.createHash('sha256').update(masterSecret).digest('hex');
-      const cacheKey = `${deviceId}:${secretHash}`;
+      const cacheKey = `${deviceId}:${secretHash}:${saltHex}`;
 
       if (this.encryptionKeyCache.has(cacheKey)) {
         return this.encryptionKeyCache.get(cacheKey);
@@ -28,7 +29,7 @@ class KeyManagementService {
           Buffer.from(deviceId),
           Buffer.from(masterSecret),
         ]),
-        Buffer.from('truxify-wallet-key-derivation'),
+        Buffer.from(saltHex || 'truxify-wallet-key-derivation'),
         100000,
         32,
         'sha256'
@@ -47,7 +48,8 @@ class KeyManagementService {
   async encryptPrivateKey(privateKey, deviceId, masterSecret) {
     return measureExecution('KeyManagementService.encryptPrivateKey', async () => {
       try {
-        const deviceKey = await this.deriveDeviceEncryptionKey(deviceId, masterSecret);
+        const salt = crypto.randomBytes(SALT_LENGTH);
+        const deviceKey = await this.deriveDeviceEncryptionKey(deviceId, masterSecret, salt.toString('hex'));
 
         const iv = crypto.randomBytes(IV_LENGTH);
         const cipher = crypto.createCipheriv(ALGORITHM, deviceKey, iv);
@@ -56,7 +58,6 @@ class KeyManagementService {
         encrypted += cipher.final('hex');
 
         const authTag = cipher.getAuthTag();
-        const salt = crypto.randomBytes(SALT_LENGTH);
 
         const encryptedData = {
           iv: iv.toString('hex'),
@@ -80,7 +81,7 @@ class KeyManagementService {
   async decryptPrivateKey(encryptedData, deviceId, masterSecret) {
     return measureExecution('KeyManagementService.decryptPrivateKey', async () => {
       try {
-        const deviceKey = await this.deriveDeviceEncryptionKey(deviceId, masterSecret);
+        const deviceKey = await this.deriveDeviceEncryptionKey(deviceId, masterSecret, encryptedData.salt);
 
         const iv = Buffer.from(encryptedData.iv, 'hex');
         const encryptedKey = Buffer.from(encryptedData.encryptedKey, 'hex');
