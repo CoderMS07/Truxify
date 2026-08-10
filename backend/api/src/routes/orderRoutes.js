@@ -187,6 +187,7 @@ import {
   confirmEscrowRefund,
 } from '../core/container.js';
 import { getEscrowBookingId, resolveExpectedDepositAmount, paisaToMaticWei } from '../services/escrow.js';
+
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
 import { computeOrderPricing } from '../lib/pricing.js';
 
@@ -599,6 +600,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
   }
 
   try {
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status, total_amount');
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, status, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet, pending_bid_acceptance');
     orderValidationService.assertOrderFound(order);
     orderValidationService.assertCustomerOwnership(order, req.user.id);
