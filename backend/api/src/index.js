@@ -96,6 +96,7 @@ import wasiRoutes from '../../../wasi/routes.js'
 import wasmRoutes from '../../../wasm/routes.js'
 import snykRoutes from '../../../snyk/routes.js'
 import liquibaseRoutes from '../../../database/liquibase/routes.js'
+import kedaRoutes from './routes/kedaRoutes.js'
 import earningsRouter from '../routes/earnings.js'
 import { initWebRTCSignaling, closeWebRTCSignaling } from './sockets/webrtc.js'
 
@@ -104,7 +105,7 @@ import { initWebRTCSignaling, closeWebRTCSignaling } from './sockets/webrtc.js'
 // ============================================================================
 import fraudRoutes from './routes/fraudRoutes.js'
 import { fraudDetectionMiddleware, networkAnalysisMiddleware } from './middleware/fraudMiddleware.js'
-import { authenticate } from './middleware/auth.js'
+import { authenticate, requireRole } from './middleware/auth.js'
 import fraudDetection from './services/fraud/FraudDetectionService.js'
 import headerSizeMonitor from './middleware/headerSizeMonitor.js';
 
@@ -497,6 +498,7 @@ app.use('/api/public', publicTrackingRoutes)
 app.use('/api/auth', authLimiter, authRoutes)
 app.use('/api/v1/admin', adminRoutes)
 app.use('/api/v1/admin/audit-logs', auditRoutes)
+app.use('/api/v1/admin', authenticate, requireRole(['admin']), kedaRoutes)
 app.use('/api/voice', voiceRoutes)
 app.use('/api/v1/voice', voiceAssistantRoutes)
 app.use('/api/demand-heatmap', demandRoutes)
