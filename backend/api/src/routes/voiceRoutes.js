@@ -64,13 +64,14 @@ router.post('/query', authenticate, userLimiter, upload.single('file'), async (r
     const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
     const host = req.headers?.host || 'localhost:3000';
     if (result.audio_url && result.audio_url.startsWith('/')) {
-      result.audio_url = `${protocol}://${host}${result.audio_url}`;
+      const baseUrl = process.env.PUBLIC_BASE_URL || `${protocol}://${host}`;
+      result.audio_url = `${baseUrl}${result.audio_url}`;
     }
     
     res.json(result);
   } catch (err) {
-    logger.error('Voice AI query failed:', err);
-    res.status(500).json({ error: err.message || 'Internal Server Error', stack: err.stack });
+    logger.error({ requestId: req.requestId, query: req.body?.query }, 'Voice AI query failed:', err);
+    res.status(500).json({ error: err.message || 'Internal Server Error' });
   }
 });
 
