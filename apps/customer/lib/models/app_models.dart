@@ -111,8 +111,10 @@ class StatCardData {
 class TruckResultData {
   const TruckResultData({
     required this.driver,
+    this.driverId,
     required this.rating,
     required this.truck,
+    this.truckId,
     required this.capacity,
     this.freeSpacePercent = 0,
     required this.price,
@@ -157,8 +159,10 @@ class TruckResultData {
 
     return TruckResultData(
       driver: json['driver'] as String? ?? 'Unknown Driver',
+      driverId: json['driverId'] as String? ?? json['driver_id'] as String?,
       rating: (json['rating'] as num?)?.toDouble() ?? 0.0,
       truck: json['truck'] as String? ?? 'Unknown Truck',
+      truckId: json['truckId'] as String? ?? json['truck_id'] as String?,
       capacity: json['capacity'] as String? ?? '',
       price: priceStr,
       eta: etaStr,
@@ -173,8 +177,10 @@ class TruckResultData {
   }
 
   final String driver;
+  final String? driverId;
   final double rating;
   final String truck;
+  final String? truckId;
   final String capacity;
   final int freeSpacePercent;
   final String price;
@@ -233,6 +239,10 @@ class HistoryOrderData {
     this.targetTemperatureMin,
     this.targetTemperatureMax,
     this.escrowStatus,
+    this.pickupLat,
+    this.pickupLng,
+    this.dropLat,
+    this.dropLng,
   });
 
   final String orderId;
@@ -256,6 +266,10 @@ class HistoryOrderData {
   final bool? isFragile;
   final String? specialRequirements;
   final String? escrowStatus;
+  final double? pickupLat;
+  final double? pickupLng;
+  final double? dropLat;
+  final double? dropLng;
 }
 
 class TimelineStepData {
