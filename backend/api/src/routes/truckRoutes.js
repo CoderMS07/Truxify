@@ -80,7 +80,7 @@
  */
 
 import express from 'express';
-import { supabase, mongoDb, redisClient } from '../config/db.js';
+import { supabase, supabaseAdmin, mongoDb, redisClient } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
@@ -92,9 +92,13 @@ import { predictPrice } from '../services/ml.js';
 import { getLiveTrafficMultiplier } from '../services/trafficService.js';
 import { escapeLike } from '../lib/escapeLike.js';
 import logger from '../middleware/logger.js';
-import crypto from 'crypto';
-import { cacheMiddleware } from '../middleware/cacheMiddleware.js';
-import { getTruckSearchVersion } from '../utils/cacheInvalidation.js';
+import { FuelAdvisorService } from '../services/fuelAdvisorService.js';
+import { WeatherService } from '../services/weatherService.js';
+
+const weatherService = new WeatherService({ logger });
+const fuelAdvisorService = new FuelAdvisorService({ supabase, weatherService, logger });
+
+const DEFAULT_TRUCK_TYPES = ['Open Body', 'Closed Body', 'Container', 'Refrigerated'];
 
 function sanitizeNumberPlate(plate) {
   if (!plate || typeof plate !== 'string') return '';
@@ -136,7 +140,7 @@ const router = express.Router();
  */
 router.get('/types', authenticate, userLimiter, (req, res) => {
   return res.json({
-    types: ['Open Body', 'Closed Body', 'Container', 'Refrigerated']
+    types: DEFAULT_TRUCK_TYPES
   });
 });
 function parseCapacityFilter(value, field) {
@@ -464,7 +468,7 @@ router.get(
   }
 
   if (numWeightTonnes <= 0 || numWeightTonnes > 50) {
-    return res.status(400).json({ error: 'Weight must be between 0 and 50 tonnes' });
+    return res.status(400).json({ error: 'Weight must be greater than 0 and at most 50 tonnes' });
   }
   const fragileFilter = parseBoolean(is_fragile);
   if (fragileFilter.error) {
@@ -605,7 +609,10 @@ router.get(
       return res.json([]);
     }
 
-    const { data: drivers, error: driversErr } = await supabase
+    // driver_details / trucks / profiles are RLS-protected with all anon
+    // privileges revoked, so the marketplace search must use the service-role
+    // client (scope is enforced by the search criteria, never the raw anon key).
+    const { data: drivers, error: driversErr } = await supabaseAdmin
       .from('driver_details')
       .select('user_id, rating, total_trips, completion_rate, truck_id')
       .eq('is_online', true)
@@ -625,8 +632,8 @@ router.get(
     const driverIds = drivers.map(d => d.user_id);
 
     const [trucksRes, profilesRes] = await Promise.all([
-      supabase.from('trucks').select('id, name, truck_type, number_plate, max_capacity_tons').in('id', truckIds),
-      supabase.from('profiles').select('id, full_name, avatar_url, is_digilocker_verified').in('id', driverIds),
+      supabaseAdmin.from('trucks').select('id, name, truck_type, number_plate, max_capacity_tons').in('id', truckIds),
+      supabaseAdmin.from('profiles').select('id, full_name, avatar_url, is_digilocker_verified').in('id', driverIds),
     ]);
 
     if (trucksRes.error) {
@@ -758,5 +765,75 @@ router.get('/:id/number', authenticate, userLimiter, validateParams(uuidParamSch
 });
 
 export default router;
+
+// ============================================================================
+// INTELLIGENT FUEL ADVISOR
+// ============================================================================
+/**
+ * @openapi
+ * /api/trucks/{id}/fuel-advisor:
+ *   get:
+ *     tags: [Trucks]
+ *     summary: Intelligent Fuel Advisor
+ *     description: Recommends the best biodiesel blend based on upcoming weather and recent engine load profile.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         description: Truck ID
+ *       - in: query
+ *         name: destination_lat
+ *         required: true
+ *         schema:
+ *           type: number
+ *         description: Latitude of destination
+ *       - in: query
+ *         name: destination_lng
+ *         required: true
+ *         schema:
+ *           type: number
+ *         description: Longitude of destination
+ *     responses:
+ *       200:
+ *         description: Recommendation object
+ *       400:
+ *         description: Missing or invalid destination coordinates
+ */
+router.get('/:id/fuel-advisor', authenticate, userLimiter, validateParams(uuidParamSchema), async (req, res) => {
+  const truckId = req.params.id;
+  const destinationLat = Number(req.query.destination_lat);
+  const destinationLng = Number(req.query.destination_lng);
+
+  if (!Number.isFinite(destinationLat) || !Number.isFinite(destinationLng)) {
+    return res.status(400).json({ error: 'Missing or invalid destination_lat or destination_lng' });
+  }
+
+  // Ensure truck belongs to the caller (if driver) or caller is admin
+  if (req.user.role === 'driver') {
+    const { data: truck, error: truckErr } = await supabase
+      .from('trucks')
+      .select('id')
+      .eq('id', truckId)
+      .eq('driver_id', req.user.id)
+      .single();
+
+    if (truckErr || !truck) {
+      return res.status(403).json({ error: 'Forbidden: Truck does not belong to you or does not exist' });
+    }
+  }
+
+  try {
+    const recommendation = await fuelAdvisorService.getFuelRecommendation(truckId, destinationLat, destinationLng);
+    return res.status(200).json(recommendation);
+  } catch (error) {
+    logger.error(`[fuel-advisor] Error computing recommendation for truck ${truckId}: ${error.message}`);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
 
 // Resolves #2053: Prevent race conditions in truck allocation
