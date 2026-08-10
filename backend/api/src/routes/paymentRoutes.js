@@ -305,9 +305,7 @@ router.post(
         });
       }
 
-      logger.info(`[payments] Deposit verified on-chain for ${order.order_display_id}`);
-
-      // 6. Update escrow_status → funded
+      // 5. Update escrow_status → funded
       const { error: updateErr } = await orderRepository.updateOrderWithFilter(
         order.id,
         {
