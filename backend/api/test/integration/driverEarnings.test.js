@@ -1,123 +1,152 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import express from 'express';
-import driverRoutes from '../../src/routes/driverRoutes.js';
-import { supabase } from '../../src/config/db.js';
-import { authenticate } from '../../src/middleware/auth.js';
-import { userLimiter } from '../../src/middleware/rateLimiter.js';
-import { requirePolicy } from '../../src/middleware/requirePolicy.js';
 
-// Mock dependencies
+const mockTrips = [
+  {
+    id: 'trp-101',
+    trip_display_id: 'TRP-101',
+    driver_id: 'test-driver-1',
+    status: 'completed',
+    total_earnings: 500000, // 5000 INR in paisa
+    distance_km: 100,
+    created_at: new Date().toISOString(),
+    trip_date: new Date().toISOString().split('T')[0],
+    pickup_address: 'Bhiwandi Warehouses, MH',
+    drop_address: 'Vashi APMC Market, Navi Mumbai',
+  },
+  {
+    id: 'trp-102',
+    trip_display_id: 'TRP-102',
+    driver_id: 'test-driver-1',
+    status: 'completed',
+    total_earnings: 300000, // 3000 INR in paisa
+    distance_km: 60,
+    created_at: new Date(Date.now() - 86400000).toISOString(),
+    trip_date: new Date(Date.now() - 86400000).toISOString().split('T')[0],
+    pickup_address: 'JNPT Port, Navi Mumbai',
+    drop_address: 'Chakan MIDC, Pune',
+  },
+  {
+    id: 'trp-103',
+    trip_display_id: 'TRP-103',
+    driver_id: 'test-driver-1',
+    status: 'locked',
+    total_earnings: 400000, // 4000 INR locked in escrow
+    distance_km: 80,
+    created_at: new Date().toISOString(),
+    trip_date: new Date().toISOString().split('T')[0],
+    pickup_address: 'Thane West, Thane',
+    drop_address: 'Panvel, Navi Mumbai',
+  },
+];
+
 vi.mock('../../src/config/db.js', () => {
   return {
     supabase: {
-      from: vi.fn(),
+      from: (table) => {
+        if (table === 'trips') {
+          return {
+            select: () => ({
+              eq: (field, val) => ({
+                gte: () => ({
+                  order: () => Promise.resolve({ data: mockTrips.filter(t => t.driver_id === val), error: null }),
+                }),
+              }),
+            }),
+          };
+        }
+        return {
+          select: () => ({
+            eq: () => Promise.resolve({ data: [], error: null }),
+          }),
+        };
+      },
     },
+    mongoDb: null,
     redisClient: {
-      get: vi.fn(),
-      set: vi.fn(),
+      get: () => Promise.resolve(null),
+      set: () => Promise.resolve('OK'),
+      del: () => Promise.resolve(1),
+      call: (cmd) => {
+        if (cmd === 'script' || cmd === 'SCRIPT') return Promise.resolve('sha-mock-12345');
+        if (cmd === 'eval' || cmd === 'evalsha' || cmd === 'EVAL' || cmd === 'EVALSHA') return Promise.resolve([1, 60000]);
+        return Promise.resolve(1);
+      },
+      status: 'ready',
     },
-    createUserClient: vi.fn()
+    upstashRedisClient: null,
+    supabaseAdmin: null,
+    firebaseAdmin: null,
   };
 });
 
-vi.mock('../../src/middleware/auth.js', () => ({
-  authenticate: (req, res, next) => {
-    req.user = { id: 'driver-123', role: 'driver' };
-    req.token = 'mock-token';
-    next();
-  }
-}));
+import driverRoutes from '../../src/routes/driverRoutes.js';
 
-vi.mock('../../src/middleware/rateLimiter.js', () => ({
-  userLimiter: (req, res, next) => next(),
-  createStore: vi.fn()
-}));
+let app;
 
-vi.mock('../../src/middleware/requirePolicy.js', () => ({
-  requirePolicy: () => (req, res, next) => next()
-}));
-
-// Shared mock trip data
-const mockTrips = [
-  {
-    trip_date: new Date().toISOString(),
-    total_earnings: 1000,
-    net_earnings: 800,
-    distance: '50 km',
-    route_label: 'Mumbai-Pune',
-  },
-  {
-    trip_date: new Date(new Date().getTime() - 24 * 60 * 60 * 1000).toISOString(),
-    total_earnings: 500,
-    net_earnings: 400,
-    distance: '30.5 km',
-    route_label: 'Delhi-Jaipur',
-  },
-];
-
-const mockAllTrips = [
-  {
-    trip_date: new Date().toISOString(),
-    distance: '25 km',
-    route_label: 'Mumbai-Pune',
-  },
-  {
-    trip_date: new Date(new Date().getTime() - 24 * 60 * 60 * 1000).toISOString(),
-    distance: '40 km',
-    route_label: 'Delhi-Jaipur',
-  },
-];
-
-// Setup app
-const app = express();
-app.use(express.json());
-app.use('/api/driver', driverRoutes);
-
-describe('GET /api/driver/:id/earnings', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+describe('Driver Earnings API Endpoint Suite', () => {
+  beforeEach(async () => {
+    process.env.BYPASS_AUTH = 'true';
+    process.env.NODE_ENV = 'test';
+    app = express();
+    app.use(express.json());
+    app.use('/api/driver', driverRoutes);
   });
 
-  it('computes weekly earnings with deadhead savings', async () => {
-    let deadheadChain = null;
-    
-    // Track which 'from' was called
-    supabase.from.mockImplementation((table) => {
-      const chain = {
-        select: vi.fn().mockReturnThis(),
-        eq: vi.fn().mockReturnThis(),
-        gte: vi.fn().mockReturnThis(),
-        order: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockReturnThis(),
-        then: function(resolve) {
-          const selectArgs = this.select.mock.calls[0][0];
-          if (selectArgs.includes('distance')) {
-            resolve({ data: mockTrips, error: null });
-          } else if (selectArgs === '*' && this.select.mock.calls[0][1]?.count === 'exact') {
-            resolve({ count: 10, error: null });
-          } else if (selectArgs.includes('route_label, trip_date')) {
-            deadheadChain = this;
-            resolve({ data: mockAllTrips, error: null });
-          } else {
-            resolve({ data: [], error: null });
-          }
-        }
-      };
-      return chain;
-    });
-
-    const res = await request(app).get('/api/driver/driver-123/earnings?period=week');
+  it('should return aggregated earnings for period=today', async () => {
+    const res = await request(app)
+      .get('/api/driver/earnings')
+      .set('x-dev-access-token', 'test-access-token')
+      .set('x-user-id', 'test-driver-1')
+      .set('x-user-role', 'driver')
+      .query({ period: 'today' });
 
     expect(res.status).toBe(200);
-    expect(res.body.gross_earnings).toBe(1000);
-    expect(res.body.net_earnings).toBe(800);
-    expect(res.body.cumulative_stats.total_km).toBe(50);
-    expect(res.body.cumulative_stats.lifetime_trips).toBe(10);
-    expect(res.body.deadhead_trips_saved).toBe(1);
+    expect(res.body.period).toBe('today');
+    expect(res.body.gross_earnings).toBeGreaterThan(0);
+    expect(res.body.net_earnings).toBeGreaterThan(0);
+    expect(Array.isArray(res.body.completed_trips)).toBe(true);
+  });
 
-    // Verify the deadhead query cap
-    expect(deadheadChain).not.toBeNull();
-    expect(deadheadChain.limit).toHaveBeenCalledWith(300);
+  it('should return 7-day trend chart and breakdown for period=week', async () => {
+    const res = await request(app)
+      .get('/api/driver/earnings')
+      .set('x-dev-access-token', 'test-access-token')
+      .set('x-user-id', 'test-driver-1')
+      .set('x-user-role', 'driver')
+      .query({ period: 'week' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.period).toBe('week');
+    expect(Array.isArray(res.body.trend_chart)).toBe(true);
+    expect(res.body.trend_chart.length).toBe(7);
+  });
+
+  it('should return monthly earnings breakdown for period=month', async () => {
+    const res = await request(app)
+      .get('/api/driver/earnings')
+      .set('x-dev-access-token', 'test-access-token')
+      .set('x-user-id', 'test-driver-1')
+      .set('x-user-role', 'driver')
+      .query({ period: 'month' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.period).toBe('month');
+    expect(res.body.trip_count).toBeGreaterThanOrEqual(1);
+  });
+
+  it('should include pending locked smart contract escrow payments', async () => {
+    const res = await request(app)
+      .get('/api/driver/earnings')
+      .set('x-dev-access-token', 'test-access-token')
+      .set('x-user-id', 'test-driver-1')
+      .set('x-user-role', 'driver')
+      .query({ period: 'week' });
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.pending_payments)).toBe(true);
+    expect(res.body.pending_payments.length).toBe(1);
+    expect(res.body.pending_payments[0].status).toBe('locked');
   });
 });

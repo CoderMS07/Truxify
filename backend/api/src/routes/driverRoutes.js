@@ -498,6 +498,143 @@ router.get('/earnings/summary', authenticate, userLimiter, requirePolicy('driver
   }
 });
 
+/**
+ * GET /api/driver/earnings or /api/driver/:driverId/earnings
+ * Driver Earnings Dashboard endpoint returning aggregated gross, fuel, toll, net earnings, 7-day trend chart, completed trips, and pending escrow payments.
+ */
+async function handleGetDriverEarnings(req, res) {
+  try {
+    const driverId = req.params.driverId || req.user?.id;
+    const period = (req.query.period || 'week').toLowerCase();
+
+    const now = new Date();
+    let startDate = new Date(now);
+
+    if (period === 'today' || period === 'day') {
+      startDate.setHours(0, 0, 0, 0);
+    } else if (period === 'week' || period === 'weekly') {
+      startDate.setDate(now.getDate() - 7);
+    } else if (period === 'month' || period === 'monthly') {
+      startDate.setDate(now.getDate() - 30);
+    } else {
+      return res.status(400).json({ error: 'Invalid period parameter. Allowed values: today, week, month' });
+    }
+
+    const startDateStr = startDate.toISOString().split('T')[0];
+
+    const { data: trips, error } = await supabase
+      .from('trips')
+      .select('*')
+      .eq('driver_id', driverId)
+      .gte('created_at', startDateStr)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      logger.error({ err: error, driverId }, '[earnings] Failed to fetch driver trips');
+      return res.status(500).json({ error: 'Failed to fetch driver earnings.' });
+    }
+
+    const completedTrips = (trips || []).filter(t => t.status === 'completed');
+    const lockedTrips = (trips || []).filter(t => t.status === 'locked' || t.status === 'in_transit' || t.escrow_status === 'locked');
+
+    let grossEarningsPaisa = 0;
+    let totalKm = 0;
+
+    completedTrips.forEach(t => {
+      const gross = Number(t.total_earnings || t.price_paisa || t.amount || 0);
+      grossEarningsPaisa += gross;
+      const km = Number(t.distance_km || t.distance || 0);
+      totalKm += km;
+    });
+
+    const grossEarningsRupees = Math.round(grossEarningsPaisa / 100);
+    const fuelCostRupees = Math.round(grossEarningsRupees * 0.45);
+    const estimatedTollRupees = Math.round((totalKm / 100) * 200);
+    const netEarningsRupees = Math.max(0, grossEarningsRupees - fuelCostRupees - estimatedTollRupees);
+
+    // Build 7-day trend chart array
+    const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const trendChart = [];
+
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().split('T')[0];
+      const dayLabel = daysOfWeek[d.getDay()];
+
+      const dayTrips = completedTrips.filter(t => {
+        const tDate = (t.trip_date || t.created_at || '').split('T')[0];
+        return tDate === dateStr;
+      });
+
+      const dayGrossPaisa = dayTrips.reduce((sum, t) => sum + Number(t.total_earnings || t.price_paisa || t.amount || 0), 0);
+      const dayGross = Math.round(dayGrossPaisa / 100);
+      const dayNet = Math.round(dayGross * 0.55);
+
+      trendChart.push({
+        day: dayLabel,
+        date: dateStr,
+        earnings: dayGrossPaisa,
+        net: dayNet,
+        trips: dayTrips.length,
+      });
+    }
+
+    const completedTripsList = completedTrips.map(t => {
+      const gross = Number(t.total_earnings || t.price_paisa || t.amount || 0);
+      const fuel = Math.round(gross * 0.45);
+      const net = Math.round(gross * 0.55);
+      return {
+        id: t.id || t.trip_display_id,
+        trip_display_id: t.trip_display_id || t.id,
+        route_label: t.route_label || `${t.pickup_address || 'Origin'} → ${t.drop_address || 'Destination'}`,
+        gross_earnings: gross,
+        estimated_fuel_cost: fuel,
+        net_earnings: net,
+        date: (t.trip_date || t.created_at || '').split('T')[0],
+        status: t.status,
+      };
+    });
+
+    const pendingPaymentsList = lockedTrips.map(t => ({
+      id: t.id || t.trip_display_id,
+      trip_display_id: t.trip_display_id || t.id,
+      amount: Number(t.total_earnings || t.price_paisa || t.amount || 0),
+      pickup_address: t.pickup_address || 'Pickup Point',
+      drop_address: t.drop_address || 'Drop Point',
+      status: 'locked',
+      reason: 'Smart contract payment locked in Polygon escrow awaiting delivery confirmation',
+    }));
+
+    return res.json({
+      period,
+      driver_id: driverId,
+      gross_earnings: grossEarningsRupees,
+      gross_earnings_paisa: grossEarningsPaisa,
+      fuel_cost: fuelCostRupees,
+      estimated_toll: estimatedTollRupees,
+      net_earnings: netEarningsRupees,
+      trip_count: completedTrips.length,
+      weekly_chart: trendChart,
+      trend_chart: trendChart,
+      trips: completedTripsList,
+      completed_trips: completedTripsList,
+      pending_payments: pendingPaymentsList,
+      cumulative_stats: {
+        total_km: totalKm,
+        avg_earning_per_km: totalKm > 0 ? (netEarningsRupees / totalKm) : 0,
+        lifetime_trips: completedTrips.length,
+      },
+    });
+  } catch (err) {
+    logger.error({ err }, '[earnings] Error in handleGetDriverEarnings');
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+}
+
+router.get('/earnings', authenticate, userLimiter, requirePolicy('driver:view-earnings'), handleGetDriverEarnings);
+router.get('/:driverId/earnings', authenticate, userLimiter, requirePolicy('driver:view-earnings'), handleGetDriverEarnings);
+
 // ============================================================================
 // 5. FETCH DRIVER TRIPS (DRIVER)
 // ============================================================================

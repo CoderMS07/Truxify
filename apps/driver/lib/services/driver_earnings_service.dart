@@ -330,9 +330,9 @@ class DriverEarningsService {
   Future<Map<String, dynamic>> fetchEarningsAnalytics({
     required String period,
   }) async {
-    if (driverId == null) return {};
-
-    final path = '/api/driver/$driverId/earnings?period=$period';
+    final path = driverId != null
+        ? '/api/driver/$driverId/earnings?period=$period'
+        : '/api/driver/earnings?period=$period';
 
     try {
       final decoded = await _apiClient.get(path);
