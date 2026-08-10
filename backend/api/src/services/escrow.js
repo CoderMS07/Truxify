@@ -886,7 +886,7 @@ export const lockPayment = escrowLockPayment;
 
 
 
-async function verifyOnChainEscrowBalance(bookingId, expectedWei) {
+export async function verifyOnChainEscrowBalance(bookingId, expectedWei) {
   const bookingOnChain = await escrowContract.bookings(bookingId);
   const onChainAmountBN = BigInt(bookingOnChain.amount.toString());
   const expectedWeiBN = BigInt(expectedWei);
@@ -896,5 +896,3 @@ async function verifyOnChainEscrowBalance(bookingId, expectedWei) {
     expectedAmount: expectedWeiBN.toString()
   };
 }
-
-module.exports.verifyOnChainEscrowBalance = verifyOnChainEscrowBalance;
