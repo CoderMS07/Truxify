@@ -226,23 +226,28 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
   }
 
   try {
-    // 1. Check Idempotency (Prevent double processing)
-    // We check if this exact batch has already been processed recently.
-    const { data: existingBatch } = await supabase
-      .from('processed_batches')
-      .select('id')
-      .eq('idempotency_key', idempotencyKey)
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    if (existingBatch) {
-      logger.info('[SyncEngine] Ignored duplicate batch:', idempotencyKey);
-      // Return 202 Accepted so the Flutter app marks them as synced locally
-      return res.status(202).json({ error: 'Batch already processed.' });
-    }
-
-    // 2. Validate per-event-type payloads and strip sensitive fields
+    // 1. Validate per-event-type payloads and strip sensitive fields
     for (const event of events) {
+      // Explicit coordinate validation for telemetry frames
+      const isTelemetry = event.type === 'gpsUpdate' || (event.payload && ('lat' in event.payload || 'lng' in event.payload));
+      if (isTelemetry) {
+        const lat = event.payload?.lat;
+        const lng = event.payload?.lng;
+        const numLat = Number(lat);
+        const numLng = Number(lng);
+
+        if (
+          lat === null || lat === undefined ||
+          lng === null || lng === undefined ||
+          Number.isNaN(numLat) || Number.isNaN(numLng) ||
+          numLat < -90 || numLat > 90 ||
+          numLng < -180 || numLng > 180
+        ) {
+          logger.warn(`[SyncEngine] Rejected batch: invalid coordinate data in event ${event.id}`);
+          return res.status(400).json({ error: 'Invalid coordinate data' });
+        }
+      }
+
       const result = validateEventPayload(event.type, event.payload || {});
       if (!result.success) {
         logger.warn('[SyncEngine] Invalid payload for event', event.id, '(type:', event.type, '):', result.error.issues);
@@ -253,8 +258,10 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
       }
     }
 
-    // 2b. Ownership check: events may only be attached to trips (orders) the
+    // 2. Ownership check: events may only be attached to trips (orders) the
     // caller owns or is assigned to. Never trust a client-supplied trip_id.
+    // This runs BEFORE the idempotency short-circuit below, otherwise a
+    // replayed batch would return 202 and skip authorization entirely.
     if (req.user.role !== 'admin') {
       const tripIds = [...new Set(events.map(event => event.trip_id).filter(Boolean))];
 
@@ -283,10 +290,22 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
       }
     }
 
-    const recordsToInsert = events.map(event => {
-      const lat = event.payload?.lat !== undefined ? Number(event.payload.lat) : null;
-      const lng = event.payload?.lng !== undefined ? Number(event.payload.lng) : null;
+    // 3. Check Idempotency (Prevent double processing)
+    // We check if this exact batch has already been processed recently.
+    const { data: existingBatch } = await supabase
+      .from('processed_batches')
+      .select('id')
+      .eq('idempotency_key', idempotencyKey)
+      .eq('user_id', userId)
+      .maybeSingle();
 
+    if (existingBatch) {
+      logger.info('[SyncEngine] Ignored duplicate batch:', idempotencyKey);
+      // Return 202 Accepted so the Flutter app marks them as synced locally
+      return res.status(202).json({ error: 'Batch already processed.' });
+    }
+
+    const recordsToInsert = events.map(event => {
       const safeMetadata = deepSanitize(event.payload, SENSITIVE_FIELDS);
 
       return {
@@ -295,8 +314,8 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
         trip_id: event.trip_id || null,
         event_type: event.type,
         event_timestamp: event.occurred_at,
-        latitude: lat,
-        longitude: lng,
+        latitude: event.payload?.lat !== undefined ? Number(event.payload.lat) : null,
+        longitude: event.payload?.lng !== undefined ? Number(event.payload.lng) : null,
         metadata: safeMetadata,
         created_at: new Date().toISOString()
       };
@@ -467,10 +486,29 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
       eventsQuery = eventsQuery.eq('event_type', type);
     }
 
-    if (min_lat !== undefined) eventsQuery = eventsQuery.gte('latitude', Number(min_lat));
-    if (max_lat !== undefined) eventsQuery = eventsQuery.lte('latitude', Number(max_lat));
-    if (min_lng !== undefined) eventsQuery = eventsQuery.gte('longitude', Number(min_lng));
-    if (max_lng !== undefined) eventsQuery = eventsQuery.lte('longitude', Number(max_lng));
+    const coordParams = [
+      { raw: min_lat, min: -90, max: 90, label: 'min_lat' },
+      { raw: max_lat, min: -90, max: 90, label: 'max_lat' },
+      { raw: min_lng, min: -180, max: 180, label: 'min_lng' },
+      { raw: max_lng, min: -180, max: 180, label: 'max_lng' },
+    ];
+    const parsedCoords = {};
+    for (const { raw, min, max, label } of coordParams) {
+      if (raw === undefined) continue;
+      if (typeof raw !== 'string' || raw.trim() === '') {
+        return res.status(400).json({ error: `Query parameter ${label} must be a number.` });
+      }
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+        return res.status(400).json({ error: `Query parameter ${label} must be a number within [${min}, ${max}].` });
+      }
+      parsedCoords[label] = parsed;
+    }
+
+    if (parsedCoords.min_lat !== undefined) eventsQuery = eventsQuery.gte('latitude', parsedCoords.min_lat);
+    if (parsedCoords.max_lat !== undefined) eventsQuery = eventsQuery.lte('latitude', parsedCoords.max_lat);
+    if (parsedCoords.min_lng !== undefined) eventsQuery = eventsQuery.gte('longitude', parsedCoords.min_lng);
+    if (parsedCoords.max_lng !== undefined) eventsQuery = eventsQuery.lte('longitude', parsedCoords.max_lng);
 
     const { data: events, error: eventsErr, count } = await eventsQuery
       .order('event_timestamp', { ascending: isAscending })
