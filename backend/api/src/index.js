@@ -1,3 +1,4 @@
+import wimBypassRouter from './routes/wimBypass.js';
 import express from 'express'
 import { corsMiddleware } from './middleware/cors.js'
 import { compressionMiddleware } from './config/compression.js'
@@ -47,6 +48,7 @@ import supportRoutes from './routes/supportRoutes.js'
 import profileRoutes from './routes/profileRoutes.js'
 import shipmentRoutes from './routes/shipmentRoutes.js'
 import loadRoutes from './routes/loadRoutes.js'
+import iotRoutes from './routes/iotRoutes.js'
 import deadheadRoutes from './routes/deadheadRoutes.js'
 import truckRoutes from './routes/truckRoutes.js'
 import authRoutes from './routes/authRoutes.js'
@@ -61,13 +63,14 @@ import paymentRoutes from './routes/paymentRoutes.js'
 import userRoutes from './routes/userRoutes.js'
 import voiceRoutes from './routes/voiceRoutes.js'
 import demandRoutes from './routes/demandRoutes.js'
-import mlRoutes from './routes/mlRoutes.js'
+import escortWalletRoutes from './routes/escortWalletRoutes.js'
 
 // ============================================================================
 // 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
 // ============================================================================
 import verificationRoutes from './routes/verificationRoutes.js'
 import oracleRoutes from './routes/oracleRoutes.js'
+import blockchainMonitoringRoutes from './routes/blockchainMonitoringRoutes.js'
 
 // ============================================================================
 // 🆕 GEOGRAPHIC SHARDING ROUTES
@@ -99,6 +102,7 @@ import { initWebRTCSignaling, closeWebRTCSignaling } from './sockets/webrtc.js'
 // ============================================================================
 import fraudRoutes from './routes/fraudRoutes.js'
 import { fraudDetectionMiddleware, networkAnalysisMiddleware } from './middleware/fraudMiddleware.js'
+import { authenticate } from './middleware/auth.js'
 import fraudDetection from './services/fraud/FraudDetectionService.js'
 import headerSizeMonitor from './middleware/headerSizeMonitor.js';
 
@@ -141,6 +145,8 @@ import {
   stopDlqWorker,
 } from './workers/dlqWorker.js'
 import { startStaleOrderWorker } from './workers/staleOrderWorker.js'
+import BlockchainMetrics from './services/blockchain/blockchainMetrics.js'
+import EscalationHandler from './services/blockchain/escalationHandler.js'
 import {
   startWithdrawalSettlementWorker,
   stopWithdrawalSettlementWorker
@@ -168,6 +174,12 @@ try {
 // INITIALIZE DISTRIBUTED CACHE MANAGER
 // ============================================================================
 CacheManager.init(redisClient)
+
+// ============================================================================
+// BLOCKCHAIN MONITORING — singletons shared with blockchainMonitoringRoutes
+// ============================================================================
+const blockchainMetrics = new BlockchainMetrics()
+const escalationHandler = new EscalationHandler({})
 
 // ============================================================================
 // STARTUP VALIDATION — crash fast, not at request time
@@ -235,9 +247,9 @@ if (!process.env.SHARD_NORTH_HOST || !process.env.SHARD_SOUTH_HOST ||
   logger.warn('⚠️ Shard hosts not fully configured. Using localhost defaults.')
 }
 
-if (!process.env.SHARD_NORTH_PASSWORD || !process.env.SHARD_SOUTH_PASSWORD || 
-    !process.env.SHARD_EAST_PASSWORD || !process.env.SHARD_WEST_PASSWORD) {
-  logger.warn('⚠️ Shard passwords not fully configured. Ensure all SHARD_*_PASSWORD env vars are set.')
+if (!process.env.SHARD_PASSWORD_NORTH || !process.env.SHARD_PASSWORD_SOUTH || 
+    !process.env.SHARD_PASSWORD_EAST || !process.env.SHARD_PASSWORD_WEST) {
+  logger.warn('⚠️ Shard passwords not fully configured. Ensure all SHARD_PASSWORD_* env vars are set.')
 }
 
 
@@ -449,7 +461,7 @@ app.use('/api/health', healthRoutes)
 app.use('/api/v1/health', healthLimiter)
 app.use('/api/v1/health', healthRoutes)
 app.use('/api/', globalLimiter)
-app.use('/api/v1/trips', fraudDetectionMiddleware, networkAnalysisMiddleware, tripRoutes)
+app.use('/api/v1/trips', authenticate, fraudDetectionMiddleware, networkAnalysisMiddleware, tripRoutes)
 app.use('/api/trips', tripRoutes)
 // ============================================================================
 // REQUEST-SCOPED CACHE — created per-request, destroyed after response.
@@ -460,8 +472,8 @@ app.use('/api', requestCacheMiddleware)
 // ============================================================================
 // REST API ROUTING
 // ============================================================================
-app.use('/api/orders', fraudDetectionMiddleware, networkAnalysisMiddleware, orderRoutes)
-app.use('/api/payments', fraudDetectionMiddleware, networkAnalysisMiddleware, paymentRoutes)
+app.use('/api/orders', authenticate, fraudDetectionMiddleware, networkAnalysisMiddleware, orderRoutes)
+app.use('/api/payments', authenticate, fraudDetectionMiddleware, networkAnalysisMiddleware, paymentRoutes)
 app.use('/api/driver', deadheadRoutes)
 app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
@@ -470,8 +482,10 @@ app.use('/api/driver', driverRoutes)
 // content-type enforcement, fraud detection and the /api rate limiter.
 // Registering it earlier silently bypasses every one of them.
 app.use('/api/earnings', earningsRouter)
+app.use('/api/routes', routeRoutes)
 app.use('/api/v1/shipment', shipmentRoutes)
 app.use('/api/loads', loadRoutes)
+app.use('/api/iot', iotRoutes)
 app.use('/api/support', supportRoutes)
 app.use('/api/profile', profileRoutes)
 app.use('/api/users', userRoutes)
@@ -486,7 +500,7 @@ app.use('/api/v1/admin', adminRoutes)
 app.use('/api/v1/admin/audit-logs', auditRoutes)
 app.use('/api/voice', voiceRoutes)
 app.use('/api/demand-heatmap', demandRoutes)
-app.use('/api/ml', mlRoutes)
+app.use('/api/escorts/wallet', escortWalletRoutes)
 
 // ============================================================================
 // WEBHOOK ROUTES
@@ -498,7 +512,24 @@ app.use('/api/webhooks', webhookRoutes)
 // ============================================================================
 app.use('/api/verify', verificationRoutes)
 app.use('/api/oracle', oracleRoutes)
+app.use('/api/blockchain', (req, _res, next) => {
+  req.blockchainMetrics = blockchainMetrics;
+  req.escalationHandler = escalationHandler;
+  next();
+}, blockchainMonitoringRoutes)
 app.use('/api/webhooks', webhookRoutes)
+
+// ============================================================================
+// 🆕 BLOCKCHAIN MONITORING ROUTES
+// Attach the monitoring services and service-role client per request so the
+// handlers never fall back to the anon-key client (RLS would hide all rows).
+// ============================================================================
+app.use('/api/blockchain', (req, _res, next) => {
+  req.blockchainMetrics = blockchainMetrics
+  req.escalationHandler = escalationHandler
+  req.supabase = supabaseAdmin
+  next()
+}, blockchainMonitoringRoutes)
 
 // 🆕 Oracle Health Check Endpoint
 app.get('/api/oracle/health', (req, res) => {
@@ -672,11 +703,11 @@ server.listen(PORT, () => {
     ? new OrderRepository(supabaseAdmin)
     : orderRepository;
   startEscrowRefundReconciliation(escrowReconciliationOrderRepository)
-  startEscrowReleaseReconciliation()
+  startEscrowReleaseReconciliation(escrowReconciliationOrderRepository)
   startEscrowFundingReconciliation(escrowReconciliationOrderRepository)
   startReputationReconciliation(orderRepository)
   startDlqWorker()
-  startStaleOrderWorker()
+  startStaleOrderWorker(escrowReconciliationOrderRepository)
   startDocumentExpiryWorker()
   startWithdrawalSettlementWorker()
 
@@ -826,3 +857,5 @@ app.use((err, req, res, next) => {
 
   next(err);
 });
+
+app.use('/api/wim', wimBypassRouter);
