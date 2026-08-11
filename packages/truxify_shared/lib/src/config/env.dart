@@ -81,7 +81,7 @@ class Env {
       errors.add('SUPABASE_ANON_KEY is not set');
     }
     if (apiBaseUrl.isEmpty) {
-      errors.add('API_BASE_URL is not set');
+      errors.add('TRUXIFY_API_BASE_URL is not set');
     }
 
     if (errors.isNotEmpty) {
