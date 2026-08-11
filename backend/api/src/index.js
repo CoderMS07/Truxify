@@ -521,6 +521,8 @@ app.use('/api/ml', mlRoutes)
 // 🆕 BLOCKCHAIN MONITORING ROUTES
 // Attach the monitoring services and service-role client per request so the
 // handlers never fall back to the anon-key client (RLS would hide all rows).
+// NOTE: /api/blockchain must be mounted exactly once — a duplicate mount
+// registered earlier shadows this one and leaves req.supabase undefined.
 // ============================================================================
 app.use('/api/blockchain', (req, _res, next) => {
   req.blockchainMetrics = blockchainMetrics
