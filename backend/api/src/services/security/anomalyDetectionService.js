@@ -256,7 +256,7 @@ class AnomalyDetectionService {
 
   async logAnomalies(userId, walletAddress, anomalies) {
     try {
-      await supabase
+      await (supabaseAdmin || supabase)
         .from('anomaly_log')
         .insert([{
           user_id: userId,
@@ -294,7 +294,7 @@ class AnomalyDetectionService {
 
   async lockAccount(userId, walletAddress, reason, anomalies) {
     try {
-      await supabase
+      await (supabaseAdmin || supabase)
         .from('wallet_locks')
         .insert([{
           user_id: userId,
@@ -313,7 +313,7 @@ class AnomalyDetectionService {
 
   async unlockAccount(userId, walletAddress) {
     try {
-      await supabase
+      await (supabaseAdmin || supabase)
         .from('wallet_locks')
         .update({ unlocked_at: new Date().toISOString() })
         .eq('user_id', userId)
