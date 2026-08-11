@@ -32,6 +32,7 @@ vi.mock('../../src/middleware/logger.js', () => ({
 
 vi.mock('../../src/config/db.js', () => ({
   supabase: { from: vi.fn() },
+  supabaseAdmin: { from: vi.fn() },
 }));
 
 import AnomalyDetectionService, { ANOMALY_THRESHOLDS, ANOMALY_SEVERITY } from '../../src/services/security/anomalyDetectionService.js';
