@@ -21,7 +21,7 @@ class EdgeRuntime {
         if (this.isInitialized) return;
 
         try {
-            const wasmPath = process.env.WASM_MODULE_PATH || './wasm/truxify_wasm.wasm';
+            const wasmPath = process.env.WASM_MODULE_PATH || './wasm/truxify_wasm_routing.wasm';
             if (fs.existsSync(wasmPath)) {
                 const wasmBytes = fs.readFileSync(wasmPath);
                 const wasi = new WASI({
@@ -75,7 +75,7 @@ class EdgeRuntime {
                             return selected;
                         },
                         calculate_eta: (distance, speed, trafficFactor) =>
-                            distance / (speed * (1.0 - (trafficFactor || 0))),
+                            distance / (speed * Math.max(1.0 - (trafficFactor || 0), 0.1)),
                         filter_drivers: (drivers, minRating) =>
                             (drivers || []).filter((d) => d.status !== 'offline' && d.rating >= (minRating || 0)),
                         aggregate_prices: (prices) =>
@@ -146,7 +146,7 @@ class EdgeRuntime {
             }
         `;
 
-            const wasmPath = process.env.WASM_MODULE_PATH || './wasm/truxify_wasm.wasm';
+            const wasmPath = process.env.WASM_MODULE_PATH || './wasm/truxify_wasm_routing.wasm';
 
             const worker = new Worker(workerCode, {
                 eval: true,

@@ -27,6 +27,7 @@ vi.mock('../../src/core/container.js', () => ({
 vi.mock('../../src/middleware/auth.js', () => ({
   authenticate: (req, res, next) => next(),
   requireRole: () => (req, res, next) => next(),
+  requirePolicy: () => (req, res, next) => next(),
 }));
 
 vi.mock('../../src/middleware/rateLimiter.js', () => ({
