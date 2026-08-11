@@ -1,26 +1,95 @@
 import { WebSocketServer } from 'ws';
-import { mongoDb, redisClient, firebaseAdmin } from '../config/db.js';
+import { mongoDb, redisClient, firebaseAdmin, supabase } from '../config/db.js';
+import jwt from 'jsonwebtoken';
 
 // In-memory mapping of active client subscriptions
 const trackingSubscriptions = new Map();
 
 // =====================================================================
-// 📦 EXTRA STORAGE & BUFFER CONFIGURATIONS (#269)
+// EXTRA STORAGE & BUFFER CONFIGURATIONS (#269)
 // =====================================================================
+const MAX_BUFFER_SIZE = 5000;
+const BUFFER_WARN_THRESHOLD = 0.5;
+const BUFFER_CRIT_THRESHOLD = 0.8;
+const BUFFER_MONITOR_INTERVAL_MS = 30000;
 let telemetryWriteBuffer = [];
-const BUFFER_FLUSH_INTERVAL_MS = 20000; 
+const BUFFER_FLUSH_INTERVAL_MS = 20000;
+let flushBackoffMs = 1000;
 let isSchedulerActive = false;
+let telemetryFlushTimeout = null;
+let wsServer = null;
+let wsHeartbeatInterval = null;
+let telemetryMonitorInterval = null;
+
+const WS_UPGRADE_RATE_LIMIT = 5;
+const WS_UPGRADE_RATE_WINDOW_SECONDS = 60;
+const MAX_MSG_PER_SECOND = 10;
+const messageRateTracker = new WeakMap();
+
+function getClientIp(request) {
+  const forwardedFor = request.headers?.['x-forwarded-for'];
+
+  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
+    return forwardedFor.split(',')[0].trim();
+  }
+
+  return request.socket?.remoteAddress || request.connection?.remoteAddress || 'unknown';
+}
+
+export async function isWebSocketUpgradeAllowed(request) {
+  if (!redisClient) {
+    return true;
+  }
+
+  const ipAddress = getClientIp(request);
+  const key = `ws:upgrade:${ipAddress}`;
+
+  try {
+    const attempts = await redisClient.incr(key);
+
+    if (attempts === 1) {
+      await redisClient.expire(key, WS_UPGRADE_RATE_WINDOW_SECONDS);
+    } else {
+      const ttl = await redisClient.ttl(key);
+      if (ttl === -1) {
+        await redisClient.expire(key, WS_UPGRADE_RATE_WINDOW_SECONDS);
+      }
+    }
+
+    return attempts <= WS_UPGRADE_RATE_LIMIT;
+  } catch (err) {
+    console.error('Redis WebSocket upgrade rate limit error:', err.message);
+    return true;
+  }
+}
+
+export function rejectWebSocketUpgrade(socket) {
+  socket.write(
+    'HTTP/1.1 429 Too Many Requests\r\n' +
+    'Connection: close\r\n' +
+    '\r\n'
+  );
+  socket.destroy();
+}
 
 /**
  * Initialize WebSockets Server and bind event handlers
  */
 export function initWebSocketServer(server) {
   const wss = new WebSocketServer({ noServer: true });
+  wsServer = wss;
 
-  server.on('upgrade', (request, socket, head) => {
+  server.on('upgrade', async (request, socket, head) => {
     const pathname = new URL(request.url, 'http://localhost').pathname;
 
     if (pathname === '/ws/tracking') {
+      const allowed = await isWebSocketUpgradeAllowed(request);
+
+      if (!allowed) {
+        rejectWebSocketUpgrade(socket);
+        return;
+      }
+
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit('connection', ws, request);
       });
@@ -35,7 +104,15 @@ export function initWebSocketServer(server) {
     const bypassAuth = process.env.BYPASS_AUTH === 'true';
 
     if (bypassAuth) {
+      if (process.env.NODE_ENV === 'production') {
+        ws.close(4003, 'BYPASS_AUTH is not allowed in production');
+        return;
+      }
       ws.driverId = reqUrl.searchParams.get('driver_id') || 'test_driver';
+      ws.user = {
+        id: reqUrl.searchParams.get('user_id') || ws.driverId,
+        role: reqUrl.searchParams.get('user_role') || 'driver',
+      };
       console.log(`🔓 WS Auth bypassed for driver: ${ws.driverId}`);
     } else {
       if (!token) {
@@ -43,9 +120,78 @@ export function initWebSocketServer(server) {
         return;
       }
       try {
-        const decoded = await firebaseAdmin.auth().verifyIdToken(token);
-        ws.driverId = decoded.uid;
-        console.log(`✅ WS Authenticated driver: ${ws.driverId}`);
+        let decoded = null;
+        try {
+          decoded = jwt.decode(token);
+        } catch (err) {
+          // ignore decoding errors
+        }
+
+        const isSupabaseToken = decoded &&
+          typeof decoded === 'object' &&
+          typeof decoded.iss === 'string' &&
+          (decoded.iss.includes('supabase') || decoded.iss.includes('supabase.co'));
+        let profile = null;
+
+        if (isSupabaseToken) {
+          if (!supabase) {
+            ws.close(4001, 'Unauthorized: Supabase client is not configured');
+            return;
+          }
+          const response = await supabase.auth.getUser(token);
+          const user = response?.data?.user;
+          const authError = response?.error;
+          if (authError || !user) {
+            ws.close(4001, 'Unauthorized: Invalid or expired Supabase token');
+            return;
+          }
+
+          const { data: userProfile, error } = await supabase
+            .from('profiles')
+            .select('id, firebase_uid, role')
+            .eq('id', user.id)
+            .eq('is_active', true)
+            .maybeSingle();
+
+          if (error || !userProfile) {
+            ws.close(4001, 'Unauthorized: User profile not found');
+            return;
+          }
+          profile = userProfile;
+        } else {
+          // Firebase Verification
+          if (!firebaseAdmin) {
+            ws.close(4001, 'Unauthorized: Firebase Auth is not configured');
+            return;
+          }
+          const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
+          if (!supabase) {
+            ws.close(4001, 'Unauthorized: Profile lookup is not configured');
+            return;
+          }
+
+          const { data: userProfile, error } = await supabase
+            .from('profiles')
+            .select('id, firebase_uid, role')
+            .eq('firebase_uid', decodedToken.uid)
+            .eq('is_active', true)
+            .maybeSingle();
+
+          if (error || !userProfile) {
+            ws.close(4001, 'Unauthorized: User profile not found');
+            return;
+          }
+          profile = userProfile;
+        }
+
+        ws.user = {
+          id: profile.id,
+          uid: profile.firebase_uid,
+          role: profile.role,
+        };
+        ws.driverId = profile.id;
+        await restoreSubscriptions(ws);
+        console.log(`✅ WS Authenticated user: ${ws.user.id}`);
       } catch (e) {
         console.error('WS Auth failed:', e.message);
         ws.close(4001, 'Unauthorized: Invalid token');
@@ -60,49 +206,26 @@ export function initWebSocketServer(server) {
       ws.isAlive = true;
     });
 
-    ws.on('message', async (message) => {
-      try {
-        const payload = JSON.parse(message.toString());
-        const { event, data } = payload;
-
-        if (!event || !data) {
-          return ws.send(JSON.stringify({ error: 'Invalid payload format. Must include "event" and "data" keys.' }));
-        }
-
-        switch (event) {
-          case 'location_ping':
-            await handleLocationPing(ws, data);
-            break;
-
-          case 'subscribe_tracking':
-            handleSubscribe(ws, data);
-            break;
-
-          case 'unsubscribe_tracking':
-            handleUnsubscribe(ws, data);
-            break;
-
-          default:
-            ws.send(JSON.stringify({ warning: `Unknown event type: ${event}` }));
-        }
-      } catch (err) {
-        console.error('WS Message parsing error:', err.message);
-        ws.send(JSON.stringify({ error: 'Invalid JSON payload structure.' }));
-      }
+    ws.on('message', (message) => {
+      handleTrackingMessage(ws, message);
     });
 
     ws.on('close', () => {
       console.log('🔌 WebSocket connection closed.');
-      removeClientFromAllSubscriptions(ws);
+      void (async () => {
+        await removeClientFromAllSubscriptions(ws);
+      })();
     });
 
     ws.on('error', (err) => {
       console.error('🔌 WebSocket client error:', err.message);
-      removeClientFromAllSubscriptions(ws);
+      void (async () => {
+        await removeClientFromAllSubscriptions(ws);
+      })();
     });
   });
 
-  const interval = setInterval(() => {
+  wsHeartbeatInterval = setInterval(() => {
     wss.clients.forEach((ws) => {
       if (ws.isAlive === false) {
         console.log('🔌 Terminating unresponsive WebSocket client.');
@@ -114,7 +237,10 @@ export function initWebSocketServer(server) {
   }, 30000);
 
   wss.on('close', () => {
-    clearInterval(interval);
+    if (wsHeartbeatInterval) {
+      clearInterval(wsHeartbeatInterval);
+      wsHeartbeatInterval = null;
+    }
   });
 
   if (!isSchedulerActive) {
@@ -124,14 +250,76 @@ export function initWebSocketServer(server) {
   console.log('🚀 WebSocket tracking router initialized.');
 }
 
+function isMessageRateLimited(ws) {
+  const now = Date.now();
+  let state = messageRateTracker.get(ws);
+  if (!state || now - state.windowStart >= 1000) {
+    state = { count: 0, windowStart: now };
+    messageRateTracker.set(ws, state);
+  }
+  state.count++;
+  return state.count > MAX_MSG_PER_SECOND;
+}
+
+export async function handleTrackingMessage(ws, message) {
+  if (isMessageRateLimited(ws)) {
+    return;
+  }
+
+  const messageText = message.toString();
+
+  if (messageText === 'ping') {
+    ws.isAlive = true;
+    return ws.send('pong');
+  }
+
+  try {
+    const payload = JSON.parse(messageText);
+    const { event, data } = payload;
+
+    if (!event || !data) {
+      return ws.send(JSON.stringify({ error: 'Invalid payload format. Must include "event" and "data" keys.' }));
+    }
+
+    switch (event) {
+      case 'location_ping':
+        await handleLocationPing(ws, data);
+        break;
+
+      case 'subscribe_tracking':
+        await handleSubscribe(ws, data);
+        break;
+
+      case 'unsubscribe_tracking':
+        await handleUnsubscribe(ws, data);
+        break;
+
+      default:
+        ws.send(JSON.stringify({ warning: `Unknown event type: ${event}` }));
+    }
+  } catch (err) {
+    console.error('WS Message parsing error:', err.message);
+    ws.send(JSON.stringify({ error: 'Invalid JSON payload structure.' }));
+  }
+}
+
 /**
  * Handle incoming GPS coordinate telemetry from a driver app
  */
-async function handleLocationPing(ws, data) {
-  const { driver_id, order_display_id, latitude, longitude, speed, bearing, device_timestamp } = data;
+export async function handleLocationPing(ws, data) {
+  const { driver_id: payloadDriverId, order_display_id, latitude, longitude, speed, bearing, device_timestamp } = data;
+  const driver_id = ws.driverId;
 
-  if (!driver_id || !latitude || !longitude) {
-    return ws.send(JSON.stringify({ error: 'Missing mandatory tracking parameters (driver_id, lat, lng).' }));
+  if (!driver_id) {
+    return ws.send(JSON.stringify({ error: 'Unauthorized: Missing authenticated WebSocket identity.' }));
+  }
+
+  if (payloadDriverId && payloadDriverId !== driver_id) {
+    return ws.send(JSON.stringify({ error: 'Unauthorized: driver_id does not match authenticated WebSocket identity.' }));
+  }
+
+  if (!latitude || !longitude) {
+    return ws.send(JSON.stringify({ error: 'Missing mandatory tracking parameters (lat, lng).' }));
   }
 
   // 🛡️ ADJUSTMENT 2: Device Timestamp Strict Validation
@@ -168,7 +356,12 @@ async function handleLocationPing(ws, data) {
     }
   }
 
-  // 🛡️ 2. WRITE-BUFFER DEFERMENT (BATCHING)
+  // Buffer write with capacity limit
+  if (telemetryWriteBuffer.length >= MAX_BUFFER_SIZE) {
+    const dropCount = Math.floor(MAX_BUFFER_SIZE * 0.1);
+    telemetryWriteBuffer.splice(0, dropCount);
+    console.warn(`[TRUXIFY BUFFER WARN] Telemetry buffer full: dropped ${dropCount} oldest records. Size: ${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE}`);
+  }
   telemetryWriteBuffer.push({
     driver_id,
     order_display_id: order_display_id || null,
@@ -181,6 +374,14 @@ async function handleLocationPing(ws, data) {
     pinged_at: currentPingTime,
     buffered_at: new Date()
   });
+
+  // Buffer usage monitoring
+  const usagePct = (telemetryWriteBuffer.length / MAX_BUFFER_SIZE) * 100;
+  if (usagePct >= 80) {
+    console.warn(`[TRUXIFY BUFFER CRITICAL] Buffer at ${usagePct.toFixed(0)}% capacity (${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`);
+  } else if (usagePct >= 50 && usagePct < 60) {
+    console.warn(`[TRUXIFY BUFFER WARN] Buffer at ${usagePct.toFixed(0)}% capacity (${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`);
+  }
 
   if (redisClient) {
     try {
@@ -232,7 +433,10 @@ async function handleLocationPing(ws, data) {
  * Periodically dumps the aggregated batch matrix logs into MongoDB Atlas
  */
 async function flushTelemetryBuffer() {
-  if (telemetryWriteBuffer.length === 0) return;
+  if (telemetryWriteBuffer.length === 0) {
+    flushBackoffMs = 1000;
+    return;
+  }
 
   // 🛡️ ADJUSTMENT 1: Move database client check to the absolute top to avoid buffer data loss
   if (!mongoDb) {
@@ -250,8 +454,9 @@ async function flushTelemetryBuffer() {
     const collection = mongoDb.collection('live_gps_pings');
     await collection.insertMany(recordsToFlush, { ordered: false });
     console.log(`[TRUXIFY DB SUCCESS] Successfully flushed ${recordsToFlush.length} records to MongoDB clusters.`);
+    flushBackoffMs = 1000;
   } catch (err) {
-    console.error('Mongo bulk insert telemetry logs error:', err.message);
+    console.error(`[TRUXIFY RETRY LOGIC] Bulk insert failed (backoff: ${flushBackoffMs}ms):`, err.message);
 
     // 🛡️ ADJUSTMENT 3: Refined Retry Strategy to prevent memory bloat
     // Check if the error code/message relates to a persistent schema validation breakdown or structural malformation
@@ -261,21 +466,106 @@ async function flushTelemetryBuffer() {
       console.error(`[TRUXIFY FATAL DATA DROP] Discarding malformed tracking block payloads to prevent infinite loop memory bloat.`);
       // Do NOT re-queue these records since they will fail indefinitely and consume stack space
     } else {
-      console.warn(`[TRUXIFY RETRY LOGIC] Transient cluster error detected. Re-injecting ${recordsToFlush.length} frames back to buffer pool.`);
-      // Re-insert frames back into execution pools for transient timeouts/network issues
-      telemetryWriteBuffer = [...recordsToFlush, ...telemetryWriteBuffer];
+      // Exponential backoff with 60s cap
+      flushBackoffMs = Math.min(flushBackoffMs * 2, 60000);
+
+      // Capacity-aware re-queue: only keep as many as there's space for
+      const spaceAvailable = Math.max(0, MAX_BUFFER_SIZE - telemetryWriteBuffer.length);
+      const recordsToKeep = recordsToFlush.slice(-spaceAvailable);
+      const droppedCount = recordsToFlush.length - recordsToKeep.length;
+      if (droppedCount > 0) {
+        console.warn(`[TRUXIFY BUFFER DROP] Buffer full: dropped ${droppedCount} oldest records from retry batch.`);
+      }
+      telemetryWriteBuffer = [...recordsToKeep, ...telemetryWriteBuffer];
     }
   }
 }
 
-function initTelemetryScheduler() {
-  isSchedulerActive = true;
-  setInterval(async () => {
-    await flushTelemetryBuffer();
-  }, BUFFER_FLUSH_INTERVAL_MS);
+function monitorBufferSize() {
+  const usagePct = telemetryWriteBuffer.length / MAX_BUFFER_SIZE;
+  if (usagePct >= BUFFER_CRIT_THRESHOLD) {
+    console.warn(
+      `[TRUXIFY BUFFER MONITOR] CRITICAL: Buffer at ${(usagePct * 100).toFixed(0)}% ` +
+      `(${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`
+    );
+  } else if (usagePct >= BUFFER_WARN_THRESHOLD) {
+    console.warn(
+      `[TRUXIFY BUFFER MONITOR] WARNING: Buffer at ${(usagePct * 100).toFixed(0)}% ` +
+      `(${telemetryWriteBuffer.length}/${MAX_BUFFER_SIZE})`
+    );
+  }
 }
 
-function handleSubscribe(ws, data) {
+function scheduleNextFlush() {
+  if (!isSchedulerActive) return;
+
+  telemetryFlushTimeout = setTimeout(async () => {
+    try {
+      await flushTelemetryBuffer();
+    } finally {
+      scheduleNextFlush();
+    }
+  }, Math.max(BUFFER_FLUSH_INTERVAL_MS, flushBackoffMs));
+}
+
+function initTelemetryScheduler() {
+  isSchedulerActive = true;
+  scheduleNextFlush();
+  
+  telemetryMonitorInterval = setInterval(() => {
+    monitorBufferSize();
+  }, BUFFER_MONITOR_INTERVAL_MS);
+}
+
+export async function closeWebSocketServer() {
+  if (telemetryFlushTimeout) {
+    clearTimeout(telemetryFlushTimeout);
+    telemetryFlushTimeout = null;
+    isSchedulerActive = false;
+  }
+
+  if (telemetryMonitorInterval) {
+    clearInterval(telemetryMonitorInterval);
+    telemetryMonitorInterval = null;
+  }
+
+  if (wsHeartbeatInterval) {
+    clearInterval(wsHeartbeatInterval);
+    wsHeartbeatInterval = null;
+  }
+
+  try {
+    await flushTelemetryBuffer();
+  } catch (err) {
+    console.error('[shutdown] Failed to flush telemetry buffer:', err.message);
+  }
+
+  if (!wsServer) {
+    return;
+  }
+
+  const serverToClose = wsServer;
+  wsServer = null;
+
+  await new Promise((resolve) => {
+    serverToClose.clients?.forEach((client) => {
+      try {
+        client.close(1001, 'Server shutting down');
+      } catch (err) {
+        console.error('[shutdown] Failed to close WebSocket client:', err.message);
+      }
+    });
+
+    serverToClose.close((err) => {
+      if (err) {
+        console.error('[shutdown] WebSocket server close error:', err.message);
+      }
+      resolve();
+    });
+  });
+}
+
+export async function handleSubscribe(ws, data) {
   const { order_display_id, driver_id } = data;
   const targetId = order_display_id || driver_id;
 
@@ -283,27 +573,98 @@ function handleSubscribe(ws, data) {
     return ws.send(JSON.stringify({ error: 'Subscription target (order_display_id or driver_id) is missing.' }));
   }
 
+  const authorized = await canSubscribe(ws, { order_display_id, driver_id });
+
+  if (!authorized) {
+    return ws.send(JSON.stringify({ error: 'Forbidden: You are not authorized to subscribe to this tracking target.' }));
+  }
+
   if (!trackingSubscriptions.has(targetId)) {
     trackingSubscriptions.set(targetId, new Set());
   }
 
   trackingSubscriptions.get(targetId).add(ws);
+  ws.subscriptionTargets ??= new Set();
+  ws.subscriptionTargets.add(targetId);
+
+  if (redisClient) {
+    try {
+      const subscriberId = ws.user?.id || ws.driverId;
+      if (subscriberId) {
+        await redisClient.sadd(`user:subscriptions:${subscriberId}`, targetId);
+        await redisClient.persist(`user:subscriptions:${subscriberId}`);
+      }
+    } catch (err) {
+      console.error('Redis subscription persistence error:', err.message);
+    }
+  }
+
   console.log(`🔌 Client subscribed to telemetry updates for: "${targetId}"`);
-  ws.send(JSON.stringify({ status: 'subscribed', target: targetId }));
+  ws.send(JSON.stringify({ status: 'subscribed', target: targetId, reconnect_supported: true }));
 }
 
-function handleUnsubscribe(ws, data) {
+async function canSubscribe(ws, { order_display_id, driver_id }) {
+  const userId = ws.user?.id || ws.driverId;
+  const userRole = ws.user?.role;
+
+  if (!userId) {
+    return false;
+  }
+
+  if (driver_id) {
+    return driver_id === userId || driver_id === ws.driverId;
+  }
+
+  if (!order_display_id || !supabase) {
+    return false;
+  }
+
+  const { data: order, error } = await supabase
+    .from('orders')
+    .select('customer_id, driver_id')
+    .eq('order_display_id', order_display_id)
+    .maybeSingle();
+
+  if (error || !order) {
+    return false;
+  }
+
+  if (userRole === 'customer') {
+    return order.customer_id === userId;
+  }
+
+  if (userRole === 'driver') {
+    return order.driver_id === userId;
+  }
+
+  return order.customer_id === userId || order.driver_id === userId;
+}
+
+async function handleUnsubscribe(ws, data) {
   const { order_display_id, driver_id } = data;
   const targetId = order_display_id || driver_id;
 
   if (targetId && trackingSubscriptions.has(targetId)) {
     trackingSubscriptions.get(targetId).delete(ws);
+    ws.subscriptionTargets?.delete(targetId);
+
+    if (redisClient) {
+      const subscriberId = ws.user?.id || ws.driverId;
+      try {
+        if (subscriberId) {
+          await redisClient.srem(`user:subscriptions:${subscriberId}`, targetId);
+        }
+      } catch (err) {
+        console.error('Redis subscription cleanup error:', err.message);
+      }
+    }
+
     console.log(`🔌 Client unsubscribed from updates for: "${targetId}"`);
     ws.send(JSON.stringify({ status: 'unsubscribed', target: targetId }));
   }
 }
 
-function removeClientFromAllSubscriptions(ws) {
+async function removeClientFromAllSubscriptions(ws) {
   trackingSubscriptions.forEach((clients, key) => {
     if (clients.has(ws)) {
       clients.delete(ws);
@@ -313,4 +674,104 @@ function removeClientFromAllSubscriptions(ws) {
       trackingSubscriptions.delete(key);
     }
   });
+
+  if (redisClient) {
+    const subscriberId = ws.user?.id || ws.driverId;
+    if (subscriberId) {
+      let hasOtherSockets = false;
+      if (wsServer && wsServer.clients) {
+        for (const client of wsServer.clients) {
+          if (client !== ws && client.readyState === 1) {
+            const clientUserId = client.user?.id || client.driverId;
+            if (clientUserId === subscriberId) {
+              hasOtherSockets = true;
+              break;
+            }
+          }
+        }
+      }
+      if (!hasOtherSockets) {
+        try {
+          await redisClient.expire(`user:subscriptions:${subscriberId}`, 3600);
+        } catch (err) {
+          console.error('Redis subscription expire error on disconnect:', err.message);
+        }
+      }
+    }
+  }
 }
+
+async function restoreSubscriptions(ws) {
+  const subscriberId = ws.user?.id || ws.driverId;
+  if (!redisClient || !subscriberId) return;
+
+  try {
+    const targets = await redisClient.smembers(`user:subscriptions:${subscriberId}`);
+
+    ws.subscriptionTargets ??= new Set();
+
+    if (targets.length > 0) {
+      await redisClient.persist(`user:subscriptions:${subscriberId}`);
+    }
+
+    for (const targetId of targets) {
+      const allowed = await canSubscribe(
+        ws,
+        targetId.startsWith('ORDER-')
+          ? { order_display_id: targetId }
+          : { driver_id: targetId }
+      );
+
+      if (!allowed) {
+        await redisClient.srem(`user:subscriptions:${subscriberId}`, targetId);
+        continue;
+      }
+
+      if (!trackingSubscriptions.has(targetId)) {
+        trackingSubscriptions.set(targetId, new Set());
+      }
+
+      trackingSubscriptions.get(targetId).add(ws);
+      ws.subscriptionTargets.add(targetId);
+    }
+  } catch (err) {
+    console.error('Subscription restoration error:', err.message);
+  }
+}
+
+export const __testing = {
+  resetTrackingSubscriptions() {
+    trackingSubscriptions.clear();
+  },
+  async restoreSubscriptions(ws) {
+    await restoreSubscriptions(ws);
+  },
+  getTrackingSubscriptions() {
+    return trackingSubscriptions;
+  },
+  flushTelemetryBuffer,
+  removeClientFromAllSubscriptions,
+  getTelemetryWriteBuffer() {
+    return telemetryWriteBuffer;
+  },
+  setTelemetryWriteBuffer(records) {
+    telemetryWriteBuffer = records;
+  },
+  clearTelemetryWriteBuffer() {
+    telemetryWriteBuffer = [];
+  },
+  getShutdownState() {
+    return {
+      isSchedulerActive,
+      hasTelemetryFlushInterval: Boolean(telemetryFlushTimeout),
+      hasWebSocketServer: Boolean(wsServer),
+      hasWsHeartbeatInterval: Boolean(wsHeartbeatInterval),
+    };
+  },
+  setShutdownState({ telemetryInterval = null, heartbeatInterval = null, server = null } = {}) {
+    telemetryFlushTimeout = telemetryInterval;
+    wsHeartbeatInterval = heartbeatInterval;
+    wsServer = server;
+    isSchedulerActive = Boolean(telemetryInterval);
+  },
+};

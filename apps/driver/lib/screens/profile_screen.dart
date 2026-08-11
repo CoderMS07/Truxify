@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../controllers/app_controller.dart';
+import '../core/app_routes.dart';
 import '../data/mock_data.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../core/supabase_config.dart';
+import 'package:truxify_shared/truxify_shared.dart' hide NotificationsScreen;
+import 'notifications_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({
@@ -278,45 +283,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(height: 16),
               _buildHelpOption(
-                icon: Icons.phone_in_talk_rounded,
-                title: 'Call Support Hotline',
-                subtitle: 'Direct connection to 24/7 emergency dispatch',
-                color: TruxifyColors.success,
-                onTap: () {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                        content: Text(
-                            'Calling support hotline at +91 1800-TRUXIFY...')),
-                  );
-                },
-              ),
-              const SizedBox(height: 10),
-              _buildHelpOption(
-                icon: Icons.chat_bubble_outline_rounded,
-                title: 'Live Chat Assistant',
-                subtitle: 'Chat directly with support representatives',
-                color: TruxifyColors.accent,
-                onTap: () {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                        content:
-                            Text('Connecting to Truxify support agent...')),
-                  );
-                },
-              ),
-              const SizedBox(height: 10),
-              _buildHelpOption(
                 icon: Icons.help_outline_rounded,
                 title: 'Browse FAQs',
                 subtitle: 'Instant answers to common driver questions',
                 color: TruxifyColors.hintText,
                 onTap: () {
                   Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                        content: Text('Opening help center database...')),
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => _DriverHelpScreen(),
+                    ),
                   );
                 },
               ),
@@ -641,6 +617,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                   title: Text(
+                    'Notifications',
+                    style: GoogleFonts.dmSans(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                  subtitle: Text(
+                    'View trip alerts and updates',
+                    style: GoogleFonts.dmSans(
+                      fontSize: 12,
+                      color: TruxifyColors.adaptiveSecondaryText(context),
+                    ),
+                  ),
+                  trailing: Icon(Icons.chevron_right_rounded,
+                      color: TruxifyColors.adaptiveSecondaryText(context)),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const NotificationsScreen(),
+                    ),
+                  ),
+                ),
+                Divider(
+                  height: 1,
+                  color: _borderColor(context),
+                ),
+                ListTile(
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  title: Text(
                     'Language',
                     style: GoogleFonts.dmSans(
                       fontSize: 14,
@@ -717,13 +723,30 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
           const SizedBox(height: 18),
           AppCard(
-            onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Logged out successfully'),
-                  backgroundColor: TruxifyColors.success,
-                ),
-              );
+            onTap: () async {
+              try {
+                if (SupabaseConfig.isConfigured) {
+                  await Supabase.instance.client.auth.signOut();
+                }
+
+                if (!context.mounted) {
+                  return;
+                }
+
+                // Logout lives inside the profile tab's nested navigator, so we
+                // must clear the root stack to remove the authenticated shell.
+                Navigator.of(context, rootNavigator: true)
+                    .pushNamedAndRemoveUntil(
+                  AppRoutes.login,
+                  (route) => false,
+                );
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Logout failed: $e')),
+                  );
+                }
+              }
             },
             child: Row(
               children: [
@@ -746,6 +769,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
+class _DriverHelpScreen extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final client = Supabase.instance.client;
+    final userId = client.auth.currentUser?.id;
+    return HelpCenterScreen(
+      appType: 'driver',
+      userId: userId,
+      faqRepository: FaqRepository(client),
+      supportRepository: SupportRepository(client),
+      title: 'Help & Support',
+    );
+  }
+}
+
 class _ThemeModeTile extends StatelessWidget {
   const _ThemeModeTile();
 
@@ -753,34 +791,48 @@ class _ThemeModeTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = TruxifyScope.of(context);
     final currentTheme = controller.themeMode;
+    final selectedTheme = currentTheme == ThemeMode.system
+        ? (Theme.of(context).brightness == Brightness.dark
+            ? ThemeMode.dark
+            : ThemeMode.light)
+        : currentTheme;
 
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-      title: Text(
-        'Theme',
-        style: GoogleFonts.dmSans(
-          fontSize: 14,
-          fontWeight: FontWeight.bold,
-          color: Theme.of(context).colorScheme.onSurface,
-        ),
-      ),
-      subtitle: Text(
-        currentTheme.name[0].toUpperCase() + currentTheme.name.substring(1),
-        style: GoogleFonts.dmSans(
-          fontSize: 12,
-          color: TruxifyColors.adaptiveSecondaryText(context),
-        ),
-      ),
-      trailing: PopupMenuButton<ThemeMode>(
-        onSelected: controller.setThemeMode,
-        icon: Icon(
-          Icons.keyboard_arrow_down_rounded,
-          color: TruxifyColors.adaptiveSecondaryText(context),
-        ),
-        itemBuilder: (context) => const [
-          PopupMenuItem(value: ThemeMode.system, child: Text('System')),
-          PopupMenuItem(value: ThemeMode.light, child: Text('Light')),
-          PopupMenuItem(value: ThemeMode.dark, child: Text('Dark')),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          Text(
+            'Theme',
+            style: GoogleFonts.dmSans(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
+          ),
+          const Spacer(),
+          SegmentedButton<ThemeMode>(
+            showSelectedIcon: false,
+            style: ButtonStyle(
+              visualDensity: VisualDensity.compact,
+              padding: WidgetStateProperty.all(
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              ),
+            ),
+            segments: const [
+              ButtonSegment<ThemeMode>(
+                value: ThemeMode.light,
+                label: Text('Light'),
+              ),
+              ButtonSegment<ThemeMode>(
+                value: ThemeMode.dark,
+                label: Text('Dark'),
+              ),
+            ],
+            selected: {selectedTheme},
+            onSelectionChanged: (selection) {
+              controller.setThemeMode(selection.first);
+            },
+          ),
         ],
       ),
     );

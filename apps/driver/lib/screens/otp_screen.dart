@@ -1,4 +1,8 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../core/app_routes.dart';
 import '../theme/app_theme.dart';
@@ -15,10 +19,15 @@ class OtpScreen extends StatefulWidget {
 }
 
 class _OtpScreenState extends State<OtpScreen> {
+  static const String _apiBaseUrl = String.fromEnvironment(
+    'TRUXIFY_API_BASE_URL',
+    defaultValue: 'http://localhost:5000',
+  );
+
   late final List<TextEditingController> _controllers =
       List.generate(4, (_) => TextEditingController());
   late final List<FocusNode> _focusNodes = List.generate(4, (_) => FocusNode());
-  bool _verifying = false;
+  bool _loading = false;
 
   @override
   void dispose() {
@@ -32,21 +41,77 @@ class _OtpScreenState extends State<OtpScreen> {
   }
 
   Future<void> _verifyOtp() async {
-    final code = _controllers.map((controller) => controller.text).join();
-    if (code != '1234') {
+    if (_loading) return;
+
+    final code =
+        _controllers.map((c) => c.text.replaceAll('\u200B', '')).join();
+    if (!RegExp(r'^\d{4}$').hasMatch(code)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter mock OTP 1234 to continue')),
+        const SnackBar(content: Text('Enter a valid 4-digit OTP')),
       );
       return;
     }
-    setState(() => _verifying = true);
-    await Future<void>.delayed(const Duration(milliseconds: 300));
-    if (!mounted) {
-      return;
+
+    setState(() => _loading = true);
+    try {
+      final uri = Uri.parse('$_apiBaseUrl/api/driver/otp/verify');
+      final response = await http.post(
+        uri,
+        headers: const {'Content-Type': 'application/json'},
+        body: jsonEncode(<String, String>{
+          'phone': widget.phone,
+          'otp': code,
+        }),
+      ).timeout(const Duration(seconds: 15));
+
+      if (!mounted) return;
+
+      final success = response.statusCode >= 200 && response.statusCode < 300;
+      if (!success) {
+        final message = response.body.isNotEmpty
+            ? _extractErrorMessage(response.body)
+            : 'OTP verification failed.';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message)),
+        );
+        return;
+      }
+
+      Navigator.of(context).pushReplacementNamed(AppRoutes.shell);
+    } on TimeoutException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Verification timed out. Please check your connection and try again.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not verify OTP: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _loading = false);
+      }
     }
-    setState(() => _verifying = false);
-    Navigator.of(context)
-        .pushNamedAndRemoveUntil(AppRoutes.shell, (route) => false);
+  }
+
+  String _extractErrorMessage(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        final error = decoded['error']?.toString();
+        if (error != null && error.isNotEmpty) {
+          return error;
+        }
+      }
+    } catch (_) {
+      // Fall through to generic error message.
+    }
+    return 'OTP verification failed.';
   }
 
   @override
@@ -92,16 +157,9 @@ class _OtpScreenState extends State<OtpScreen> {
               OtpInputRow(controllers: _controllers, focusNodes: _focusNodes),
               const SizedBox(height: 24),
               PrimaryButton(
-                label: _verifying ? 'Verifying...' : 'Verify OTP',
-                onPressed: _verifying ? null : _verifyOtp,
+                label: _loading ? 'Verifying...' : 'Verify OTP',
+                onPressed: _loading ? null : _verifyOtp,
               ),
-              const SizedBox(height: 14),
-              Text(
-                'Mock OTP: 1234',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: TruxifyColors.adaptiveSecondaryText(context),
-                    ),
-              )
             ],
           ),
         ),

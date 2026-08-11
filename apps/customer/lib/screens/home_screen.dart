@@ -13,6 +13,7 @@ import '../widgets/shipment_card.dart';
 import '../widgets/common_widgets.dart';
 import '../widgets/recent_route_card.dart';
 import 'live_tracking_screen.dart';
+import 'notifications_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -34,7 +35,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadLocation() async {
     final connectivity = await Connectivity().checkConnectivity();
-    final hasNetwork = connectivity != ConnectivityResult.none;
+    final hasNetwork = connectivity.isNotEmpty && !connectivity.contains(ConnectivityResult.none);
     await _cacheManager.open();
     await _cacheManager.cacheLastLocation(21.1702, 72.8311);
     final cachedLocation = await _cacheManager.getLastLocation();
@@ -79,6 +80,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final now = DateTime.now();
     final customerFirstName = mockCustomerName.split(' ').first;
     final greeting = _greetingFor(now);
+    final quickStats = mockQuickStats.take(3).toList();
 
     return Scaffold(
       appBar: AppBar(
@@ -109,7 +111,9 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           IconButton(
-            onPressed: () => _showComingSoon(context, 'Notifications'),
+            onPressed: () => Navigator.of(context).push(
+              AppPageRoute(builder: (_) => const NotificationsScreen()),
+            ),
             icon: const Icon(Icons.notifications_none_rounded),
           ),
         ],
@@ -150,11 +154,16 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 24),
             Row(
               children: [
-                Expanded(child: StatCard(title: mockQuickStats[0].title, value: mockQuickStats[0].value, icon: mockQuickStats[0].icon)),
-                const SizedBox(width: 10),
-                Expanded(child: StatCard(title: mockQuickStats[1].title, value: mockQuickStats[1].value, icon: mockQuickStats[1].icon)),
-                const SizedBox(width: 10),
-                Expanded(child: StatCard(title: mockQuickStats[2].title, value: mockQuickStats[2].value, icon: mockQuickStats[2].icon)),
+                for (final stat in quickStats) ...[
+                  Expanded(
+                    child: StatCard(
+                      title: stat.title,
+                      value: stat.value,
+                      icon: stat.icon,
+                    ),
+                  ),
+                  if (stat != quickStats.last) const SizedBox(width: 10),
+                ],
               ],
             ),
             const SizedBox(height: 24),

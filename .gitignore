@@ -51,3 +51,12 @@ app.*.map.json
 **/*.pyc
 **/.env
 *.log
+
+# Vitest coverage reports
+coverage/
+backend/api/coverage/
+*.lcov
+
+__pycache__/
+*.pyc
+venv/

@@ -1,46 +1,142 @@
 import 'package:flutter/material.dart';
-
+import '../services/order_service.dart';
 import '../controllers/app_controller.dart';
 import '../data/mock_data.dart';
 import '../models/app_models.dart';
+import '../models/payment_method.dart';
+import '../models/saved_address.dart';
+import '../repositories/address_repository.dart';
+import '../repositories/payment_repository.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
 
 class BookingConfirmationScreen extends StatefulWidget {
-  const BookingConfirmationScreen({super.key, required this.draft, required this.truck});
+  const BookingConfirmationScreen(
+      {super.key, required this.draft, required this.truck});
 
   final RouteDraft draft;
   final TruckResultData truck;
 
   @override
-  State<BookingConfirmationScreen> createState() => _BookingConfirmationScreenState();
+  State<BookingConfirmationScreen> createState() =>
+      _BookingConfirmationScreenState();
 }
 
-class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> with SingleTickerProviderStateMixin {
-  final TextEditingController _upiController = TextEditingController(text: 'karthik@upi');
+class _BookingConfirmationScreenState extends State<BookingConfirmationScreen>
+    with SingleTickerProviderStateMixin {
+  final _paymentRepo = PaymentRepository();
+  final _addressRepo = AddressRepository();
   bool _showSuccess = false;
+  bool _isLoading = true;
+  String? _createdOrderId;
   late final AnimationController _controller;
+  late final OrderService _orderService;
+  List<PaymentMethod> _paymentMethods = [];
+  List<SavedAddress> _addresses = [];
+  PaymentMethod? _selectedPayment;
+  SavedAddress? _selectedAddress;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
+    _orderService = OrderService();
+    _controller = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 600));
+    _loadCheckoutData();
   }
 
   @override
   void dispose() {
-    _upiController.dispose();
     _controller.dispose();
     super.dispose();
   }
 
+  Future<void> _loadCheckoutData() async {
+    setState(() => _isLoading = true);
+    try {
+      final methods = await _paymentRepo.fetchAll();
+      final addresses = await _addressRepo.fetchAll();
+
+      if (!mounted) return;
+
+      setState(() {
+        _paymentMethods = methods;
+        _addresses = addresses;
+        _selectedPayment = methods.isEmpty
+            ? null
+            : methods.firstWhere(
+                (m) => m.isDefault,
+                orElse: () => methods.first,
+              );
+        _selectedAddress = addresses.isEmpty
+            ? null
+            : addresses.firstWhere(
+                (a) => a.isDefault,
+                orElse: () => addresses.first,
+              );
+      });
+    } catch (e) {
+      debugPrint('Failed to load checkout data: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load checkout options: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
   Future<void> _pay() async {
-    setState(() => _showSuccess = true);
-    await _controller.forward(from: 0);
-    await Future<void>.delayed(const Duration(milliseconds: 1100));
-    if (!mounted) return;
-    TruxifyScope.of(context).openOrders(tabIndex: 0);
-    Navigator.of(context).popUntil((route) => route.isFirst);
+    final finalDropLat = _selectedAddress?.latitude ?? widget.draft.dropLat;
+    final finalDropLng = _selectedAddress?.longitude ?? widget.draft.dropLng;
+
+    if (widget.draft.pickupLat == null ||
+        widget.draft.pickupLng == null ||
+        finalDropLat == null ||
+        finalDropLng == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Missing pickup or drop coordinates. Please go back and select valid locations.')),
+      );
+      return;
+    }
+
+    try {
+      final orderId = await _orderService.createOrder(
+        pickupAddress: widget.draft.pickup,
+        dropAddress: _selectedAddress?.fullAddress ?? widget.draft.drop,
+        pickupLat: widget.draft.pickupLat!,
+        pickupLng: widget.draft.pickupLng!,
+        dropLat: finalDropLat,
+        dropLng: finalDropLng,
+        pickupTime: widget.draft.dateLabel,
+        goodsType: widget.draft.goodsType,
+        weightTonnes: double.tryParse(widget.draft.weightTonnes) ?? 0,
+        paymentMethodId: _selectedPayment?.id,
+      );
+
+      _createdOrderId = orderId;
+
+      setState(() => _showSuccess = true);
+      await _controller.forward(from: 0);
+      await Future<void>.delayed(const Duration(milliseconds: 1100));
+
+      if (!mounted) return;
+
+      TruxifyScope.of(context).openOrders(tabIndex: 0);
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    } catch (e) {
+      debugPrint('Failed to create order: $e');
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to create booking')),
+      );
+    }
   }
 
   @override
@@ -48,7 +144,9 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> w
     return Scaffold(
       appBar: AppBar(
         title: const Text('Confirm Booking'),
-        leading: IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.arrow_back_rounded)),
+        leading: IconButton(
+            onPressed: () => Navigator.of(context).pop(),
+            icon: const Icon(Icons.arrow_back_rounded)),
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
@@ -57,12 +155,25 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> w
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Order summary', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+                Text('Order summary',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w800)),
                 const SizedBox(height: 14),
-                _SummaryRow(label: 'Route', value: '${widget.draft.pickup.split(',').first} → ${widget.draft.drop.split(',').first}'),
+                _SummaryRow(
+                    label: 'Route',
+                    value:
+                        '${widget.draft.pickup.split(',').first} → ${_selectedAddress != null ? _selectedAddress!.label : widget.draft.drop.split(',').first}'),
                 _SummaryRow(label: 'Pickup', value: widget.draft.dateLabel),
-                _SummaryRow(label: 'Goods', value: '${widget.draft.goodsType}, ${widget.draft.weightTonnes} tonnes'),
-                _SummaryRow(label: 'Driver', value: '${widget.truck.driver} ⭐ ${widget.truck.rating.toStringAsFixed(1)}'),
+                _SummaryRow(
+                    label: 'Goods',
+                    value:
+                        '${widget.draft.goodsType}, ${widget.draft.weightTonnes} tonnes'),
+                _SummaryRow(
+                    label: 'Driver',
+                    value:
+                        '${widget.truck.driver} ⭐ ${widget.truck.rating.toStringAsFixed(1)}'),
                 _SummaryRow(label: 'Truck', value: mockDefaultTruckNumber),
               ],
             ),
@@ -72,16 +183,34 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> w
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Price breakdown', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+                Text('Price breakdown',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w800)),
                 const SizedBox(height: 14),
                 ...mockBookingPriceLines.map(
                   (line) => Padding(
                     padding: const EdgeInsets.only(bottom: 10),
                     child: Row(
                       children: [
-                        Text(line.label, style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: line.isTotal ? FontWeight.w800 : FontWeight.w500)),
+                        Text(line.label,
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(
+                                    fontWeight: line.isTotal
+                                        ? FontWeight.w800
+                                        : FontWeight.w500)),
                         const Spacer(),
-                        Text(line.amount, style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: line.isTotal ? FontWeight.w800 : FontWeight.w600)),
+                        Text(line.amount,
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(
+                                    fontWeight: line.isTotal
+                                        ? FontWeight.w800
+                                        : FontWeight.w600)),
                       ],
                     ),
                   ),
@@ -91,18 +220,24 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> w
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    const Icon(Icons.lock_rounded, color: TruxifyColors.accentDark, size: 18),
+                    const Icon(Icons.lock_rounded,
+                        color: TruxifyColors.accentDark, size: 18),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         'Payment secured via UPI Escrow 🔒',
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 6),
-                Text('Released only on delivery', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: TruxifyColors.adaptiveSecondaryText(context))),
+                Text('Released only on delivery',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: TruxifyColors.adaptiveSecondaryText(context))),
               ],
             ),
           ),
@@ -111,15 +246,77 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> w
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Pay via UPI', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+                Text('Pay via UPI',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w800)),
                 const SizedBox(height: 12),
-                TextField(controller: _upiController, decoration: const InputDecoration(labelText: 'Mock UPI ID')),
+                DropdownButtonFormField<PaymentMethod>(
+                  value: _selectedPayment,
+                  decoration: InputDecoration(
+                    labelText: 'Select payment method',
+                    helperText: _isLoading
+                        ? 'Loading payment methods...'
+                        : (_paymentMethods.isEmpty
+                            ? 'No payment methods saved. Please add one in Profile.'
+                            : null),
+                  ),
+                  items: _paymentMethods
+                      .map(
+                        (method) => DropdownMenuItem<PaymentMethod>(
+                          value: method,
+                          child: Text(method.displayLabel),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: _isLoading || _paymentMethods.isEmpty
+                      ? null
+                      : (value) {
+                          setState(() {
+                            _selectedPayment = value;
+                          });
+                        },
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<SavedAddress>(
+                  value: _selectedAddress,
+                  decoration: InputDecoration(
+                    labelText: 'Select saved address',
+                    helperText: _isLoading
+                        ? 'Loading saved addresses...'
+                        : (_addresses.isEmpty
+                            ? 'No saved addresses. Please add one in Profile.'
+                            : null),
+                  ),
+                  items: _addresses
+                      .map(
+                        (address) => DropdownMenuItem<SavedAddress>(
+                          value: address,
+                          child: Text(address.label),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: _isLoading || _addresses.isEmpty
+                      ? null
+                      : (value) {
+                          setState(() {
+                            _selectedAddress = value;
+                          });
+                        },
+                ),
                 const SizedBox(height: 16),
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 250),
                   child: _showSuccess
-                      ? _SuccessPanel(controller: _controller)
-                      : PrimaryButton(label: 'Pay & Confirm', onPressed: _pay),
+                      ? _SuccessPanel(
+                          controller: _controller,
+                          orderId: _createdOrderId ?? '',
+                        )
+                      : PrimaryButton(
+                          label: _isLoading ? 'Loading...' : 'Pay & Confirm',
+                          onPressed: _isLoading ? null : _pay,
+                        ),
                 ),
               ],
             ),
@@ -147,9 +344,16 @@ class _SummaryRow extends StatelessWidget {
         children: [
           SizedBox(
             width: 88,
-            child: Text(label, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: TruxifyColors.adaptiveSecondaryText(context))),
+            child: Text(label,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: TruxifyColors.adaptiveSecondaryText(context))),
           ),
-          Expanded(child: Text(value, style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700))),
+          Expanded(
+              child: Text(value,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodyMedium
+                      ?.copyWith(fontWeight: FontWeight.w700))),
         ],
       ),
     );
@@ -157,9 +361,13 @@ class _SummaryRow extends StatelessWidget {
 }
 
 class _SuccessPanel extends StatelessWidget {
-  const _SuccessPanel({required this.controller});
+  const _SuccessPanel({
+    required this.controller,
+    required this.orderId,
+  });
 
   final AnimationController controller;
+  final String orderId;
 
   @override
   Widget build(BuildContext context) {
@@ -174,24 +382,31 @@ class _SuccessPanel extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
             decoration: BoxDecoration(
               color: Theme.of(context).brightness == Brightness.dark
-        ? TruxifyColors.darkAccentLight
-        : TruxifyColors.accentLight,
+                  ? TruxifyColors.darkAccentLight
+                  : TruxifyColors.accentLight,
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: TruxifyColors.accent.withValues(alpha: 0.2)),
+              border: Border.all(
+                  color: TruxifyColors.accent.withValues(alpha: 0.2)),
             ),
             child: Column(
               children: [
                 Icon(
-  Icons.check_circle_rounded,
-  color: Theme.of(context).brightness == Brightness.dark
-      ? TruxifyColors.accent
-      : TruxifyColors.accentDark,
-  size: 58,
-),
+                  Icons.check_circle_rounded,
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? TruxifyColors.accent
+                      : TruxifyColors.accentDark,
+                  size: 58,
+                ),
                 const SizedBox(height: 10),
-                Text('Booking Confirmed! 🎉', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                Text('Booking Confirmed! 🎉',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w800)),
                 const SizedBox(height: 4),
-                Text('Order ID: #FF20241205', style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: TruxifyColors.adaptiveSecondaryText(context))),
+                Text('Order ID: $orderId',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: TruxifyColors.adaptiveSecondaryText(context))),
               ],
             ),
           ),

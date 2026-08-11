@@ -33,15 +33,26 @@ class AppCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cardColor = color ?? Theme.of(context).colorScheme.surface;
-    final card = Container(
+    
+    Widget content = Padding(padding: padding, child: child);
+    
+    if (onTap != null) {
+      content = InkWell(
+        onTap: onTap,
+        child: content,
+      );
+    }
+
+    return Container(
       margin: margin,
       decoration: BoxDecoration(
         color: cardColor,
         borderRadius: BorderRadius.circular(14),
         border: border ??
             Border.all(
-                color:
-                    color == null ? _borderColor(context) : Colors.transparent),
+                color: color == null
+                    ? _borderColor(context)
+                    : Colors.transparent),
         boxShadow: elevation > 0
             ? [
                 BoxShadow(
@@ -51,19 +62,12 @@ class AppCard extends StatelessWidget {
               ]
             : null,
       ),
-      child: Padding(padding: padding, child: child),
-    );
-
-    if (onTap == null) {
-      return card;
-    }
-
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
-        child: card,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: Material(
+          color: Colors.transparent,
+          child: content,
+        ),
       ),
     );
   }
@@ -514,7 +518,7 @@ class StatusDot extends StatelessWidget {
   }
 }
 
-class OtpInputRow extends StatelessWidget {
+class OtpInputRow extends StatefulWidget {
   const OtpInputRow(
       {super.key, required this.controllers, required this.focusNodes});
 
@@ -522,21 +526,69 @@ class OtpInputRow extends StatelessWidget {
   final List<FocusNode> focusNodes;
 
   @override
+  State<OtpInputRow> createState() => _OtpInputRowState();
+}
+
+class _OtpInputRowState extends State<OtpInputRow> {
+  static const _zwsp = '\u200B'; 
+
+  @override
+  void initState() {
+    super.initState();
+    for (final controller in widget.controllers) {
+      if (controller.text.isEmpty) {
+        controller.text = _zwsp;
+      }
+    }
+  }
+
+  void _onChanged(String value, int index) {
+    final controllers = widget.controllers;
+    final focusNodes = widget.focusNodes;
+    final stripped = value.replaceAll(_zwsp, '');
+
+    if (stripped.isEmpty) {
+      controllers[index].text = _zwsp;
+      controllers[index].selection = TextSelection.collapsed(
+        offset: _zwsp.length,
+      );
+      if (index > 0) {
+        controllers[index - 1].text = _zwsp;
+        controllers[index - 1].selection = TextSelection.collapsed(
+          offset: _zwsp.length,
+        );
+        focusNodes[index - 1].requestFocus();
+      }
+    } else {
+      final digit = stripped.characters.last;
+      controllers[index].text = digit;
+      controllers[index].selection = TextSelection.collapsed(
+        offset: digit.length,
+      );
+      if (index < controllers.length - 1) {
+        if (controllers[index + 1].text.replaceAll(_zwsp, '').isEmpty) {
+          controllers[index + 1].text = _zwsp;
+        }
+        focusNodes[index + 1].requestFocus();
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Row(
-      children: List.generate(controllers.length, (index) {
+      children: List.generate(widget.controllers.length, (index) {
         return Expanded(
           child: Padding(
             padding: EdgeInsets.only(
-                right: index == controllers.length - 1 ? 0 : 12),
+                right: index == widget.controllers.length - 1 ? 0 : 12),
             child: SizedBox(
               height: 58,
               child: TextField(
-                controller: controllers[index],
-                focusNode: focusNodes[index],
+                controller: widget.controllers[index],
+                focusNode: widget.focusNodes[index],
                 keyboardType: TextInputType.number,
                 textAlign: TextAlign.center,
-                maxLength: 1,
                 style: Theme.of(context)
                     .textTheme
                     .titleLarge
@@ -551,14 +603,7 @@ class OtpInputRow extends StatelessWidget {
                     borderSide: const BorderSide(color: TruxifyColors.border),
                   ),
                 ),
-                onChanged: (value) {
-                  if (value.isNotEmpty && index < controllers.length - 1) {
-                    focusNodes[index + 1].requestFocus();
-                  }
-                  if (value.isEmpty && index > 0) {
-                    focusNodes[index - 1].requestFocus();
-                  }
-                },
+                onChanged: (value) => _onChanged(value, index),
               ),
             ),
           ),

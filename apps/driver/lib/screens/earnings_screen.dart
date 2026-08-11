@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:truxify_driver/models/earnings_daily_model.dart';
+import 'package:truxify_driver/services/driver_earnings_service.dart';
 import '../theme/app_theme.dart';
-import '../data/mock_data.dart';
+import '../widgets/earnings_shimmer.dart';
 
 class EarningsScreen extends StatefulWidget {
   const EarningsScreen({super.key});
@@ -11,894 +13,904 @@ class EarningsScreen extends StatefulWidget {
 }
 
 class _EarningsScreenState extends State<EarningsScreen> {
-  int _selectedPeriodIndex = 1; // 0: Today, 1: Week, 2: Month
-  int _selectedBarIndex = 3; // Thursday is default (index 3)
+  final DriverEarningsService _earningsService = DriverEarningsService();
 
-  final List<String> _periods = ['Today', 'This Week', 'This Month'];
+  bool _isMonthLoading = false;
+  bool _isLoading = true;
 
-  String _getCompactAmount(double amount) {
-    if (amount >= 1000) {
-      return '₹${(amount / 1000).toStringAsFixed(1)}k';
+  late DateTime _selectedDate;
+  late int _currentYear;
+  late int _currentMonth;
+
+  Map<String, EarningsDailyModel> _earningsMap = {};
+  List<Map<String, dynamic>> _selectedDayTrips = [];
+  List<Map<String, dynamic>> _pendingPayments = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedDate = DateTime.now();
+    _currentYear = _selectedDate.year;
+    _currentMonth = _selectedDate.month;
+
+    _loadAllData();
+  }
+
+  @override
+  void dispose() {
+    _earningsService.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadAllData() async {
+    setState(() => _isLoading = true);
+    final startTime = DateTime.now();
+
+    await Future.wait([
+      _loadMonthlyEarnings(),
+      _loadSelectedDayTrips(),
+      _loadPendingPayments(),
+    ]);
+
+    final elapsed = DateTime.now().difference(startTime);
+    final remainingDelay = const Duration(milliseconds: 1500) - elapsed;
+    final isTesting = WidgetsBinding.instance.runtimeType.toString().contains('Test');
+    if (remainingDelay > Duration.zero && !isTesting) {
+      await Future.delayed(remainingDelay);
     }
-    return '₹${amount.toInt()}';
+
+    if (mounted) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _loadMonthlyEarnings() async {
+    setState(() => _isMonthLoading = true);
+
+    try {
+      final data = await _earningsService.fetchMonthlyEarnings(
+        month: DateTime(_currentYear, _currentMonth),
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _earningsMap = {
+          for (final item in data)
+            item['day_date'].toString(): EarningsDailyModel.fromMap(item),
+        };
+      });
+    } catch (e) {
+      debugPrint('Failed to load monthly earnings: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isMonthLoading = false);
+      }
+    }
+  }
+
+  Future<void> _loadSelectedDayTrips() async {
+    try {
+      final trips = await _earningsService.fetchCompletedTripsForDay(
+        date: _selectedDate,
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _selectedDayTrips = trips;
+      });
+    } catch (e) {
+      debugPrint('Failed to load selected day trips: $e');
+    }
+  }
+
+  Future<void> _loadPendingPayments() async {
+    try {
+      final transactions = await _earningsService.fetchWalletTransactions();
+
+      if (!mounted) return;
+
+      setState(() {
+        _pendingPayments =
+            transactions.where((txn) => txn['status'] == 'pending').toList();
+      });
+    } catch (e) {
+      debugPrint('Failed to load pending payments: $e');
+    }
+  }
+
+  String _getDateKey(DateTime date) {
+    return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+  }
+
+  void _prevMonth() {
+    setState(() {
+      _currentMonth--;
+
+      if (_currentMonth < 1) {
+        _currentMonth = 12;
+        _currentYear--;
+      }
+    });
+
+    _loadMonthlyEarnings();
+  }
+
+  void _nextMonth() {
+    setState(() {
+      _currentMonth++;
+
+      if (_currentMonth > 12) {
+        _currentMonth = 1;
+        _currentYear++;
+      }
+    });
+
+    _loadMonthlyEarnings();
+  }
+
+  // Custom helper for formatting date: Thursday, 14 May 2026
+  String _formatFullDate(DateTime date) {
+    final weekdays = [
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday'
+    ];
+    final months = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December'
+    ];
+    return '${weekdays[date.weekday - 1]}, ${date.day} ${months[date.month - 1]} ${date.year}';
+  }
+
+  String _getMonthYearLabel(int month, int year) {
+    final months = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December'
+    ];
+    return '${months[month - 1]} $year';
+  }
+
+  double get _todayAmount {
+    final todayKey = _getDateKey(DateTime.now());
+    return _earningsMap[todayKey]?.amount ?? 0.0;
+  }
+
+  double get _monthAmount {
+    return _earningsMap.values.fold<double>(
+      0,
+      (sum, item) => sum + item.amount,
+    );
+  }
+
+  double get _weekAmount {
+    final now = DateTime.now();
+    final startOfWeek = now.subtract(Duration(days: now.weekday - 1));
+
+    return _earningsMap.entries.fold<double>(0, (sum, entry) {
+      final date = DateTime.tryParse(entry.key);
+      if (date == null) return sum;
+
+      final isThisWeek =
+          date.isAfter(startOfWeek.subtract(const Duration(days: 1))) &&
+              date.isBefore(now.add(const Duration(days: 1)));
+
+      return isThisWeek ? sum + entry.value.amount : sum;
+    });
+  }
+
+  String _formatRupees(double amount) {
+    return '₹${amount.toStringAsFixed(0)}';
+  }
+
+  String _tripRoute(Map<String, dynamic> trip) {
+    return trip['route_label']?.toString() ?? 'Route unavailable';
+  }
+
+  String _tripCustomer(Map<String, dynamic> trip) {
+    return trip['customer_name']?.toString() ??
+        trip['customer_display_name']?.toString() ??
+        'Customer';
+  }
+
+  double _tripAmount(Map<String, dynamic> trip) {
+    final value = trip['net_earnings'] ?? trip['total_earnings'] ?? 0;
+    if (value is num) return value / 100.0;
+
+    return (double.tryParse(value.toString()) ?? 0.0) / 100.0;
   }
 
   @override
   Widget build(BuildContext context) {
-    final double maxAmount = weeklyEarnings
-        .map((e) => e.amount.toDouble())
-        .reduce((a, b) => a > b ? a : b);
-
-    final selectedEarning = weeklyEarnings[_selectedBarIndex];
-
-    return SafeArea(
-      child: Scaffold(
+    return Scaffold(
         backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-        body: Column(
-          children: [
-            // Top Bar
-            Container(
-              color: Theme.of(context).colorScheme.surface,
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              child: Text(
-                'Earnings',
-                style: GoogleFonts.dmSans(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).colorScheme.onSurface,
-                ),
-              ),
-            ),
-            Container(height: 1, color: TruxifyColors.border),
-
-            // Scrollable Body
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                child: Column(
-                  children: [
-                    // 1. Period Selector
-                    Padding(
-                      padding: const EdgeInsets.only(
-                          left: 16, right: 16, bottom: 16),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: List.generate(_periods.length, (index) {
-                          final isSelected = index == _selectedPeriodIndex;
-                          return GestureDetector(
-                            onTap: () {
-                              setState(() {
-                                _selectedPeriodIndex = index;
-                              });
-                            },
-                            child: Container(
-                              margin: const EdgeInsets.symmetric(horizontal: 4),
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 20, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: isSelected
-                                    ? TruxifyColors.accent
-                                    : Theme.of(context).colorScheme.surface,
-                                border: Border.all(
-                                  color: isSelected
-                                      ? TruxifyColors.accent
-                                      : TruxifyColors.border,
-                                ),
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: Text(
-                                _periods[index],
-                                style: GoogleFonts.dmSans(
-                                  fontSize: 12,
-                                  fontWeight: isSelected
-                                      ? FontWeight.w600
-                                      : FontWeight.normal,
-                                  color: isSelected
-                                      ? Colors.white
-                                      : TruxifyColors.hintText,
-                                ),
-                              ),
-                            ),
-                          );
-                        }),
-                      ),
-                    ),
-
-                    // 2. Hero Total Card
-                    Container(
-                      margin: const EdgeInsets.only(
-                          left: 16, right: 16, bottom: 16),
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          colors: [TruxifyColors.accent, Color(0xFF5E0B0B)],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'TOTAL EARNED',
-                            style: GoogleFonts.dmSans(
-                              color: Colors.white.withValues(alpha: 0.6),
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 1.0,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '₹18,400',
-                            style: GoogleFonts.dmSans(
-                              color: Theme.of(context).colorScheme.surface,
-                              fontSize: 38,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          // Goal progress
-                          Container(
-                            height: 6,
-                            width: double.infinity,
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.2),
-                              borderRadius: BorderRadius.circular(3),
-                            ),
-                            child: FractionallySizedBox(
-                              alignment: Alignment.centerLeft,
-                              widthFactor: 0.74,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: Theme.of(context).colorScheme.surface,
-                                  borderRadius: BorderRadius.circular(3),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            '₹6,600 more to reach your ₹25,000 goal',
-                            style: GoogleFonts.dmSans(
-                              color: Colors.white.withValues(alpha: 0.7),
-                              fontSize: 11,
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  children: [
-                                    Text(
-                                      '8',
-                                      style: GoogleFonts.dmSans(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .surface,
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      'Trips',
-                                      style: GoogleFonts.dmSans(
-                                        color: Colors.white.withValues(alpha: 0.5),
-                                        fontSize: 10,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Container(
-                                width: 1,
-                                height: 28,
-                                color: Colors.white.withValues(alpha: 0.15),
-                              ),
-                              Expanded(
-                                child: Column(
-                                  children: [
-                                    Text(
-                                      '₹2,300',
-                                      style: GoogleFonts.dmSans(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .surface,
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      'Avg/trip',
-                                      style: GoogleFonts.dmSans(
-                                        color: Colors.white.withValues(alpha: 0.5),
-                                        fontSize: 10,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Container(
-                                width: 1,
-                                height: 28,
-                                color: Colors.white.withValues(alpha: 0.15),
-                              ),
-                              Expanded(
-                                child: Column(
-                                  children: [
-                                    Text(
-                                      '42h',
-                                      style: GoogleFonts.dmSans(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .surface,
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      'Hours',
-                                      style: GoogleFonts.dmSans(
-                                        color: Colors.white.withValues(alpha: 0.5),
-                                        fontSize: 10,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    // 3. Earnings Story Card
-                    Container(
-                      margin: const EdgeInsets.only(
-                          left: 16, right: 16, bottom: 16),
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        border: Border.all(color: TruxifyColors.border),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Your week at a glance',
-                            style: GoogleFonts.dmSans(
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                              color: Theme.of(context).colorScheme.onSurface,
-                            ),
-                          ),
-                          Text(
-                            "Tap any bar to see that day's details",
-                            style: GoogleFonts.dmSans(
-                              fontSize: 11,
-                              color: TruxifyColors.hintText,
-                            ),
-                          ),
-                          const SizedBox(height: 20),
-                          // Chart Row
-                          SizedBox(
-                            height: 110,
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children:
-                                  List.generate(weeklyEarnings.length, (index) {
-                                final item = weeklyEarnings[index];
-                                final isSelected = index == _selectedBarIndex;
-                                final isHighest =
-                                    item.amount.toDouble() == maxAmount;
-
-                                // Responsive bar height calculation based on screen size.
-                                final double barHeight =
-                                    (item.amount.toDouble() / maxAmount) *
-                                        (MediaQuery.sizeOf(context).height /
-                                            14.1);
-
-                                return Expanded(
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.end,
-                                    children: [
-                                      // Top Amount Text (show if selected or highest)
-                                      SizedBox(
-                                        height: 12,
-                                        child: (isSelected || isHighest)
-                                            ? Text(
-                                                _getCompactAmount(
-                                                    item.amount.toDouble()),
-                                                style: GoogleFonts.dmSans(
-                                                  fontSize: 9,
-                                                  fontWeight: FontWeight.bold,
-                                                  color: TruxifyColors.accent,
-                                                ),
-                                              )
-                                            : null,
-                                      ),
-                                      const SizedBox(height: 4),
-                                      // The Bar
-                                      GestureDetector(
-                                        onTap: () {
-                                          setState(() {
-                                            _selectedBarIndex = index;
-                                          });
-                                        },
-                                        child: AnimatedContainer(
-                                          duration:
-                                              const Duration(milliseconds: 300),
-                                          curve: Curves.easeInOut,
-                                          height: barHeight,
-                                          width: 24,
-                                          decoration: BoxDecoration(
-                                            color: isSelected
-                                                ? const Color(0xFF5E0B0B)
-                                                : (isHighest
-                                                    ? TruxifyColors.accent
-                                                    : TruxifyColors
-                                                        .accentLight),
-                                            borderRadius:
-                                                const BorderRadius.vertical(
-                                              top: Radius.circular(6),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 6),
-                                      // Day Label
-                                      Text(
-                                        item.day,
-                                        style: GoogleFonts.dmSans(
-                                          fontSize: 10,
-                                          color: TruxifyColors.hintText,
-                                          fontWeight: isSelected
-                                              ? FontWeight.bold
-                                              : FontWeight.normal,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              }),
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          // Selected Detail
-                          Center(
-                            child: Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.symmetric(
-                                  vertical: 8, horizontal: 14),
-                              decoration: BoxDecoration(
-                                color: TruxifyColors.accentLight,
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Text(
-                                '${_getFullDayName(selectedEarning.day)} · ₹${selectedEarning.amount} · ${selectedEarning.tripCount} ${selectedEarning.tripCount == 1 ? 'trip' : 'trips'}',
-                                textAlign: TextAlign.center,
-                                style: GoogleFonts.dmSans(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w500,
-                                  color: TruxifyColors.accent,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    // 4. Breakdown Card
-                    Container(
-                      margin: const EdgeInsets.only(
-                          left: 16, right: 16, bottom: 16),
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        border: Border.all(color: TruxifyColors.border),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Where your money comes from',
-                            style: GoogleFonts.dmSans(
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                              color: Theme.of(context).colorScheme.onSurface,
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          _buildBreakdownRow(
-                            context,
-                            'Long haul (>400km)',
-                            60,
-                            '₹11,040',
-                            TruxifyColors.accent,
-                          ),
-                          const SizedBox(height: 12),
-                          _buildBreakdownRow(
-                            context,
-                            'Short haul (<400km)',
-                            30,
-                            '₹5,520',
-                            TruxifyColors.warning,
-                          ),
-                          const SizedBox(height: 12),
-                          _buildBreakdownRow(
-                            context,
-                            'Multi-customer loads',
-                            10,
-                            '₹1,840',
-                            TruxifyColors.success,
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    // 5. Savings Comparison Card
-                    Container(
-                      margin: const EdgeInsets.only(
-                          left: 16, right: 16, bottom: 16),
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        border: Border.all(color: TruxifyColors.border),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'You vs broker system',
-                            style: GoogleFonts.dmSans(
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                              color: Theme.of(context).colorScheme.onSurface,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFFFF5F5),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'WITH TRUXIFY',
-                                        style: GoogleFonts.dmSans(
-                                          fontSize: 10,
-                                          color: TruxifyColors.hintText,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        '₹18,400',
-                                        style: GoogleFonts.dmSans(
-                                          fontSize: 20,
-                                          fontWeight: FontWeight.bold,
-                                          color: TruxifyColors.accent,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        'You keep 100%',
-                                        style: GoogleFonts.dmSans(
-                                          fontSize: 11,
-                                          color: TruxifyColors.success,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFF5F5F5),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'OLD BROKER SYSTEM',
-                                        style: GoogleFonts.dmSans(
-                                          fontSize: 10,
-                                          color: TruxifyColors.hintText,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        '₹12,880',
-                                        style: GoogleFonts.dmSans(
-                                          fontSize: 20,
-                                          fontWeight: FontWeight.w500,
-                                          color: TruxifyColors.hintText,
-                                          decoration:
-                                              TextDecoration.lineThrough,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        "You'd lose ₹5,520",
-                                        style: GoogleFonts.dmSans(
-                                          fontSize: 11,
-                                          color: TruxifyColors.errorRed,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Center(
-                            child: Text(
-                              'Saved ₹5,520 this week by going broker-free 🎉',
-                              style: GoogleFonts.dmSans(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500,
-                                color: TruxifyColors.accent,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    // 6. Milestones Card
-                    Container(
-                      margin: const EdgeInsets.only(
-                          left: 16, right: 16, bottom: 16),
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        border: Border.all(color: TruxifyColors.border),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Milestones',
-                            style: GoogleFonts.dmSans(
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                              color: Theme.of(context).colorScheme.onSurface,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          _buildMilestoneRow(
-                            Icons.emoji_events_outlined,
-                            const Color(0xFFFDEAEA),
-                            TruxifyColors.accent,
-                            '100 Trips completed',
-                            'Achieved on 12 Oct 2024',
-                            const Text(
-                              '✓',
-                              style: TextStyle(
-                                color: TruxifyColors.success,
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                          const Divider(color: TruxifyColors.border),
-                          _buildMilestoneRow(
-                            Icons.star_outline_rounded,
-                            const Color(0xFFFFF3E0),
-                            TruxifyColors.warning,
-                            '₹1 Lakh earned',
-                            'Achieved on 5 Nov 2024',
-                            const Text(
-                              '✓',
-                              style: TextStyle(
-                                color: TruxifyColors.success,
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                          const Divider(color: TruxifyColors.border),
-                          _buildMilestoneRow(
-                            Icons.flag_outlined,
-                            const Color(0xFFEBEBEB),
-                            TruxifyColors.hintText,
-                            '150 Trips',
-                            '142 of 150 · 8 more to go',
-                            SizedBox(
-                              width: 60,
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(2),
-                                child: const LinearProgressIndicator(
-                                  value: 0.95,
-                                  color: TruxifyColors.accent,
-                                  backgroundColor: TruxifyColors.border,
-                                  minHeight: 4,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    // 7. Pending Payments Card
-                    Container(
-                      margin: const EdgeInsets.only(
-                          left: 16, right: 16, bottom: 24),
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        border: Border.all(color: TruxifyColors.border),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                'Pending',
-                                style: GoogleFonts.dmSans(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.bold,
-                                  color:
-                                      Theme.of(context).colorScheme.onSurface,
-                                ),
-                              ),
-                              Text(
-                                '₹4,700',
-                                style: GoogleFonts.dmSans(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w500,
-                                  color: TruxifyColors.accent,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          ...pendingPayments.map((item) {
-                            final initials = item.customerName.isNotEmpty
-                                ? item.customerName
-                                    .split(' ')
-                                    .map((e) => e[0])
-                                    .join('')
-                                : 'C';
-                            return Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 8.0),
-                              child: Row(
-                                children: [
-                                  Container(
-                                    width: 32,
-                                    height: 32,
-                                    decoration: const BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: TruxifyColors.accentLight,
-                                    ),
-                                    child: Center(
-                                      child: Text(
-                                        initials,
-                                        style: GoogleFonts.dmSans(
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.bold,
-                                          color: TruxifyColors.accent,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          item.customerName,
-                                          style: GoogleFonts.dmSans(
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w500,
-                                            color: Theme.of(context)
-                                                .colorScheme
-                                                .onSurface,
-                                          ),
-                                        ),
-                                        Text(
-                                          '${item.route} · ${item.note}',
-                                          style: GoogleFonts.dmSans(
-                                            fontSize: 10,
-                                            color: TruxifyColors.hintText,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  Text(
-                                    item.amount,
-                                    style: GoogleFonts.dmSans(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.bold,
-                                      color: TruxifyColors.accent,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            );
-                          }),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildBreakdownRow(
-    BuildContext context,
-    String label,
-    int percentage,
-    String amount,
-    Color color,
-  ) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              label,
-              style: GoogleFonts.dmSans(
-                fontSize: 13,
-                color: Theme.of(context).colorScheme.onSurface,
-              ),
-            ),
-            Text(
-              amount,
-              style: GoogleFonts.dmSans(
-                fontSize: 13,
-                fontWeight: FontWeight.bold,
-                color: color,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        Container(
-          height: 6,
-          width: double.infinity,
-          decoration: BoxDecoration(
-            color: TruxifyColors.border,
-            borderRadius: BorderRadius.circular(3),
-          ),
-          child: FractionallySizedBox(
-            alignment: Alignment.centerLeft,
-            widthFactor: percentage / 100,
-            child: Container(
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: BorderRadius.circular(3),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          '$percentage% of earnings',
-          style: GoogleFonts.dmSans(
-            fontSize: 10,
-            color: TruxifyColors.hintText,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildMilestoneRow(
-    IconData icon,
-    Color iconBgColor,
-    Color iconColor,
-    String title,
-    String subtitle,
-    Widget trailing,
-  ) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      child: Row(
-        children: [
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: iconBgColor,
-            ),
-            child: Icon(
-              icon,
-              color: iconColor,
-              size: 18,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
+        body: RefreshIndicator(
+          onRefresh: _loadAllData,
+          child: CustomScrollView(
+            slivers: [
+              // Premium App Bar
+              SliverAppBar(
+                backgroundColor: Theme.of(context).colorScheme.surface,
+                pinned: true,
+                elevation: 0,
+                surfaceTintColor: Colors.transparent,
+                title: Text(
+                  'Earnings',
                   style: GoogleFonts.dmSans(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
                     color: Theme.of(context).colorScheme.onSurface,
                   ),
                 ),
-                Text(
-                  subtitle,
-                  style: GoogleFonts.dmSans(
-                    fontSize: 11,
-                    color: TruxifyColors.hintText,
+                bottom: PreferredSize(
+                  preferredSize: const Size.fromHeight(1),
+                  child: Container(
+                    height: 1,
+                    color: Theme.of(context).colorScheme.outlineVariant,
                   ),
                 ),
-              ],
-            ),
+              ),
+
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: Column(
+                    children: [
+                      if (!_isLoading && _isMonthLoading) const LinearProgressIndicator(),
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 300),
+                        child: _isLoading
+                            ? const SummaryCardsShimmer(key: ValueKey('summary_shimmer'))
+                            : _buildOverallSummaryCards(key: const ValueKey('summary_content')),
+                      ),
+                      const SizedBox(height: 24),
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 300),
+                        child: _isLoading
+                            ? HeatmapCalendarShimmer(
+                                key: const ValueKey('calendar_shimmer'),
+                                currentYear: _currentYear,
+                                currentMonth: _currentMonth,
+                              )
+                            : _buildHeatmapCalendarCard(key: const ValueKey('calendar_content')),
+                      ),
+                      const SizedBox(height: 24),
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 300),
+                        child: _isLoading
+                            ? const SelectedDateDetailsShimmer(key: ValueKey('details_shimmer'))
+                            : _buildSelectedDateDetailsCard(key: const ValueKey('details_content')),
+                      ),
+                      const SizedBox(height: 24),
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 300),
+                        child: _isLoading
+                            ? const PendingPaymentsShimmer(key: ValueKey('payments_shimmer'))
+                            : _buildPendingPaymentsCard(key: const ValueKey('payments_content')),
+                      ),
+                      const SizedBox(height: 40),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
-          trailing,
+        ));
+  }
+
+  Widget _buildOverallSummaryCards({Key? key}) {
+    return Padding(
+      key: key,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        children: [
+          _buildSummaryCard(
+            value: _formatRupees(_todayAmount),
+            label: 'Today',
+            icon: Icons.today_rounded,
+            iconColor: TruxifyColors.accent,
+            bgColor: TruxifyColors.accentLight,
+          ),
+          const SizedBox(width: 12),
+          _buildSummaryCard(
+            value: _formatRupees(_weekAmount),
+            label: 'This Week',
+            icon: Icons.date_range_rounded,
+            iconColor: TruxifyColors.warning,
+            bgColor: TruxifyColors.warningLight,
+          ),
+          const SizedBox(width: 12),
+          _buildSummaryCard(
+            value: _formatRupees(_monthAmount),
+            label: 'This Month',
+            icon: Icons.calendar_month_rounded,
+            iconColor: TruxifyColors.success,
+            bgColor: TruxifyColors.successLight,
+          ),
         ],
       ),
     );
   }
 
-  String _getFullDayName(String shortDay) {
-    switch (shortDay) {
-      case 'Mon':
-        return 'Monday';
-      case 'Tue':
-        return 'Tuesday';
-      case 'Wed':
-        return 'Wednesday';
-      case 'Thu':
-        return 'Thursday';
-      case 'Fri':
-        return 'Friday';
-      case 'Sat':
-        return 'Saturday';
-      case 'Sun':
-        return 'Sunday';
-      default:
-        return shortDay;
-    }
+  Widget _buildSummaryCard({
+    required String value,
+    required String label,
+    required IconData icon,
+    required Color iconColor,
+    required Color bgColor,
+  }) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+        decoration: BoxDecoration(
+          color: Theme.of(context).cardTheme.color,
+          borderRadius: BorderRadius.circular(16),
+          border:
+              Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.01),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: bgColor,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: iconColor, size: 20),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              value,
+              style: GoogleFonts.dmSans(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: GoogleFonts.dmSans(
+                fontSize: 11,
+                color: TruxifyColors.adaptiveSecondaryText(context),
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeatmapCalendarCard({Key? key}) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    // Days in current selection
+    final DateTime firstDay = DateTime(_currentYear, _currentMonth, 1);
+    final int firstWeekday = firstDay.weekday; // 1 = Mon, 7 = Sun
+    final int totalDays = DateTime(_currentYear, _currentMonth + 1, 0).day;
+    final int leadingEmptyCells = firstWeekday - 1; // 0-indexed offset
+
+    final int totalGridItems = leadingEmptyCells + totalDays;
+
+    return Container(
+      key: key,
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardTheme.color,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        boxShadow: [
+          BoxShadow(
+            color: isDark
+                ? Colors.black.withOpacity(0.25)
+                : Colors.black.withOpacity(0.02),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Earning Calendar',
+                    style: GoogleFonts.dmSans(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Tap a date to inspect trips',
+                    style: GoogleFonts.dmSans(
+                      fontSize: 11,
+                      color: TruxifyColors.adaptiveSecondaryText(context),
+                    ),
+                  ),
+                ],
+              ),
+              // Month Switchers
+              Row(
+                children: [
+                  IconButton(
+                    onPressed: _prevMonth,
+                    icon: const Icon(
+                      Icons.chevron_left_rounded,
+                      size: 20,
+                      color: Colors.black,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    style: IconButton.styleFrom(
+                      backgroundColor: TruxifyColors.accentVeryLight,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _getMonthYearLabel(_currentMonth, _currentYear),
+                    style: GoogleFonts.dmSans(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    onPressed: _nextMonth,
+                    icon: const Icon(
+                      Icons.chevron_right_rounded,
+                      size: 20,
+                      color: Colors.black,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    style: IconButton.styleFrom(
+                      backgroundColor: TruxifyColors.accentVeryLight,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+
+          // Weekday Labels Row
+          Row(
+            children: ['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((label) {
+              return Expanded(
+                child: Center(
+                  child: Text(
+                    label,
+                    style: GoogleFonts.dmSans(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: TruxifyColors.adaptiveSecondaryText(context),
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 10),
+
+          // Calendar Heatmap Grid
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: totalGridItems,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 7,
+              mainAxisSpacing: 6,
+              crossAxisSpacing: 6,
+              childAspectRatio: 1.0,
+            ),
+            itemBuilder: (context, index) {
+              if (index < leadingEmptyCells) {
+                return const SizedBox.shrink();
+              }
+
+              final int day = index - leadingEmptyCells + 1;
+              final DateTime cellDate =
+                  DateTime(_currentYear, _currentMonth, day);
+              final String cellKey = _getDateKey(cellDate);
+              final bool isSelected = _getDateKey(_selectedDate) == cellKey;
+
+              final earningData = _earningsMap[cellKey];
+              final earnings = earningData?.amount ?? 0.0;
+
+              // Determine color based on earnings magnitude relative to max ₹8,400
+              Color cellBgColor = isDark
+                  ? TruxifyColors.darkBorder.withOpacity(0.5)
+                  : Theme.of(context)
+                      .colorScheme
+                      .outlineVariant
+                      .withOpacity(0.3);
+              Color textColor = Theme.of(context).colorScheme.onSurface;
+              FontWeight textWeight = FontWeight.normal;
+
+              if (earnings > 0) {
+                final double scale = (earnings / 8400.0).clamp(0.0, 1.0);
+                final double opacity = 0.15 + (scale * 0.75);
+                cellBgColor = TruxifyColors.accent.withOpacity(opacity);
+
+                if (opacity > 0.6) {
+                  textColor = Colors.white;
+                  textWeight = FontWeight.bold;
+                } else {
+                  textColor = isDark
+                      ? TruxifyColors.darkPrimaryText
+                      : TruxifyColors.accentDark;
+                  textWeight = FontWeight.w600;
+                }
+              } else if (earningData != null && earnings == 0.0) {
+                // Cancelled day (grey card outline style)
+                cellBgColor = Theme.of(context)
+                    .colorScheme
+                    .outlineVariant
+                    .withOpacity(0.6);
+                textColor = TruxifyColors.adaptiveSecondaryText(context);
+              }
+
+              return GestureDetector(
+                onTap: () {
+                  setState(() => _selectedDate = cellDate);
+
+                  _loadSelectedDayTrips();
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  decoration: BoxDecoration(
+                    color: cellBgColor,
+                    borderRadius: BorderRadius.circular(8),
+                    border: isSelected
+                        ? Border.all(color: TruxifyColors.accent, width: 2)
+                        : null,
+                    boxShadow: isSelected
+                        ? [
+                            BoxShadow(
+                              color: TruxifyColors.accent.withOpacity(0.3),
+                              blurRadius: 6,
+                              spreadRadius: 1,
+                            ),
+                          ]
+                        : [],
+                  ),
+                  child: Center(
+                    child: Text(
+                      day.toString(),
+                      style: GoogleFonts.dmSans(
+                        fontSize: 12,
+                        fontWeight: isSelected ? FontWeight.bold : textWeight,
+                        color: isSelected
+                            ? (earnings > 0 &&
+                                    (0.15 + (earnings / 8400.0) * 0.75) > 0.6
+                                ? Colors.white
+                                : TruxifyColors.accent)
+                            : textColor,
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 16),
+
+          // Heatmap Legend
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              Text(
+                'Less',
+                style: GoogleFonts.dmSans(
+                  fontSize: 10,
+                  color: TruxifyColors.adaptiveSecondaryText(context),
+                ),
+              ),
+              const SizedBox(width: 4),
+              _buildLegendBox(
+                isDark
+                    ? TruxifyColors.darkBorder.withOpacity(0.5)
+                    : Theme.of(context)
+                        .colorScheme
+                        .outlineVariant
+                        .withOpacity(0.3),
+              ),
+              const SizedBox(width: 2),
+              _buildLegendBox(TruxifyColors.accent.withOpacity(0.2)),
+              const SizedBox(width: 2),
+              _buildLegendBox(TruxifyColors.accent.withOpacity(0.45)),
+              const SizedBox(width: 2),
+              _buildLegendBox(TruxifyColors.accent.withOpacity(0.7)),
+              const SizedBox(width: 2),
+              _buildLegendBox(TruxifyColors.accent),
+              const SizedBox(width: 4),
+              Text(
+                'More',
+                style: GoogleFonts.dmSans(
+                  fontSize: 10,
+                  color: TruxifyColors.adaptiveSecondaryText(context),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLegendBox(Color color) {
+    return Container(
+      width: 10,
+      height: 10,
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(2),
+      ),
+    );
+  }
+
+  Widget _buildSelectedDateDetailsCard({Key? key}) {
+    final String dateKey = _getDateKey(_selectedDate);
+    final earningData = _earningsMap[dateKey];
+    final bool hasData = earningData != null;
+    final double earnings = earningData?.amount ?? 0.0;
+
+    return Container(
+      key: key,
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardTheme.color,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _formatFullDate(_selectedDate),
+            style: GoogleFonts.dmSans(
+              fontSize: 15,
+              fontWeight: FontWeight.bold,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Divider(color: Theme.of(context).colorScheme.outlineVariant),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              _buildDailyMetric(
+                label: 'EARNINGS',
+                value: _formatRupees(earnings),
+                icon: Icons.payments_outlined,
+                color: TruxifyColors.accent,
+              ),
+              _buildDailyMetric(
+                label: 'HOURS',
+                value:
+                    '${earningData?.hoursDriven.toStringAsFixed(1) ?? '0.0'}h',
+                icon: Icons.timer_outlined,
+                color: TruxifyColors.adaptiveSecondaryText(context),
+              ),
+              _buildDailyMetric(
+                label: 'TRIPS',
+                value: '${earningData?.tripCount ?? 0}',
+                icon: Icons.local_shipping_outlined,
+                color: TruxifyColors.success,
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          if (!hasData)
+            _buildEmptyMessage('No earnings found for this date.')
+          else if (_selectedDayTrips.isEmpty)
+            _buildEmptyMessage('No completed trips found for this date.')
+          else ...[
+            Text(
+              'COMPLETED TRIPS',
+              style: GoogleFonts.dmSans(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: TruxifyColors.adaptiveSecondaryText(context),
+                letterSpacing: 1.0,
+              ),
+            ),
+            const SizedBox(height: 10),
+            ..._selectedDayTrips.map(_buildTripTile),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTripTile(Map<String, dynamic> trip) {
+    final amount = _tripAmount(trip);
+
+    return Material(
+      color: Colors.transparent,
+      child: ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(
+          Icons.check_circle_rounded,
+          color: TruxifyColors.success,
+        ),
+        title: Text(_tripRoute(trip)),
+        subtitle: Text(_tripCustomer(trip)),
+        trailing: Text(
+          _formatRupees(amount),
+          style: GoogleFonts.dmSans(
+            fontWeight: FontWeight.bold,
+            color: TruxifyColors.accent,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyMessage(String message) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        child: Text(
+          message,
+          textAlign: TextAlign.center,
+          style: GoogleFonts.dmSans(
+            fontSize: 13,
+            color: TruxifyColors.adaptiveSecondaryText(context),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDailyMetric({
+    required String label,
+    required String value,
+    required IconData icon,
+    required Color color,
+  }) {
+    return Expanded(
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: color.withOpacity(0.7), size: 14),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: GoogleFonts.dmSans(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: TruxifyColors.adaptiveSecondaryText(context),
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: GoogleFonts.dmSans(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPendingPaymentsCard({Key? key}) {
+    final pendingAmount = _pendingPayments.fold<double>(0, (sum, item) {
+      return sum + ((item['amount'] ?? 0) / 100.0);
+    });
+
+    return Container(
+      key: key,
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardTheme.color,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Pending Payments',
+                  style: GoogleFonts.dmSans(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
+              ),
+              Text(
+                _formatRupees(pendingAmount),
+                style: GoogleFonts.dmSans(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: TruxifyColors.accent,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          if (_pendingPayments.isEmpty)
+            _buildEmptyMessage('No pending payments.')
+          else
+            ..._pendingPayments.map((item) {
+              final amount = ((item['amount'] ?? 0) / 100.0);
+
+              return Material(
+                color: Colors.transparent,
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const CircleAvatar(
+                    backgroundColor: TruxifyColors.accentVeryLight,
+                    child: Icon(
+                      Icons.account_balance_wallet_outlined,
+                      color: TruxifyColors.accent,
+                    ),
+                  ),
+                  title: Text(item['description'] ?? 'Pending payment'),
+                  subtitle:
+                      Text(item['trip_display_id'] ?? item['status'] ?? ''),
+                  trailing: Text(
+                    _formatRupees(amount),
+                    style: GoogleFonts.dmSans(fontWeight: FontWeight.bold),
+                  ),
+                ),
+              );
+            }),
+        ],
+      ),
+    );
   }
 }

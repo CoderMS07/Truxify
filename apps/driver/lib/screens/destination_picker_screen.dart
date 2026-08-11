@@ -34,11 +34,13 @@ class DestinationPickerScreen extends StatefulWidget {
     required this.title,
     this.initialQuery,
     this.initialPoint,
+    this.client,
   });
 
   final String title;
   final String? initialQuery;
   final ll.LatLng? initialPoint;
+  final http.Client? client;
 
   @override
   State<DestinationPickerScreen> createState() => _DestinationPickerScreenState();
@@ -50,6 +52,7 @@ class _DestinationPickerScreenState extends State<DestinationPickerScreen> {
   final MapController _mapController = MapController();
   final TextEditingController _searchController = TextEditingController();
   final double _mapZoom = 5.2;
+  late final http.Client _httpClient;
 
   Timer? _debounce;
   List<_SearchSuggestion> _suggestions = const <_SearchSuggestion>[];
@@ -61,6 +64,7 @@ class _DestinationPickerScreenState extends State<DestinationPickerScreen> {
   @override
   void initState() {
     super.initState();
+    _httpClient = widget.client ?? http.Client();
     _searchController.text = widget.initialQuery ?? '';
     _selectedPoint = widget.initialPoint;
     if (_selectedPoint != null) {
@@ -73,6 +77,7 @@ class _DestinationPickerScreenState extends State<DestinationPickerScreen> {
     _mapController.dispose();
     _debounce?.cancel();
     _searchController.dispose();
+    if (widget.client == null) _httpClient.close();
     super.dispose();
   }
 
@@ -104,7 +109,7 @@ class _DestinationPickerScreenState extends State<DestinationPickerScreen> {
     );
 
     try {
-      final response = await http.get(
+      final response = await _httpClient.get(
         uri,
         headers: const <String, String>{
           'Accept': 'application/json',
@@ -183,7 +188,7 @@ class _DestinationPickerScreenState extends State<DestinationPickerScreen> {
     );
 
     try {
-      final response = await http.get(
+      final response = await _httpClient.get(
         uri,
         headers: const <String, String>{
           'Accept': 'application/json',
@@ -286,20 +291,23 @@ class _DestinationPickerScreenState extends State<DestinationPickerScreen> {
                 separatorBuilder: (_, __) => const Divider(height: 1),
                 itemBuilder: (context, index) {
                   final suggestion = _suggestions[index];
-                  return ListTile(
-                    dense: true,
-                    leading: const Icon(
-                      Icons.place_rounded,
-                      color: TruxifyColors.accentDark,
-                    ),
-                    title: Text(
-                      suggestion.address,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    onTap: () => _setLocation(
-                      suggestion.point,
-                      address: suggestion.address,
+                  return Material(
+                    color: Colors.transparent,
+                    child: ListTile(
+                      dense: true,
+                      leading: const Icon(
+                        Icons.place_rounded,
+                        color: TruxifyColors.accentDark,
+                      ),
+                      title: Text(
+                        suggestion.address,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      onTap: () => _setLocation(
+                        suggestion.point,
+                        address: suggestion.address,
+                      ),
                     ),
                   );
                 },

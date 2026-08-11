@@ -1,10 +1,105 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-
-import '../data/mock_data.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:truxify_driver/core/driver_session.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
+
+class DriverDocument {
+  const DriverDocument({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.docNumber,
+    required this.lastVerified,
+    required this.validUntil,
+    required this.statusTone,
+    required this.statusLabel,
+  });
+
+  final String id;
+  final String title;
+  final String subtitle;
+  final String docNumber;
+  final String lastVerified;
+  final String validUntil;
+  final String statusTone;
+  final String statusLabel;
+
+  factory DriverDocument.fromMap(Map<String, dynamic> map) {
+    final docType = map['doc_type'] as String? ?? '';
+    final status = map['status'] as String? ?? 'pending';
+
+    return DriverDocument(
+      id: map['id']?.toString() ?? '',
+      title: _docTypeLabel(docType),
+      subtitle: _docTypeSubtitle(docType),
+      docNumber: () {
+        final rawId = map['id']?.toString() ?? '';
+        return rawId.length >= 8
+            ? rawId.substring(0, 8).toUpperCase()
+            : rawId.toUpperCase();
+      }(),
+      lastVerified: _formatDate(map['last_verified_at'] as String?),
+      validUntil: _formatDate(map['valid_until'] as String?),
+      statusTone: _statusTone(status),
+      statusLabel: 'Document No.',
+    );
+  }
+
+  static String _docTypeLabel(String docType) {
+    const labels = {
+      'rc_book': 'RC Book',
+      'driving_licence': 'Driving Licence',
+      'insurance': 'Insurance Policy',
+      'puc': 'Pollution Certificate',
+      'aadhar': 'Aadhaar Card',
+      'pan': 'PAN Card',
+      'business_license': 'Business License',
+      'bank_account': 'Bank Account',
+    };
+    return labels[docType] ?? docType;
+  }
+
+  static String _docTypeSubtitle(String docType) {
+    const subtitles = {
+      'rc_book': 'Vehicle Registration Certificate',
+      'driving_licence': 'Motor Vehicle Act License',
+      'insurance': 'Commercial Vehicle Policy',
+      'puc': 'Pollution Under Control Certificate',
+      'aadhar': 'Government ID Proof',
+      'pan': 'Income Tax Identity',
+      'business_license': 'Business Registration',
+      'bank_account': 'Bank Account Details',
+    };
+    return subtitles[docType] ?? '';
+  }
+
+  static String _formatDate(String? raw) {
+    if (raw == null) return '—';
+    try {
+      final dt = DateTime.parse(raw);
+      return '${dt.day.toString().padLeft(2, '0')}/'
+          '${dt.month.toString().padLeft(2, '0')}/'
+          '${dt.year}';
+    } catch (_) {
+      return raw;
+    }
+  }
+
+  static String _statusTone(String status) {
+    switch (status) {
+      case 'expiring_soon':
+      case 'expired':
+        return 'warning';
+      case 'verified':
+        return 'verified';
+      default:
+        return 'pending';
+    }
+  }
+}
 
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key});
@@ -14,9 +109,50 @@ class DocumentsScreen extends StatefulWidget {
 }
 
 class _DocumentsScreenState extends State<DocumentsScreen> {
+  SupabaseClient get _supabase => Supabase.instance.client;
+
   String? _selectedUploadType;
+  late final Future<List<DriverDocument>> _documentsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _documentsFuture = _fetchDocuments();
+  }
+
+  Future<List<DriverDocument>> _fetchDocuments() async {
+    final driverId = DriverSession.driverId;
+
+    if (driverId.isEmpty) {
+      throw AuthException('No authenticated user. Please log in again.');
+    }
+
+    final response = await _supabase
+        .from('documents')
+        .select()
+        .eq('user_id', driverId)
+        .order('created_at', ascending: false);
+
+    return (response as List)
+        .map((row) => DriverDocument.fromMap(row as Map<String, dynamic>))
+        .toList();
+  }
+
+  bool _requireAuth(BuildContext context) {
+    if (DriverSession.driverId.isNotEmpty) return true;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('You must be logged in to upload documents.'),
+        backgroundColor: TruxifyColors.error,
+      ),
+    );
+    return false;
+  }
 
   Future<void> _simulateUpload(BuildContext context, String docType) async {
+    if (!_requireAuth(context)) return;
+
     double progress = 0.0;
     String statusText = 'Reading file contents...';
     bool isDone = false;
@@ -25,14 +161,13 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       context: context,
       isDismissible: false,
       enableDrag: false,
-      backgroundColor: Theme.of(context).colorScheme.surface,
+      backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setSheetState) {
-            // Start a timer to increment progress
             if (progress == 0.0) {
               Timer.periodic(const Duration(milliseconds: 300), (timer) {
                 if (!context.mounted) {
@@ -43,21 +178,20 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   progress += 0.15;
                   if (progress >= 1.0) {
                     progress = 1.0;
-                    statusText = 'Verifying on IPFS & Blockchain...';
+                    statusText = 'Verifying document...';
                     timer.cancel();
-                    // Complete after verification delay
                     Future.delayed(const Duration(milliseconds: 800), () {
                       if (context.mounted) {
                         setSheetState(() {
                           isDone = true;
-                          statusText = 'Upload Successful & Encrypted!';
+                          statusText = 'Upload Successful!';
                         });
                       }
                     });
                   } else if (progress > 0.7) {
-                    statusText = 'Encrypting document payload...';
+                    statusText = 'Uploading to secure storage...';
                   } else if (progress > 0.4) {
-                    statusText = 'Uploading blocks to decentralised storage...';
+                    statusText = 'Processing document...';
                   }
                 });
               });
@@ -75,7 +209,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     style: GoogleFonts.dmSans(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
-                      color: Theme.of(context).colorScheme.onSurface,
+                      color: TruxifyColors.primaryText,
                     ),
                   ),
                   const SizedBox(height: 6),
@@ -106,7 +240,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                             style: GoogleFonts.robotoMono(
                               fontSize: 15,
                               fontWeight: FontWeight.bold,
-                              color: Theme.of(context).colorScheme.onSurface,
+                              color: TruxifyColors.primaryText,
                             ),
                           ),
                         ],
@@ -117,7 +251,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                       statusText,
                       style: GoogleFonts.dmSans(
                         fontSize: 13,
-                        color: TruxifyColors.adaptiveSecondaryText(context),
+                        color: TruxifyColors.secondaryText,
                       ),
                     ),
                   ] else ...[
@@ -142,15 +276,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                         color: TruxifyColors.success,
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Hash: QmZ9tYc9XnC5n8T2x9hG... (IPFS Link Created)',
-                      textAlign: TextAlign.center,
-                      style: GoogleFonts.robotoMono(
-                        fontSize: 10,
-                        color: TruxifyColors.adaptiveSecondaryText(context),
-                      ),
-                    ),
                     const SizedBox(height: 24),
                     PrimaryButton(
                       label: 'Back to Documents',
@@ -167,11 +292,13 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   }
 
   Future<void> _showUploadSheet(BuildContext context) async {
+    if (!_requireAuth(context)) return;
+
     String selectedType = _selectedUploadType ?? 'RC Book';
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
+      backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
@@ -189,7 +316,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                 style: GoogleFonts.dmSans(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
-                  color: Theme.of(context).colorScheme.onSurface,
+                  color: TruxifyColors.primaryText,
                 ),
               ),
               const SizedBox(height: 16),
@@ -214,19 +341,13 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                             padding: const EdgeInsets.all(14),
                             decoration: BoxDecoration(
                               color: isSelected
-                                  ? (Theme.of(context).brightness ==
-                                          Brightness.dark
-                                      ? TruxifyColors.darkAccentLight
-                                      : TruxifyColors.accentLight)
-                                  : Theme.of(context).colorScheme.surface,
+                                  ? TruxifyColors.accentLight
+                                  : Colors.grey.shade50,
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(
                                 color: isSelected
                                     ? TruxifyColors.accent
-                                    : (Theme.of(context).brightness ==
-                                            Brightness.dark
-                                        ? TruxifyColors.darkBorder
-                                        : TruxifyColors.border),
+                                    : Colors.grey.shade200,
                               ),
                             ),
                             child: Row(
@@ -239,8 +360,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                                     fontWeight: isSelected
                                         ? FontWeight.bold
                                         : FontWeight.normal,
-                                    color:
-                                        Theme.of(context).colorScheme.onSurface,
+                                    color: TruxifyColors.primaryText,
                                   ),
                                 ),
                                 if (isSelected)
@@ -281,7 +401,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
+      backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
@@ -301,7 +421,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     style: GoogleFonts.dmSans(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
-                      color: Theme.of(context).colorScheme.onSurface,
+                      color: TruxifyColors.primaryText,
                     ),
                   ),
                   Container(
@@ -331,7 +451,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                 width: double.infinity,
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  color: TruxifyColors.secondaryBackground,
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: TruxifyColors.border),
                 ),
@@ -348,7 +468,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      'Decentralised Verification Status',
+                      'Document Status',
                       style: GoogleFonts.dmSans(
                           fontSize: 13,
                           fontWeight: FontWeight.bold,
@@ -446,9 +566,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      backgroundColor: TruxifyColors.background,
       appBar: AppBar(
-        backgroundColor: Theme.of(context).colorScheme.surface,
+        backgroundColor: Colors.white,
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_rounded,
@@ -460,177 +580,277 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           style: GoogleFonts.dmSans(
             fontSize: 16,
             fontWeight: FontWeight.bold,
-            color: Theme.of(context).colorScheme.onSurface,
+            color: TruxifyColors.primaryText,
           ),
         ),
         shape: const Border(bottom: BorderSide(color: TruxifyColors.border)),
       ),
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-          children: [
-            ...documentRecords.map((document) {
-              final isWarning = document.statusTone == 'warning';
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 14),
-                child: AppCard(
+        child: FutureBuilder<List<DriverDocument>>(
+          future: _documentsFuture,
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              final isAuthError = snapshot.error is AuthException;
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Expanded(
-                            child: Text(
-                              document.title,
-                              style: GoogleFonts.dmSans(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                color: Theme.of(context).colorScheme.onSurface,
-                              ),
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: isWarning
-                                  ? TruxifyColors.warningLight
-                                  : TruxifyColors.accentLight,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              isWarning ? 'Expiring Soon' : 'Verified',
-                              style: GoogleFonts.dmSans(
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                                color: isWarning
-                                    ? TruxifyColors.warning
-                                    : TruxifyColors.accentDark,
-                              ),
-                            ),
-                          ),
-                        ],
+                      Icon(
+                        isAuthError
+                            ? Icons.lock_outline_rounded
+                            : Icons.error_outline_rounded,
+                        size: 56,
+                        color: TruxifyColors.error,
                       ),
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 16),
                       Text(
-                        document.subtitle,
+                        isAuthError
+                            ? 'Session Expired'
+                            : 'Could Not Load Documents',
                         style: GoogleFonts.dmSans(
-                          fontSize: 12,
-                          color: TruxifyColors.adaptiveSecondaryText(context),
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: TruxifyColors.primaryText,
                         ),
                       ),
-                      const SizedBox(height: 12),
-                      const Divider(height: 1, color: TruxifyColors.border),
-                      const SizedBox(height: 12),
-                      _DocLine(
-                          label: document.statusLabel,
-                          value: document.hash,
-                          isMonospace: true),
-                      _DocLine(
-                          label: 'Last verified', value: document.lastVerified),
-                      _DocLine(
-                          label: 'Valid until',
-                          value: document.validUntil,
-                          isWarning: isWarning),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              style: OutlinedButton.styleFrom(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 12),
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12)),
-                                side: const BorderSide(
-                                    color: TruxifyColors.border),
-                              ),
-                              onPressed: () => _showDocumentPreviewSheet(
-                                context,
-                                document.title,
-                                document.hash,
-                                document.lastVerified,
-                                document.validUntil,
-                                isWarning,
-                              ),
-                              child: Text(
-                                'View',
-                                style: GoogleFonts.dmSans(
-                                  fontWeight: FontWeight.bold,
-                                  color: TruxifyColors.adaptiveSecondaryText(
-                                      context),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: PrimaryButton(
-                              label: isWarning ? 'Renew Now' : 'Re-verify',
-                              onPressed: () {
-                                if (isWarning) {
-                                  _simulateUpload(context, document.title);
-                                } else {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                          '${document.title} re-verification request sent to RTO Node.'),
-                                      backgroundColor: TruxifyColors.success,
-                                    ),
-                                  );
-                                }
-                              },
-                            ),
-                          ),
-                        ],
+                      const SizedBox(height: 8),
+                      Text(
+                        isAuthError
+                            ? 'Please log in again to view your documents.'
+                            : 'Something went wrong. Please try again later.',
+                        style: GoogleFonts.dmSans(
+                          fontSize: 13,
+                          color: TruxifyColors.secondaryText,
+                        ),
+                        textAlign: TextAlign.center,
                       ),
+                      if (isAuthError) ...[
+                        const SizedBox(height: 24),
+                        PrimaryButton(
+                          label: 'Go to Login',
+                          onPressed: () => Navigator.of(context)
+                              .pushReplacementNamed('/login'),
+                        ),
+                      ],
                     ],
                   ),
                 ),
               );
-            }),
-            GestureDetector(
-              onTap: () => _showUploadSheet(context),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surface,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                      color: TruxifyColors.accent.withValues(alpha: 0.3),
-                      style: BorderStyle.solid),
-                ),
+            }
+
+            if (!snapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
+
+            final documents = snapshot.data!;
+
+            if (documents.isEmpty) {
+              return Center(
                 child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(vertical: 28, horizontal: 16),
+                  padding: const EdgeInsets.all(32),
                   child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.cloud_upload_outlined,
-                          color: TruxifyColors.accent, size: 36),
-                      const SizedBox(height: 10),
+                      const Icon(Icons.folder_open_rounded,
+                          size: 56, color: TruxifyColors.hintText),
+                      const SizedBox(height: 16),
                       Text(
-                        'Upload New Document',
+                        'No Documents Yet',
                         style: GoogleFonts.dmSans(
-                          fontSize: 14,
+                          fontSize: 16,
                           fontWeight: FontWeight.bold,
-                          color: TruxifyColors.accentDark,
+                          color: TruxifyColors.primaryText,
                         ),
                       ),
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 8),
                       Text(
-                        'RC Book, Driving Licence, Insurance, PUC Certificate',
+                        'Upload your RC Book, Driving Licence, or other documents to get started.',
                         style: GoogleFonts.dmSans(
-                          fontSize: 11,
-                          color: TruxifyColors.adaptiveSecondaryText(context),
+                          fontSize: 13,
+                          color: TruxifyColors.secondaryText,
                         ),
                         textAlign: TextAlign.center,
                       ),
                     ],
                   ),
                 ),
-              ),
-            ),
-          ],
+              );
+            }
+
+            return ListView(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+              children: [
+                ...documents.map((document) {
+                  final isWarning = document.statusTone == 'warning';
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: AppCard(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  document.title,
+                                  style: GoogleFonts.dmSans(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    color: TruxifyColors.primaryText,
+                                  ),
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: isWarning
+                                      ? TruxifyColors.warningLight
+                                      : TruxifyColors.accentLight,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Text(
+                                  isWarning ? 'Expiring Soon' : 'Verified',
+                                  style: GoogleFonts.dmSans(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: isWarning
+                                        ? TruxifyColors.warning
+                                        : TruxifyColors.accentDark,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            document.subtitle,
+                            style: GoogleFonts.dmSans(
+                              fontSize: 12,
+                              color: TruxifyColors.secondaryText,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          const Divider(height: 1, color: TruxifyColors.border),
+                          const SizedBox(height: 12),
+                          _DocLine(
+                              label: document.statusLabel,
+                              value: document.docNumber,
+                              isMonospace: true),
+                          _DocLine(
+                              label: 'Last verified',
+                              value: document.lastVerified),
+                          _DocLine(
+                              label: 'Valid until',
+                              value: document.validUntil,
+                              isWarning: isWarning),
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton(
+                                  style: OutlinedButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 12),
+                                    shape: RoundedRectangleBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(12)),
+                                    side: const BorderSide(
+                                        color: TruxifyColors.border),
+                                  ),
+                                  onPressed: () => _showDocumentPreviewSheet(
+                                    context,
+                                    document.title,
+                                    document.docNumber,
+                                    document.lastVerified,
+                                    document.validUntil,
+                                    isWarning,
+                                  ),
+                                  child: Text(
+                                    'View',
+                                    style: GoogleFonts.dmSans(
+                                      fontWeight: FontWeight.bold,
+                                      color: TruxifyColors.secondaryText,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: PrimaryButton(
+                                  label: isWarning ? 'Renew Now' : 'Re-verify',
+                                  onPressed: () {
+                                    if (isWarning) {
+                                      _simulateUpload(context, document.title);
+                                    } else {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                              '${document.title} re-verification request sent to RTO Node.'),
+                                          backgroundColor:
+                                              TruxifyColors.success,
+                                        ),
+                                      );
+                                    }
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+
+                // Upload card
+                GestureDetector(
+                  onTap: () => _showUploadSheet(context),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                          color: TruxifyColors.accent.withOpacity(0.3),
+                          style: BorderStyle.solid),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 28, horizontal: 16),
+                      child: Column(
+                        children: [
+                          const Icon(Icons.cloud_upload_outlined,
+                              color: TruxifyColors.accent, size: 36),
+                          const SizedBox(height: 10),
+                          Text(
+                            'Upload New Document',
+                            style: GoogleFonts.dmSans(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: TruxifyColors.accentDark,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'RC Book, Driving Licence, Insurance, PUC Certificate',
+                            style: GoogleFonts.dmSans(
+                              fontSize: 11,
+                              color: TruxifyColors.hintText,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
@@ -661,7 +881,7 @@ class _DocLine extends StatelessWidget {
             label,
             style: GoogleFonts.dmSans(
               fontSize: 12,
-              color: TruxifyColors.adaptiveSecondaryText(context),
+              color: TruxifyColors.secondaryText,
             ),
           ),
           Text(
@@ -670,7 +890,7 @@ class _DocLine extends StatelessWidget {
                 ? GoogleFonts.robotoMono(
                     fontSize: 11,
                     fontWeight: FontWeight.bold,
-                    color: Theme.of(context).colorScheme.onSurface,
+                    color: TruxifyColors.primaryText,
                   )
                 : GoogleFonts.dmSans(
                     fontSize: 12,

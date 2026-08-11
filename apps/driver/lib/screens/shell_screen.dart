@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-
 import '../core/app_routes.dart';
 import '../models/app_models.dart';
 import '../theme/app_theme.dart';
@@ -204,6 +203,7 @@ class _NavItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Expanded(
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
@@ -217,16 +217,23 @@ class _NavItem extends StatelessWidget {
                 width: 36,
                 height: 36,
                 decoration: BoxDecoration(
-                  color:
-                      selected ? TruxifyColors.accentLight : Colors.transparent,
+                  color: selected
+                      ? (isDark
+                          ? TruxifyColors.darkAccentLight
+                          : TruxifyColors.accentLight)
+                      : Colors.transparent,
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(
                   icon,
                   size: 20,
                   color: selected
-                      ? TruxifyColors.accent
-                      : TruxifyColors.adaptiveSecondaryText(context),
+                      ? (isDark
+                          ? TruxifyColors.accentLight
+                          : TruxifyColors.accentDark)
+                      : (isDark
+                          ? TruxifyColors.darkSecondaryText
+                          : TruxifyColors.secondaryText),
                 ),
               ),
               const SizedBox(height: 6),
@@ -238,7 +245,9 @@ class _NavItem extends StatelessWidget {
                   fontSize: 10,
                   fontWeight: FontWeight.w600,
                   color: selected
-                      ? TruxifyColors.accent
+                      ? (Theme.of(context).brightness == Brightness.dark
+                          ? TruxifyColors.accent
+                          : TruxifyColors.accentDark)
                       : TruxifyColors.adaptiveSecondaryText(context),
                 ),
               ),

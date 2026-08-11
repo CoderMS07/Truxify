@@ -1,34 +1,141 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet'; // 🔒 ADDED HELMET IMPORT FOR ISSUE #361
 import http from 'http';
 import dotenv from 'dotenv';
 import path from 'path';
+import rateLimit from 'express-rate-limit';
+import tripRoutes from './routes/tripRoutes.js';
+import deviceRoutes from './routes/deviceRoutes.js';
 
-// Pre-load DB config to execute client setups
-import './config/db.js';
-import { initWebSocketServer } from './sockets/tracker.js';
+import { closeDbConnections } from './config/db.js';
+import { closeWebSocketServer, initWebSocketServer } from './sockets/tracker.js';
 
 // Load REST routes
 import orderRoutes from './routes/orderRoutes.js';
 import driverRoutes from './routes/driverRoutes.js';
+import supportRoutes from './routes/supportRoutes.js';
+import profileRoutes from './routes/profileRoutes.js';
+import loadRoutes from './routes/loadRoutes.js';
+import truckRoutes from './routes/truckRoutes.js';
 
 // Configuration load from root folder is handled in db.js
 
-
+// ============================================================================
+// STARTUP VALIDATION — crash fast, not at request time
+// ============================================================================
+if (process.env.NODE_ENV === 'production' && process.env.BYPASS_AUTH === 'true') {
+  console.error('FATAL: BYPASS_AUTH is enabled in production. This is a severe security misconfiguration.');
+  console.error('Set BYPASS_AUTH=false (or unset it) and restart the server.');
+  process.exit(1);
+}
 const app = express();
 const server = http.createServer(app);
 
-// Enable CORS for frontend clients (Flutter Web, mobile, etc.)
-app.use(cors({
-  origin: '*', // Allow all origins for development; tighten in production
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-user-role', 'x-user-name']
-}));
-
-app.use(express.json());
+// Trust proxy required for rate-limiting behind load balancers/Docker
+app.set('trust proxy', 1); 
 
 // ============================================================================
-// REQUEST LOGGER
+// 🔒 ADVANCED SECURITY HEADERS (HELMET CONFIGURATION)
+// Resolves missing security headers from Issue #361
+// ============================================================================
+app.use(helmet({
+  // Content Security Policy (CSP) - Prevents XSS and data injection
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"], // Adjust if strict CSP is needed for frontend
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: [],
+    },
+  },
+  // HTTP Strict Transport Security (HSTS) - Enforces HTTPS
+  hsts: { 
+    maxAge: 31536000, // 1 year
+    includeSubDomains: true, 
+    preload: true 
+  },
+  // X-Frame-Options - Prevents clickjacking by disabling iframes
+  frameguard: { 
+    action: "deny" 
+  },
+  // X-Content-Type-Options - Prevents MIME-sniffing
+  noSniff: true, 
+  // Additional modern security headers
+  crossOriginEmbedderPolicy: false, // Set false if breaking third-party images/maps
+  crossOriginOpenerPolicy: { policy: "same-origin" },
+  crossOriginResourcePolicy: { policy: "cross-origin" }, // Allows Flutter app to fetch resources
+  dnsPrefetchControl: { allow: false },
+  hidePoweredBy: true, // Removes X-Powered-By: Express
+  referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+  xssFilter: true
+}));
+
+// ============================================================================
+// CORS CONFIGURATION
+// ============================================================================
+// Enable CORS for frontend clients (Flutter Web, mobile, etc.)
+const corsOrigins = process.env.NODE_ENV === 'production'
+  ? (process.env.ALLOWED_ORIGINS || '').split(',').filter(Boolean)
+  : '*';
+// Enable CORS only for explicitly allowed frontend origins
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter((origin) => {
+    if (!origin) return false;
+    try {
+      const parsed = new URL(origin);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  });
+
+// In production, x-user-id / x-user-role / x-user-name must NOT be accepted
+// as authentication headers — only expose them in non-production.
+const corsAllowedHeaders = process.env.NODE_ENV === 'production'
+  ? ['Content-Type', 'Authorization']
+  : ['Content-Type', 'Authorization', 'x-user-id', 'x-user-role', 'x-user-name'];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow non-browser/same-origin requests with no Origin header
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+
+    // In development/testing, allow localhost or loopback origins
+    if (process.env.NODE_ENV !== 'production') {
+      const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+      if (isLocalhost) return callback(null, true);
+    }
+
+    return callback(null, false);
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: corsAllowedHeaders,
+}));
+
+// ── Production header sanitization (defense in depth) ────────────────
+// Even if a proxy or misconfiguration lets dev auth headers through,
+// strip them before they reach any route handler in production.
+if (process.env.NODE_ENV === 'production') {
+  app.use((req, res, next) => {
+    delete req.headers['x-user-id'];
+    delete req.headers['x-user-role'];
+    delete req.headers['x-user-name'];
+    next();
+  });
+}
+
+// Payload parsers
+app.use(express.json({ limit: '1mb' })); // Added payload limit for security
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+
+// ============================================================================
+// REQUEST LOGGER — registered before all routes and rate limiters so that every
+// incoming request (including those that get rate-limited or 404) is logged.
 // ============================================================================
 app.use((req, res, next) => {
   const start = Date.now();
@@ -43,6 +150,29 @@ app.use((req, res, next) => {
   });
   next();
 });
+
+// ============================================================================
+// RATE LIMITING
+// ============================================================================
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.originalUrl === '/api/health',
+  message: { error: 'Too many requests, please try again later.' }
+});
+
+const healthLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  message: { error: 'Health check rate limit exceeded.' }
+});
+
+app.use('/api/', limiter);
+app.use('/api/health', healthLimiter);
+app.use('/api/v1/trips', tripRoutes);
 
 // ============================================================================
 // REST API ROUTING
@@ -62,7 +192,11 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api/orders', orderRoutes);
 app.use('/api/driver', driverRoutes);
-
+app.use('/api/loads', loadRoutes);
+app.use('/api/support', supportRoutes);
+app.use('/api/profile', profileRoutes);
+app.use('/api/devices', deviceRoutes);
+app.use('/api/trucks', truckRoutes);
 // Root route
 app.get('/', (req, res) => {
   res.send('<h1>Truxify Backend API is running.</h1><p>Use WebSockets at <code>ws://localhost:5000/ws/tracking</code></p>');
@@ -94,6 +228,7 @@ server.listen(PORT, () => {
   console.log(`🚀 Truxify Node.js server is listening on PORT: ${PORT}`);
   console.log(`🔗 REST API Root: http://localhost:${PORT}`);
   console.log(`🔌 WebSocket URL: ws://localhost:${PORT}/ws/tracking`);
+  console.log(`🔒 Security Headers: Enabled via Helmet`);
   console.log(`================================================================`);
 });
 
@@ -119,11 +254,12 @@ async function shutdown(signal) {
     );
     console.log('[shutdown] HTTP server closed.');
 
-    // 2. Your WebSocket server likely exposes a .close() — call it here
-    // await closeWebSocketServer();
+    // 2. Flush buffered telemetry and close WebSocket resources
+    await closeWebSocketServer();
+    console.log('[shutdown] WebSocket resources closed.');
 
-    // 3. Close DB connections, flush queues, etc.
-    // await db.end();
+    // 3. Close database/cache connections
+    await closeDbConnections();
 
     console.log('[shutdown] Clean exit.');
     process.exit(0);

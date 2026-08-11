@@ -2,7 +2,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
-
+import 'package:url_launcher/url_launcher.dart';
 import '../services/geocode_service.dart';
 import '../services/route_service.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -21,18 +21,59 @@ class TripDetailScreen extends StatefulWidget {
 
 class _TripDetailScreenState extends State<TripDetailScreen> {
   final MapController _mapController = MapController();
+  late Future<_RouteResult?> _routeFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _routeFuture = _loadRouteForTrip(widget.trip.route);
+  }
 
   @override
   void dispose() {
     _mapController.dispose();
     super.dispose();
   }
+  Future<void> _openGoogleMapsRoute() async {
+    final routeResult = await _routeFuture;
+    final start = routeResult?.start;
+    final end = routeResult?.end;
 
+    if (start == null || end == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Route coordinates not available')),
+        );
+      }
+      return;
+    }
+
+    final url = 'https://www.google.com/maps/dir/?api=1'
+        '&origin=${start.latitude},${start.longitude}'
+        '&destination=${end.latitude},${end.longitude}'
+        '&travelmode=driving';
+
+    try {
+      final uri = Uri.parse(url);
+      final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to open Google Maps')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to open Google Maps')),
+        );
+      }
+    }
+  }
   void _showBlockchainBottomSheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.white,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
@@ -66,7 +107,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 width: double.infinity,
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFF5F5F5),
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? TruxifyColors.darkSecondaryBackground
+                      : const Color(0xFFF5F5F5),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Column(
@@ -111,9 +154,12 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               const SizedBox(height: 16),
               Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                   decoration: BoxDecoration(
-                    color: TruxifyColors.accentLight,
+                    color: Theme.of(context).brightness == Brightness.dark
+                        ? TruxifyColors.darkAccentLight
+                        : TruxifyColors.accentLight,
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
@@ -121,7 +167,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                     style: GoogleFonts.dmSans(
                       fontSize: 12,
                       fontWeight: FontWeight.w500,
-                      color: TruxifyColors.accent,
+                      color: Theme.of(context).brightness == Brightness.dark
+                          ? Colors.white
+                          : TruxifyColors.accent,
                     ),
                   ),
                 ),
@@ -133,19 +181,23 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 child: OutlinedButton(
                   onPressed: () => Navigator.pop(context),
                   style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: TruxifyColors.border),
+                    side: BorderSide(
+                      color: Theme.of(context).brightness == Brightness.dark
+                          ? TruxifyColors.darkBorder
+                          : TruxifyColors.border,
+                    ),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                    child: Text(
-                      'Close',
-                      style: GoogleFonts.dmSans(
-                        color: TruxifyColors.primaryText,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 14,
-                      ),
+                  child: Text(
+                    'Close',
+                    style: GoogleFonts.dmSans(
+                      color: Theme.of(context).colorScheme.onSurface,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
                     ),
+                  ),
                 ),
               ),
               const SizedBox(height: 12),
@@ -174,7 +226,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             style: GoogleFonts.dmSans(
               fontSize: 13,
               fontWeight: isHeader ? FontWeight.bold : FontWeight.w500,
-              color: isHeader ? TruxifyColors.primaryText : TruxifyColors.primaryText,
+              color: Theme.of(context).colorScheme.onSurface,
             ),
           ),
         ],
@@ -188,17 +240,17 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     final breakdown = trip.paymentBreakdown;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF7F3F3),
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
-        backgroundColor: Colors.white,
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
         elevation: 0,
-        leading: const BackButton(color: TruxifyColors.primaryText),
+        leading: BackButton(color: Theme.of(context).colorScheme.onSurface),
         title: Text(
           'Trip Details',
           style: GoogleFonts.dmSans(
             fontSize: 16,
             fontWeight: FontWeight.w600,
-            color: TruxifyColors.primaryText,
+            color: Theme.of(context).colorScheme.onSurface,
           ),
         ),
         actions: [
@@ -216,8 +268,13 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             ),
           ),
         ],
-        shape: const Border(
-          bottom: BorderSide(color: TruxifyColors.border, width: 1),
+        shape: Border(
+          bottom: BorderSide(
+            color: Theme.of(context).brightness == Brightness.dark
+                ? TruxifyColors.darkBorder
+                : TruxifyColors.border,
+            width: 1,
+          ),
         ),
       ),
       body: SingleChildScrollView(
@@ -250,7 +307,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                   Text(
                     trip.date,
                     style: GoogleFonts.dmSans(
-                      color: Colors.white.withValues(alpha: 0.7),
+                      color: Colors.white.withOpacity(0.7),
                       fontSize: 12,
                     ),
                   ),
@@ -273,7 +330,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                             Text(
                               'Distance',
                               style: GoogleFonts.dmSans(
-                                color: Colors.white.withValues(alpha: 0.5),
+                                color: Colors.white.withOpacity(0.5),
                                 fontSize: 10,
                               ),
                             ),
@@ -283,7 +340,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                       Container(
                         width: 1,
                         height: 28,
-                        color: Colors.white.withValues(alpha: 0.15),
+                        color: Colors.white.withOpacity(0.15),
                       ),
                       Expanded(
                         child: Column(
@@ -300,7 +357,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                             Text(
                               'Duration',
                               style: GoogleFonts.dmSans(
-                                color: Colors.white.withValues(alpha: 0.5),
+                                color: Colors.white.withOpacity(0.5),
                                 fontSize: 10,
                               ),
                             ),
@@ -310,7 +367,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                       Container(
                         width: 1,
                         height: 28,
-                        color: Colors.white.withValues(alpha: 0.15),
+                        color: Colors.white.withOpacity(0.15),
                       ),
                       Expanded(
                         child: Column(
@@ -327,7 +384,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                             Text(
                               'Earnings',
                               style: GoogleFonts.dmSans(
-                                color: Colors.white.withValues(alpha: 0.5),
+                                color:Theme.of(context)
+                                              .colorScheme
+                                              .onSurface
+                                              .withOpacity(0.6),
                                 fontSize: 10,
                               ),
                             ),
@@ -344,9 +404,13 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             Container(
               margin: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: Theme.of(context).colorScheme.surface,
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: TruxifyColors.border),
+                border: Border.all(
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? TruxifyColors.darkBorder
+                      : TruxifyColors.border,
+                ),
               ),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(16),
@@ -355,17 +419,19 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                     SizedBox(
                       height: 180,
                       child: FutureBuilder<_RouteResult?>(
-                        future: _loadRouteForTrip(trip.route),
+                        future: _routeFuture,
                         builder: (context, snap) {
                           if (snap.connectionState != ConnectionState.done) {
                             return Container(
                               color: const Color(0xFFF0E8E8),
-                              child: const Center(child: CircularProgressIndicator()),
+                              child: const Center(
+                                  child: CircularProgressIndicator()),
                             );
                           }
 
                           final result = snap.data;
-                          if (result == null || (result.start == null && result.end == null)) {
+                          if (result == null ||
+                              (result.start == null && result.end == null)) {
                             return Container(
                               color: const Color(0xFFF0E8E8),
                               child: Stack(
@@ -380,7 +446,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                         20,
                                         (index) => Expanded(
                                           child: Container(
-                                            color: index % 2 == 0 ? TruxifyColors.accent : Colors.transparent,
+                                            color: index % 2 == 0
+                                                ? TruxifyColors.accent
+                                                : Colors.transparent,
                                             height: 2,
                                           ),
                                         ),
@@ -392,7 +460,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                     right: 0,
                                     top: 62,
                                     child: Center(
-                                      child: Text('🚛', style: TextStyle(fontSize: 20)),
+                                      child: Text('🚛',
+                                          style: TextStyle(fontSize: 20)),
                                     ),
                                   ),
                                 ],
@@ -401,19 +470,23 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                           }
 
                           final routePoints = result.routePoints;
-                          final center = _computeCenter(routePoints, result.start, result.end);
-                          final zoom = _computeZoom(routePoints, result.start, result.end);
+                          final center = _computeCenter(
+                              routePoints, result.start, result.end);
+                          final zoom = _computeZoom(
+                              routePoints, result.start, result.end);
 
                           return FlutterMap(
                             mapController: _mapController,
                             options: MapOptions(
                               initialCenter: center,
                               initialZoom: zoom,
-                              interactionOptions: const InteractionOptions(flags: InteractiveFlag.all),
+                              interactionOptions: const InteractionOptions(
+                                  flags: InteractiveFlag.all),
                             ),
                             children: [
                               TileLayer(
-                                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                urlTemplate:
+                                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                                 userAgentPackageName: 'com.truxify.driver',
                               ),
                               if (routePoints.isNotEmpty)
@@ -424,7 +497,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                       strokeWidth: 4.0,
                                       color: TruxifyColors.accent,
                                       borderStrokeWidth: 1.5,
-                                      borderColor: Colors.white.withValues(alpha: 0.8),
+                                      borderColor:
+                                          Colors.white.withOpacity(0.8),
                                     ),
                                   ],
                                 ),
@@ -436,7 +510,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                       width: 20,
                                       height: 20,
                                       child: Container(
-                                        decoration: const BoxDecoration(shape: BoxShape.circle, color: TruxifyColors.accent),
+                                        decoration: const BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            color: TruxifyColors.accent),
                                       ),
                                     ),
                                   if (result.end != null)
@@ -445,7 +521,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                       width: 20,
                                       height: 20,
                                       child: Container(
-                                        decoration: const BoxDecoration(shape: BoxShape.circle, color: TruxifyColors.success),
+                                        decoration: const BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            color: TruxifyColors.success),
                                       ),
                                     ),
                                 ],
@@ -459,13 +537,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                     Padding(
                       padding: const EdgeInsets.all(12.0),
                       child: InkWell(
-                        onTap: () {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Opening route in Google Maps...'),
-                            ),
-                          );
-                        },
+                        onTap: _openGoogleMapsRoute,
                         borderRadius: BorderRadius.circular(10),
                         child: Container(
                           width: double.infinity,
@@ -477,11 +549,15 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              const Icon(Icons.map_outlined, color: Colors.white, size: 16),
+                              const Icon(Icons.map_outlined,
+                                  color: Colors.white, size: 16),
                               const SizedBox(width: 8),
                               Text(
                                 'View Full Route on Google Maps',
-                                style: GoogleFonts.dmSans(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+                                style: GoogleFonts.dmSans(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 13),
                               ),
                             ],
                           ),
@@ -495,7 +571,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
             // 3. Items Section
             Padding(
-              padding: const EdgeInsets.only(left: 16, right: 16, top: 12, bottom: 8),
+              padding: const EdgeInsets.only(
+                  left: 16, right: 16, top: 12, bottom: 8),
               child: Text(
                 'ITEMS IN THIS TRIP',
                 style: GoogleFonts.dmSans(
@@ -514,8 +591,12 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    color: Colors.white,
-                    border: Border.all(color: TruxifyColors.border),
+                    color: Theme.of(context).colorScheme.surface,
+                    border: Border.all(
+                      color: Theme.of(context).brightness == Brightness.dark
+                          ? TruxifyColors.darkBorder
+                          : TruxifyColors.border,
+                    ),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Center(
@@ -532,11 +613,17 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             else
               ...trip.tripItems.map((item) {
                 return Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  margin:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                   decoration: BoxDecoration(
-                    color: Colors.white,
-                    border: Border.all(color: TruxifyColors.border),
+                    color: Theme.of(context).colorScheme.surface,
+                    border: Border.all(
+                      color: Theme.of(context).brightness == Brightness.dark
+                          ? TruxifyColors.darkBorder
+                          : TruxifyColors.border,
+                    ),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Row(
@@ -561,7 +648,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                               style: GoogleFonts.dmSans(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w500,
-                                color: TruxifyColors.primaryText,
+                                color: Theme.of(context).colorScheme.onSurface,
                               ),
                             ),
                             const SizedBox(height: 2),
@@ -571,7 +658,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                   item.goods,
                                   style: GoogleFonts.dmSans(
                                     fontSize: 11,
-                                    color: TruxifyColors.hintText,
+                                    color: TruxifyColors.adaptiveSecondaryText(context),
                                   ),
                                 ),
                                 Text(
@@ -605,8 +692,12 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               margin: const EdgeInsets.all(16),
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.white,
-                border: Border.all(color: TruxifyColors.border),
+                color: Theme.of(context).colorScheme.surface,
+                border: Border.all(
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? TruxifyColors.darkBorder
+                      : TruxifyColors.border,
+                ),
                 borderRadius: BorderRadius.circular(16),
               ),
               child: Column(
@@ -617,18 +708,22 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                     style: GoogleFonts.dmSans(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
-                      color: TruxifyColors.primaryText,
+                      color: Theme.of(context).colorScheme.onSurface,
                     ),
                   ),
                   const SizedBox(height: 12),
-                  _buildPaymentRow('Base freight', breakdown?.baseFreight ?? '₹0'),
-                  const Divider(color: TruxifyColors.border),
-                  _buildPaymentRow('Fuel deducted', breakdown?.fuelDeducted ?? '₹0'),
-                  const Divider(color: TruxifyColors.border),
-                  _buildPaymentRow('Toll deducted', breakdown?.tollDeducted ?? '₹0'),
-                  const Divider(color: TruxifyColors.border),
-                  _buildPaymentRow('Platform fee', breakdown?.platformFee ?? '₹0'),
-                  const Divider(thickness: 1.5, color: TruxifyColors.border),
+                  _buildPaymentRow(
+                      'Base freight', breakdown?.baseFreight ?? '₹0'),
+                  const Divider(),
+                  _buildPaymentRow(
+                      'Fuel deducted', breakdown?.fuelDeducted ?? '₹0'),
+                  const Divider(),
+                  _buildPaymentRow(
+                      'Toll deducted', breakdown?.tollDeducted ?? '₹0'),
+                  const Divider(),
+                  _buildPaymentRow(
+                      'Platform fee', breakdown?.platformFee ?? '₹0'),
+                  const Divider(thickness: 1.5),
                   const SizedBox(height: 4),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -659,8 +754,12 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               margin: const EdgeInsets.only(left: 16, right: 16, bottom: 24),
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: Colors.white,
-                border: Border.all(color: TruxifyColors.border),
+                color: Theme.of(context).colorScheme.surface,
+                border: Border.all(
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? TruxifyColors.darkBorder
+                      : TruxifyColors.border,
+                ),
                 borderRadius: BorderRadius.circular(16),
               ),
               child: GestureDetector(
@@ -671,9 +770,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                     Container(
                       width: 36,
                       height: 36,
-                      decoration: const BoxDecoration(
+                      decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: TruxifyColors.accentLight,
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? TruxifyColors.darkAccentLight
+                            : TruxifyColors.accentLight,
                       ),
                       child: const Center(
                         child: Icon(
@@ -693,7 +794,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                             style: GoogleFonts.dmSans(
                               fontSize: 14,
                               fontWeight: FontWeight.w500,
-                              color: TruxifyColors.primaryText,
+                              color: Theme.of(context).colorScheme.onSurface,
                             ),
                           ),
                           Text(
@@ -706,9 +807,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                         ],
                       ),
                     ),
-                    const Icon(
+                    Icon(
                       Icons.chevron_right,
-                      color: Color(0xFFCCBBBB),
+                      color: Theme.of(context).brightness == Brightness.dark
+                          ? TruxifyColors.darkSecondaryText
+                          : const Color(0xFFCCBBBB),
                       size: 22,
                     ),
                   ],
@@ -727,22 +830,31 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       final startLabel = parts.isNotEmpty ? parts[0].trim() : '';
       final endLabel = parts.length > 1 ? parts[1].trim() : '';
 
-      final start = startLabel.isNotEmpty ? await GeocodeService.resolvePlace(startLabel) : null;
-      final end = endLabel.isNotEmpty ? await GeocodeService.resolvePlace(endLabel) : null;
+      final start = startLabel.isNotEmpty
+          ? await GeocodeService.resolvePlace(startLabel)
+          : null;
+      final end = endLabel.isNotEmpty
+          ? await GeocodeService.resolvePlace(endLabel)
+          : null;
 
       List<ll.LatLng> routePoints = <ll.LatLng>[];
       if (start != null && end != null) {
         // RouteService expects lat,long order via LatLng
-        routePoints = await RouteService.fetchRouteGeoJson([ll.LatLng(start.latitude, start.longitude), ll.LatLng(end.latitude, end.longitude)]);
+        routePoints = await RouteService.fetchRouteGeoJson([
+          ll.LatLng(start.latitude, start.longitude),
+          ll.LatLng(end.latitude, end.longitude)
+        ]);
       }
 
-      return _RouteResult(start: start, end: end, routePoints: routePoints);
+      final result = _RouteResult(start: start, end: end, routePoints: routePoints);
+      return result;
     } catch (_) {
       return null;
     }
   }
 
-  ll.LatLng _computeCenter(List<ll.LatLng> routePoints, ll.LatLng? start, ll.LatLng? end) {
+  ll.LatLng _computeCenter(
+      List<ll.LatLng> routePoints, ll.LatLng? start, ll.LatLng? end) {
     if (routePoints.isNotEmpty) {
       final lats = routePoints.map((p) => p.latitude).toList(growable: false);
       final lngs = routePoints.map((p) => p.longitude).toList(growable: false);
@@ -754,13 +866,15 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     }
 
     if (start != null && end != null) {
-      return ll.LatLng((start.latitude + end.latitude) / 2, (start.longitude + end.longitude) / 2);
+      return ll.LatLng((start.latitude + end.latitude) / 2,
+          (start.longitude + end.longitude) / 2);
     }
 
     return start ?? end ?? ll.LatLng(22.9734, 78.6569);
   }
 
-  double _computeZoom(List<ll.LatLng> routePoints, ll.LatLng? start, ll.LatLng? end) {
+  double _computeZoom(
+      List<ll.LatLng> routePoints, ll.LatLng? start, ll.LatLng? end) {
     double spanLat, spanLng;
     if (routePoints.isNotEmpty) {
       final lats = routePoints.map((p) => p.latitude).toList(growable: false);
@@ -790,4 +904,3 @@ class _RouteResult {
   final ll.LatLng? end;
   final List<ll.LatLng> routePoints;
 }
-

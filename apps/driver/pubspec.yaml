@@ -10,13 +10,21 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  supabase_flutter: ^2.8.3
+  truxify_shared:
+    path: ../../packages/truxify_shared
+
+  supabase_flutter: ^2.9.1
+
   google_fonts: ^8.1.0
   flutter_map: ^8.1.1
   latlong2: ^0.9.1
   http: ^1.6.0
   shared_preferences: ^2.5.5
   video_player: ^2.9.2
+  intl: ^0.20.2
+  url_launcher: ^6.3.2
+  geolocator: ^13.0.2
+  shimmer: ^3.0.0
 
 dev_dependencies:
   flutter_lints: ^6.0.0

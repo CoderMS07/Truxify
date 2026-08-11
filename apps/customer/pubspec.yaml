@@ -1,5 +1,5 @@
 name: truxify
-description: Truxify customer-side mock Flutter app.
+description: Truxify customer-side Flutter app.
 publish_to: none
 
 version: 1.0.0+1
@@ -10,7 +10,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  supabase_flutter: ^2.8.3
+  truxify_shared:
+    path: ../../packages/truxify_shared
+  supabase_flutter: ^2.8.4
   flutter_map: ^8.3.0
   flutter_map_cancellable_tile_provider: ^3.0.0
   google_fonts: ^8.1.0
@@ -19,13 +21,14 @@ dependencies:
   http: ^1.2.2
   sqflite: ^2.3.0
   path: ^1.9.0
-  connectivity_plus: ^5.0.2
-  web_socket_channel: ^2.4.0
-  uuid: ^4.2.2
+  connectivity_plus: ^7.1.1
   geocoding: ^4.0.0
-  geolocator: ^10.1.1
+  geolocator: ^14.0.2
   shared_preferences: ^2.5.5
   video_player: ^2.9.2
+  uuid: ^4.5.3
+  web_socket_channel: ^3.0.0
+  shimmer: ^3.0.0
 
 dev_dependencies:
   flutter_lints: ^6.0.0

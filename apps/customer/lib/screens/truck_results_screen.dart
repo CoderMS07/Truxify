@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:truxify/theme/app_theme.dart';
 
-import '../data/mock_data.dart';
 import '../models/app_models.dart';
+import '../services/order_service.dart';
 import '../widgets/truck_card.dart';
+import 'package:truxify_shared/shimmer_widget.dart';
 
 class TruckResultsScreen extends StatefulWidget {
   const TruckResultsScreen({super.key, required this.draft});
@@ -16,18 +17,211 @@ class TruckResultsScreen extends StatefulWidget {
 
 class _TruckResultsScreenState extends State<TruckResultsScreen> {
   int _selectedSort = 0;
-  static const _sortChips = ['Best Match', 'Cheapest', 'Fastest', 'Top Rated'];
+  List<TruckResultData>? _trucks;
+  bool _isLoading = true;
+  String? _error;
+
+  static const _sortChips = [
+    'Best Match',
+    'Cheapest',
+    'Fastest',
+    'Top Rated',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchTrucks();
+  }
+
+  Future<void> _fetchTrucks() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final draft = widget.draft;
+      final weight = double.tryParse(draft.weightTonnes) ?? 0;
+
+      if (draft.pickupLat == null || draft.pickupLng == null ||
+          draft.dropLat == null || draft.dropLng == null) {
+        setState(() {
+          _error = 'Please select pickup and drop locations on the map.';
+          _isLoading = false;
+        });
+        return;
+      }
+
+      final service = OrderService();
+      final results = await service.searchTrucks(
+        pickupLat: draft.pickupLat!,
+        pickupLng: draft.pickupLng!,
+        dropLat: draft.dropLat!,
+        dropLng: draft.dropLng!,
+        weightTonnes: weight,
+        isFragile: draft.fragile,
+        isStackable: draft.stacked,
+      );
+
+      setState(() {
+        _trucks = results.map((j) => TruckResultData.fromJson(j)).toList();
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = e.toString().replaceFirst('StateError: ', '');
+        _isLoading = false;
+      });
+    }
+  }
+
+  int _price(String price) {
+    return int.parse(
+      price.replaceAll('₹', '').replaceAll(',', '').trim(),
+    );
+  }
+
+  double _eta(String eta) {
+    if (eta.contains('mins')) {
+      return double.parse(eta.replaceAll('mins', '').trim());
+    }
+    if (eta.contains('hrs')) {
+      return double.parse(eta.replaceAll('hrs', '').trim()) * 60;
+    }
+    return double.infinity;
+  }
+
+  List<TruckResultData> get sortedTrucks {
+    final trucks = List<TruckResultData>.from(_trucks ?? []);
+
+    switch (_selectedSort) {
+      case 0:
+        trucks.sort(
+          (a, b) => (b.badge == 'Best Match' ? 1 : 0)
+              .compareTo(a.badge == 'Best Match' ? 1 : 0),
+        );
+        break;
+      case 1:
+        trucks.sort((a, b) => _price(a.price).compareTo(_price(b.price)));
+        break;
+      case 2:
+        trucks.sort((a, b) => _eta(a.eta).compareTo(_eta(b.eta)));
+        break;
+      case 3:
+        trucks.sort((a, b) => b.rating.compareTo(a.rating));
+        break;
+      default:
+        break;
+    }
+
+    return trucks;
+  }
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Finding trucks...'),
+          leading: IconButton(
+            onPressed: () => Navigator.of(context).pop(),
+            icon: const Icon(Icons.arrow_back_rounded),
+          ),
+        ),
+        body: ListView.builder(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+          itemCount: 5,
+          itemBuilder: (_, __) => const ShimmerListItem(height: 140),
+        ),
+      );
+    }
+
+    if (_error != null) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Search Failed'),
+          leading: IconButton(
+            onPressed: () => Navigator.of(context).pop(),
+            icon: const Icon(Icons.arrow_back_rounded),
+          ),
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.error_outline_rounded, size: 48,
+                    color: Theme.of(context).colorScheme.error),
+                const SizedBox(height: 16),
+                Text(
+                  _error!,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyLarge,
+                ),
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: _fetchTrucks,
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Retry'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (_trucks == null || _trucks!.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('No trucks found'),
+          leading: IconButton(
+            onPressed: () => Navigator.of(context).pop(),
+            icon: const Icon(Icons.arrow_back_rounded),
+          ),
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.local_shipping_rounded, size: 48,
+                    color: TruxifyColors.adaptiveSecondaryText(context)),
+                const SizedBox(height: 16),
+                Text(
+                  'No available trucks match your route and cargo. Try adjusting your search criteria.',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyLarge,
+                ),
+                const SizedBox(height: 24),
+                OutlinedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Adjust Search'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final results = sortedTrucks;
+
     return Scaffold(
       appBar: AppBar(
-        title: Text('${mockTruckResults.length} trucks found'),
+        title: Text('${results.length} trucks found'),
         leading: IconButton(
-            onPressed: () => Navigator.of(context).pop(),
-            icon: const Icon(Icons.arrow_back_rounded)),
+          onPressed: () => Navigator.of(context).pop(),
+          icon: const Icon(Icons.arrow_back_rounded),
+        ),
         actions: [
-          IconButton(onPressed: () {}, icon: const Icon(Icons.sort_rounded))
+          IconButton(
+            onPressed: _fetchTrucks,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
         ],
       ),
       body: ListView(
@@ -62,9 +256,8 @@ class _TruckResultsScreenState extends State<TruckResultsScreen> {
                           ? TruxifyColors.darkBackground
                           : Colors.white,
                   side: BorderSide(
-                    color: selected
-                        ? TruxifyColors.accent
-                        : Colors.grey.shade300,
+                    color:
+                        selected ? TruxifyColors.accent : Colors.grey.shade300,
                     width: 1.2,
                   ),
                   shape: RoundedRectangleBorder(
@@ -81,16 +274,14 @@ class _TruckResultsScreenState extends State<TruckResultsScreen> {
             ),
           ),
           const SizedBox(height: 16),
-          ...mockTruckResults.asMap().entries.map(
+          ...results.asMap().entries.map(
             (entry) {
-              final index = entry.key;
-              final truck = entry.value;
               return Padding(
                 padding: const EdgeInsets.only(bottom: 14),
                 child: TruckCard(
-                  truck: truck,
+                  truck: entry.value,
                   draft: widget.draft,
-                  isHighlighted: index == 0,
+                  isHighlighted: entry.key == 0,
                 ),
               );
             },

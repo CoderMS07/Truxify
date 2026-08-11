@@ -2,7 +2,7 @@
 
 # 🚛 Truxify
 
-### Broker-Free · ML-Powered · Blockchain-Secured Freight Platform
+### Broker-Free · ML-Powered · Blockchain-Secured Freight Platform 
 
 **Directly connecting manufacturers and truck drivers — eliminating the middleman, maximising earnings, and bringing transparency to India's ₹14 lakh crore freight industry.**
 
@@ -251,7 +251,7 @@ One of Truxify's most powerful features — touching all 6 layers simultaneously
 
 ## 🚀 Getting Started
 
-> **Note:** Truxify is in active early development (Phase 1). The customer app frontend is the current focus.
+> **Note:** Truxify is in active development (Phase 2). The core platform features are the current focus.
 
 ### Prerequisites
 
@@ -266,6 +266,110 @@ cd Truxify
 flutter pub get
 flutter run
 ```
+
+### Run the Backend With Docker
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+The Compose stack overrides the cloud MongoDB and Redis placeholders from
+`.env` inside the API container:
+
+```env
+MONGODB_URI=mongodb://mongo:27017
+MONGODB_DB_NAME=truxify_telemetry
+REDIS_URL=redis://redis:6379
+```
+
+This lets the backend use the local `mongo` and `redis` services without
+editing `.env` away from production-style values.
+
+---
+
+## 🧩 Backend Development Setup
+
+The backend lives in [`backend/api`](backend/api). Use the following steps to
+set it up locally:
+
+```bash
+cd backend/api
+npm install
+cp .env.example .env
+npm run dev
+```
+
+### Available Commands
+
+```bash
+npm run dev
+npm start
+npm test
+```
+
+- `npm run dev` starts the backend in development mode with auto-reload.
+- `npm start` starts the production server.
+- `npm test` runs the backend test suite.
+
+---
+
+## 🔧 Environment Configuration
+
+The backend uses [`backend/api/.env.example`](backend/api/.env.example) as the
+template for local configuration. Copy it to `.env` before running the service
+and fill in the required values for your environment.
+
+This project may require configuration for Supabase, PostgreSQL, MongoDB,
+Redis, Firebase, Polygon, and routing services. Keep sensitive values such as
+API keys, private keys, and service account JSON out of version control.
+
+Do not commit secrets to the repository. Treat `.env` as a local-only file and
+update `.env.example` when new configuration values are needed for onboarding.
+
+---
+
+## 🐳 Docker Compose Setup
+
+Run the full local stack with:
+
+```bash
+docker compose up --build
+```
+
+This starts the following services:
+
+| Service | Description |
+|---|---|
+| `api` | Backend API running from `backend/api` on port `5000` |
+| `db` | PostgreSQL/PostGIS database on port `5432` |
+| `mongo` | MongoDB event/log storage on port `27017` |
+| `redis` | Redis cache on port `6379` |
+
+The `api` container is configured to use the local `db`, `mongo`, and `redis`
+services so you can work with a complete development environment without
+connecting to external infrastructure.
+
+---
+
+## 🌐 Local Service Access
+
+Once the stack is running, you can reach the local services here:
+
+- API: `http://localhost:5000`
+- PostgreSQL: `localhost:5432`
+- MongoDB: `localhost:27017`
+- Redis: `localhost:6379`
+
+---
+
+## 🤝 Contributor Notes
+
+- Verify that `backend/api/.env` exists before starting the backend or Docker
+  Compose services.
+- Run `npm test` before opening a pull request to catch regressions early.
+- Prefer Docker Compose when you want the full local development environment
+  with API, PostgreSQL/PostGIS, MongoDB, and Redis together.
 
 ---
 
@@ -284,13 +388,13 @@ flutter run
 
 ## 🗺️ Roadmap
 
-### Phase 1 — Foundation *(Current)*
+### Phase 1 — Foundation
 - [x] Customer app frontend (Flutter)
-- [ ] Driver app frontend (Flutter)
-- [ ] Backend API skeleton (Node.js)
-- [ ] Database schema design
+- [x] Driver app frontend (Flutter)
+- [x] Backend API skeleton (Node.js)
+- [x] Database schema design
 
-### Phase 2 — Core Platform
+### Phase 2 — Core Platform *(Current)*
 - [ ] User authentication (Firebase)
 - [ ] Load posting and bidding
 - [ ] Basic ML matching
@@ -332,6 +436,12 @@ git checkout -b feature/your-feature-name
 git commit -m "feat: add profit predictor model"
 git push origin feature/your-feature-name
 ```
+
+### 👥 Contributors
+
+Thanks to all contributors ❤️
+
+[![Contributors](https://contrib.rocks/image?repo=KanishJebaMathewM/Truxify)](https://github.com/KanishJebaMathewM/Truxify/graphs/contributors)
 
 ---
 
