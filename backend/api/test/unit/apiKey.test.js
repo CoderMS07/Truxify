@@ -166,4 +166,15 @@ describe('requireApiKey', () => {
 
     expect(logger.warn).toHaveBeenCalled();
   });
+
+  it('uses the first value when x-api-key header is repeated as an array', () => {
+    const { req, res, next } = createMocks({
+      req: { headers: { 'x-api-key': ['test-key-1', 'other-key'] } },
+    });
+
+    requireApiKey(req, res, next);
+
+    expect(next).toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalled();
+  });
 });
