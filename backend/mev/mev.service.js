@@ -249,6 +249,30 @@ class MEVService {
         return signedTxs;
     }
 
+    async releaseEscrowPrivate(escrowId, preimage) {
+        try {
+            const relayer = getMevRelayer();
+            const targetBlock = (await this.provider.getBlockNumber()) + 1;
+            const bundle = await relayer.assemblePrivateBundle(
+                this.escrowAddress,
+                this.escrowABI,
+                'releaseDepositPrivate',
+                [escrowId, preimage],
+                targetBlock
+            );
+            const result = await relayer.sendPrivateBundle(bundle);
+            return {
+                success: true,
+                txHash: result.bundleHash,
+                bundleHash: result.bundleHash,
+                targetBlock: result.targetBlock
+            };
+        } catch (error) {
+            logger.error('Private bundle release failed:', error);
+            throw error;
+        }
+    }
+
     // ============ MEV Protection Level ============
 
     async getMEVProtectionLevel(escrowId) {
