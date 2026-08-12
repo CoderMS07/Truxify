@@ -166,4 +166,26 @@ describe('requireApiKey', () => {
 
     expect(logger.warn).toHaveBeenCalled();
   });
+
+  it('returns 401 when repeated x-api-key header is an array of invalid keys', () => {
+    const { req, res, next } = createMocks({
+      req: { headers: { 'x-api-key': ['bad-key-1', 'bad-key-2'] } },
+    });
+
+    requireApiKey(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('accepts a valid key when repeated x-api-key header is an array', () => {
+    const { req, res, next } = createMocks({
+      req: { headers: { 'x-api-key': ['test-key-1', 'test-key-2'] } },
+    });
+
+    requireApiKey(req, res, next);
+
+    expect(next).toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalled();
+  });
 });
