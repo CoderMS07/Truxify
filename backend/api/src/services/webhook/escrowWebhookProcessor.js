@@ -53,7 +53,7 @@ async function reconcileWalletLedger(order, txHash) {
   if (!order.driver_id) {
     return;
   }
-  const { error: walletError } = await requireDb()
+  const { data, error } = await requireDb()
     .from('wallet_transactions')
     .update({
       status: 'confirmed',
@@ -61,10 +61,35 @@ async function reconcileWalletLedger(order, txHash) {
     })
     .eq('driver_id', order.driver_id)
     .eq('order_display_id', order.order_display_id)
-    .eq('txn_type', 'credit');
+    .eq('txn_type', 'credit')
+    .select('id');
 
-  if (walletError) {
-    throw new Error(`Failed to reconcile wallet ledger for ${order.order_display_id}: ${walletError.message}`);
+  if (error) {
+    throw new Error(`Failed to reconcile wallet ledger for ${order.order_display_id}: ${error.message}`);
+  }
+
+  if (!data || data.length === 0) {
+    throw new Error(
+      `Wallet ledger reconciliation matched no credit transaction for order ${order.order_display_id} ` +
+        `(driver ${order.driver_id}) — driver payout may be unconfirmed`
+    );
+  }
+}
+
+// Idempotent duplicate-delivery path: the order-level escrow_status effect
+// already happened on the first delivery, so a missing/errored wallet-ledger
+// reconcile must not throw here — otherwise the DLQ redelivers forever,
+// re-entering this same branch and failing identically each time (permanent
+// poison message). Log and swallow so the webhook can be acknowledged; a later
+// redelivery retries the (idempotent) reconcile again.
+async function tryReconcileWalletLedger(order, txHash) {
+  try {
+    await reconcileWalletLedger(order, txHash);
+  } catch (err) {
+    logger.warn(
+      { err: err.message, orderDisplayId: order.order_display_id, driverId: order.driver_id },
+      '[Webhook] Duplicate delivery: wallet ledger reconcile failed (best-effort) — order-level effect already applied, acknowledging delivery.'
+    );
   }
 }
 
@@ -118,12 +143,12 @@ async function handlePaymentReleased(payload) {
   // the (idempotent) wallet ledger so a crash between the order update and the
   // wallet update is healed, then short-circuit without re-applying effects.
   if (order.escrow_status === 'released') {
-    await reconcileWalletLedger(order, payload.txHash || order.release_tx_hash);
+    await tryReconcileWalletLedger(order, payload.txHash || order.release_tx_hash);
     logger.info(`[Webhook] Order ${order.order_display_id} already released — duplicate delivery ignored.`);
     return;
   }
 
-  const { error } = await requireDb()
+  const { data: updatedOrders, error } = await requireDb()
     .from('orders')
     .update({
       escrow_status: 'released',
@@ -133,10 +158,18 @@ async function handlePaymentReleased(payload) {
       updated_at: now,
     })
     .eq('id', order.id)
-    .in('escrow_status', RELEASE_RECONCILABLE_STATUSES);
+    .in('escrow_status', RELEASE_RECONCILABLE_STATUSES)
+    .select('id');
 
   if (error) {
     throw new Error(`Failed to mark order ${order.order_display_id} as released: ${error.message}`);
+  }
+
+  if (!updatedOrders || updatedOrders.length === 0) {
+    throw new Error(
+      `Order ${order.order_display_id} was not updated when marking as released — ` +
+        `escrow_status not in reconcilable set (${RELEASE_RECONCILABLE_STATUSES.join(', ')})`
+    );
   }
 
   await reconcileWalletLedger(order, payload.txHash);
@@ -155,7 +188,7 @@ async function handleBookingCancelled(payload) {
     return;
   }
 
-  const { error } = await requireDb()
+  const { data: updatedOrders, error } = await requireDb()
     .from('orders')
     .update({
       escrow_status: 'refunded',
@@ -163,10 +196,18 @@ async function handleBookingCancelled(payload) {
       updated_at: now,
     })
     .eq('id', order.id)
-    .in('escrow_status', REFUND_RECONCILABLE_STATUSES);
+    .in('escrow_status', REFUND_RECONCILABLE_STATUSES)
+    .select('id');
 
   if (error) {
     throw new Error(`Failed to mark order ${order.order_display_id} as refunded: ${error.message}`);
+  }
+
+  if (!updatedOrders || updatedOrders.length === 0) {
+    throw new Error(
+      `Order ${order.order_display_id} was not updated when marking as refunded — ` +
+        `escrow_status not in reconcilable set (${REFUND_RECONCILABLE_STATUSES.join(', ')})`
+    );
   }
 
   logger.info(`[Webhook] Order ${order.order_display_id} marked escrow refunded (tx: ${payload.txHash})`);
@@ -194,7 +235,7 @@ async function handleWithdrawalSettled(payload) {
       }
     }
     if (!isRefund) {
-      await reconcileWalletLedger(order, txHash);
+      await tryReconcileWalletLedger(order, txHash);
     }
     logger.info(`[Webhook] Order ${order.order_display_id} already ${targetStatus} — duplicate delivery ignored.`);
     return;
@@ -212,7 +253,7 @@ async function handleWithdrawalSettled(payload) {
         escrow_release_error: null,
       };
 
-  const { error } = await requireDb()
+  const { data: updatedOrders, error } = await requireDb()
     .from('orders')
     .update({
       escrow_status: isRefund ? 'refunded' : 'released',
@@ -223,10 +264,18 @@ async function handleWithdrawalSettled(payload) {
       updated_at: now,
     })
     .eq('id', order.id)
-    .in('escrow_status', [...REFUND_RECONCILABLE_STATUSES, ...RELEASE_RECONCILABLE_STATUSES]);
+    .in('escrow_status', [...REFUND_RECONCILABLE_STATUSES, ...RELEASE_RECONCILABLE_STATUSES])
+    .select('id');
 
   if (error) {
     throw new Error(`Failed to settle order ${order.order_display_id} from withdrawal webhook: ${error.message}`);
+  }
+
+  if (!updatedOrders || updatedOrders.length === 0) {
+    throw new Error(
+      `Order ${order.order_display_id} was not updated when settling from withdrawal webhook — ` +
+        `escrow_status not in reconcilable set (${[...REFUND_RECONCILABLE_STATUSES, ...RELEASE_RECONCILABLE_STATUSES].join(', ')})`
+    );
   }
 
   if (!isRefund) {
@@ -250,10 +299,6 @@ export async function processEscrowWebhookEvent(eventType, payload = {}) {
 
   const orderId = payload.orderId || 'unknown';
   logger.info(`[Webhook] Processing escrow event ${eventType} for order ${orderId}`);
-
-  if (payload.simulateFailure === true) {
-    throw new Error('Simulated database lock or processing failure');
-  }
 
   const handler = EVENT_HANDLERS[eventType];
   if (!handler) {
