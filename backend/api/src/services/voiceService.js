@@ -1,10 +1,15 @@
 import axios from 'axios';
 import crypto from 'crypto';
-import { supabase } from '../config/db.js';
+import { supabase, supabaseAdmin, createUserClient } from '../config/db.js';
+const voiceDb = supabaseAdmin || supabase;
 import logger from '../middleware/logger.js';
+
+const ORDER_CONTEXT_COLUMNS = 'order_display_id, status, eta, escrow_status, pickup_address, drop_address';
 
 const MAX_CACHE_SIZE = 100;
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const VOICE_API_TIMEOUT_MS = 10000;
+const WHISPER_TIMEOUT_MS = 15000;
 export const audioCache = new Map();
 
 function trimCache() {
@@ -36,21 +41,16 @@ function cacheAudio(id, buffer, userId) {
   trimCache();
 }
 
-async function getBookingContext(bookingId, userId) {
+async function getBookingContext(bookingId, userId, token) {
   if (!userId) {
     return null;
   }
 
   try {
-    let orderQuery = supabase.from('orders').select('*');
-    if (bookingId) {
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (uuidRegex.test(bookingId)) {
-        orderQuery = orderQuery.eq('id', bookingId);
-      } else {
-        orderQuery = orderQuery.eq('order_display_id', bookingId);
-      }
-      orderQuery = orderQuery.or(`customer_id.eq.${userId},driver_id.eq.${userId}`);
+    const client = token ? createUserClient(token) : voiceDb;
+    let orderQuery = client.from('orders').select(ORDER_CONTEXT_COLUMNS);
+    if (isUuid) {
+      orderQuery = orderQuery.eq('id', bookingId);
     } else {
       orderQuery = orderQuery
         .or(`customer_id.eq.${userId},driver_id.eq.${userId}`)
@@ -71,73 +71,9 @@ async function getBookingContext(bookingId, userId) {
   return null;
 }
 
-function detectQueryIntent(text = '') {
-  const lower = text.toLowerCase();
-  if (
-    lower.includes('where') ||
-    lower.includes('location') ||
-    lower.includes('package') ||
-    lower.includes('truck') ||
-    lower.includes('shipment') ||
-    lower.includes('कहाँ') ||
-    lower.includes('काह') ||
-    lower.includes('எங்கே')
-  ) {
-    return 'location';
-  }
-  if (
-    lower.includes('when') ||
-    lower.includes('reach') ||
-    lower.includes('arrive') ||
-    lower.includes('eta') ||
-    lower.includes('time') ||
-    lower.includes('कब') ||
-    lower.includes('எப்போது')
-  ) {
-    return 'eta';
-  }
-  if (
-    lower.includes('payment') ||
-    lower.includes('released') ||
-    lower.includes('escrow') ||
-    lower.includes('pay') ||
-    lower.includes('money') ||
-    lower.includes('भुगतान') ||
-    lower.includes('பணம்')
-  ) {
-    return 'escrow';
-  }
-  return 'general';
-}
-
-function buildResponseForIntent(intent, bookingData, transcriptText) {
-  const orderId = bookingData?.order_display_id || bookingData?.id || 'your order';
-  const status = bookingData?.status?.replace(/_/g, ' ') || 'in transit';
-
-  switch (intent) {
-    case 'location': {
-      const loc = bookingData?.current_location_name || bookingData?.drop_address || 'en route to destination';
-      return `Your shipment (${orderId}) is currently ${status} near ${loc}.`;
-    }
-    case 'eta': {
-      const eta = bookingData?.eta || '45 minutes';
-      return `Your shipment (${orderId}) is estimated to reach its destination in ${eta}.`;
-    }
-    case 'escrow': {
-      const escrowStatus = bookingData?.escrow_status || 'secured in smart contract escrow';
-      return `Payment for ${orderId} is currently ${escrowStatus} and will release upon delivery.`;
-    }
-    default:
-      return bookingData
-        ? `Your shipment (${orderId}) is currently ${status}.`
-        : `Your query "${transcriptText}" has been processed. Shipment status is normal.`;
-  }
-}
-
-export async function processVoiceQuery(userId, bookingId, audioBuffer, filename, textQuery) {
-  const bookingData = await getBookingContext(bookingId, userId);
-
-  // If no OpenAI/ElevenLabs API key, use local intent pipeline
+export async function processVoiceQuery(userId, bookingId, audioBuffer, filename, token) {
+  const bookingData = await getBookingContext(bookingId, userId, token);
+  
   if (!process.env.OPENAI_API_KEY || !process.env.ELEVENLABS_API_KEY) {
     logger.warn('Missing OpenAI or ElevenLabs API keys. Using mock Voice AI intent pipeline.');
 
@@ -168,30 +104,29 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
     };
   }
 
-  // Production Whisper call or text transcript
-  let transcript = textQuery;
-  if (!transcript && audioBuffer) {
-    try {
-      const boundary = '----VoiceAIBoundary' + crypto.randomBytes(16).toString('hex');
-      const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename || 'audio.wav'}"\r\nContent-Type: audio/wav\r\n\r\n`;
-      const footer = `\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n--${boundary}--`;
-      const body = Buffer.concat([
-        Buffer.from(header, 'utf-8'),
-        audioBuffer,
-        Buffer.from(footer, 'utf-8')
-      ]);
+  // Production Whisper call
+  let transcript;
+  try {
+    const boundary = '----VoiceAIBoundary' + crypto.randomBytes(16).toString('hex');
+    const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename || 'audio.wav'}"\r\nContent-Type: audio/wav\r\n\r\n`;
+    const footer = `\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n--${boundary}--`;
+    const body = Buffer.concat([
+      Buffer.from(header, 'utf-8'),
+      audioBuffer,
+      Buffer.from(footer, 'utf-8')
+    ]);
 
-      const whisperResponse = await axios.post('https://api.openai.com/v1/audio/transcriptions', body, {
-        headers: {
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': `multipart/form-data; boundary=${boundary}`
-        }
-      });
-      transcript = whisperResponse.data.text;
-    } catch (err) {
-      logger.error('Whisper transcription failed:', err.message);
-      throw new Error('Transcription failed: ' + err.message, { cause: err });
-    }
+    const whisperResponse = await axios.post('https://api.openai.com/v1/audio/transcriptions', body, {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`
+      },
+      timeout: WHISPER_TIMEOUT_MS
+    });
+    transcript = whisperResponse.data.text;
+  } catch (err) {
+    logger.error('Whisper transcription failed:', err.message);
+    throw new Error('Transcription failed: ' + err.message, { cause: err });
   }
 
   const intent = detectQueryIntent(transcript);
@@ -211,7 +146,8 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json'
-      }
+      },
+      timeout: VOICE_API_TIMEOUT_MS
     });
     responseText = llmResponse.data.choices[0].message.content;
   } catch (err) {
@@ -235,7 +171,8 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
         'xi-api-key': process.env.ELEVENLABS_API_KEY,
         'accept': 'audio/mpeg'
       },
-      responseType: 'arraybuffer'
+      responseType: 'arraybuffer',
+      timeout: VOICE_API_TIMEOUT_MS
     });
 
     const audioId = crypto.randomUUID();
