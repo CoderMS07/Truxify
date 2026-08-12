@@ -47,7 +47,16 @@ router.post('/wasm/route', async (req, res) => {
             weight: weight || 0,
             distance: distance || 0
         });
-        
+
+        if (result === null || result === undefined) {
+            return res.status(500).json({
+                success: false,
+                error: 'WASM edge engine unavailable',
+                data: null,
+                timestamp: new Date().toISOString()
+            });
+        }
+
         res.json({
             success: true,
             data: result,
@@ -77,6 +86,14 @@ router.post('/wasm/drivers', async (req, res) => {
         }
         
         const result = await edgeRuntime.processDrivers(drivers);
+        if (result === null || result === undefined) {
+            return res.status(500).json({
+                success: false,
+                error: 'WASM edge engine unavailable',
+                data: null,
+                timestamp: new Date().toISOString()
+            });
+        }
         res.json({
             success: true,
             data: result,
@@ -112,6 +129,14 @@ router.post('/wasm/optimize', async (req, res) => {
         }
         
         const result = await edgeRuntime.optimizeLoads(loads, capacity);
+        if (result === null || result === undefined) {
+            return res.status(500).json({
+                success: false,
+                error: 'WASM edge engine unavailable',
+                data: null,
+                timestamp: new Date().toISOString()
+            });
+        }
         res.json({
             success: true,
             data: result,
@@ -151,6 +176,14 @@ router.post('/wasm/eta', async (req, res) => {
         }
         
         const result = await edgeRuntime.calculateETA(numericDistance, numericSpeed, numericTrafficFactor);
+        if (result === null || result === undefined) {
+            return res.status(500).json({
+                success: false,
+                error: 'WASM edge engine unavailable',
+                data: null,
+                timestamp: new Date().toISOString()
+            });
+        }
         res.json({
             success: true,
             data: result,
