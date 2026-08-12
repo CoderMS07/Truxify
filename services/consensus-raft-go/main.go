@@ -159,6 +159,8 @@ type RaftNode struct {
 	// never accepts new entries without evidence of a reachable quorum.
 	liveAck            map[string]bool
 	httpClient         *http.Client
+	storePath          string
+	wal                *os.File
 }
 
 // rng is a source of randomness for election timeouts.
@@ -225,6 +227,11 @@ func (rn *RaftNode) stepDownLocked(term uint64) {
 		rn.Role = Follower
 	}
 	rn.lastLeaderSeen = time.Now()
+	// A higher term must be durable before any request in it is acknowledged;
+	// otherwise a restart would return to the stale lower term (Raft §3.5).
+	if err := rn.persistTermLocked(term, ""); err != nil {
+		log.Printf("⚠️ node [%s] failed to persist term %d: %v", rn.NodeID, term, err)
+	}
 }
 
 // startElection campaigns for leadership: bump term, vote for self, and
@@ -238,6 +245,17 @@ func (rn *RaftNode) startElection() {
 	rn.LeaderID = ""
 	rn.electionStarted = time.Now()
 	rn.electionTimeout = rn.randomElectionTimeout()
+
+	// Persist the term and the self-vote before requesting votes: a node must
+	// never campaign in a term that is not durable (Raft §3.5).
+	if err := rn.persistTermLocked(term, rn.VotedFor); err != nil {
+		rn.Role = Follower
+		rn.VotedFor = ""
+		rn.CurrentTerm--
+		log.Printf("⚠️ node [%s] failed to persist election state for term %d: %v", rn.NodeID, term, err)
+		rn.mu.Unlock()
+		return
+	}
 
 	req := RequestVoteRequest{
 		Term:         rn.CurrentTerm,
@@ -603,9 +621,14 @@ func (rn *RaftNode) HandleVote(w http.ResponseWriter, r *http.Request) {
 	if req.Term == rn.CurrentTerm &&
 		(rn.VotedFor == "" || rn.VotedFor == req.CandidateID) &&
 		rn.isLogUpToDate(req.LastLogIndex, req.LastLogTerm) {
-		rn.VotedFor = req.CandidateID
-		rn.lastLeaderSeen = time.Now()
-		resp.VoteGranted = true
+		// Make the vote durable before acknowledging it (Raft §3.5).
+		if err := rn.persistTermLocked(rn.CurrentTerm, req.CandidateID); err != nil {
+			log.Printf("⚠️ node [%s] failed to persist vote for %s in term %d: %v", rn.NodeID, req.CandidateID, rn.CurrentTerm, err)
+		} else {
+			rn.VotedFor = req.CandidateID
+			rn.lastLeaderSeen = time.Now()
+			resp.VoteGranted = true
+		}
 	}
 
 	resp.Term = rn.CurrentTerm
@@ -694,18 +717,33 @@ func (rn *RaftNode) appendLogFromLeaderLocked(req AppendEntriesRequest) bool {
 			return false
 		}
 	}
+	origLen := len(rn.Log)
+	var appended []LogEntry
 	for i, e := range req.Entries {
 		idx := int(req.PrevLogIndex) + 1 + i
 		if idx <= len(rn.Log) {
 			if rn.Log[idx-1].Term != e.Term {
+				appended = req.Entries[i:]
 				rn.Log = rn.Log[:idx-1]
-				rn.Log = append(rn.Log, req.Entries[i:]...)
-				return true
+				rn.Log = append(rn.Log, appended...)
+				break
 			}
 		} else {
-			rn.Log = append(rn.Log, req.Entries[i:]...)
-			return true
+			appended = req.Entries[i:]
+			rn.Log = append(rn.Log, appended...)
+			break
 		}
+	}
+	if len(appended) == 0 {
+		return true
+	}
+	// Make the appended entries durable before acknowledging them; if that
+	// fails, roll the log back so we never acknowledge entries that are only
+	// volatile (Raft §3.5).
+	if err := rn.persistEntriesLocked(appended); err != nil {
+		rn.Log = rn.Log[:origLen]
+		log.Printf("⚠️ node [%s] failed to persist %d replicated entries: %v", rn.NodeID, len(appended), err)
+		return false
 	}
 	return true
 }
@@ -773,9 +811,18 @@ func (rn *RaftNode) HandleCommitOrder(w http.ResponseWriter, r *http.Request) {
 		Timestamp: time.Now(),
 	}
 
-	// Append to the local log first. CommitIndex is NOT advanced here: the entry
-	// must first be replicated to a quorum of followers (Raft §5.3).
+	// Append to the local log first and make the entry durable before
+	// replicating it: the leader must persist an entry before counting it
+	// (Raft §5.3). CommitIndex is NOT advanced here — the entry must first be
+	// replicated to a quorum of followers.
 	rn.Log = append(rn.Log, entry)
+	if err := rn.persistEntriesLocked([]LogEntry{entry}); err != nil {
+		rn.Log = rn.Log[:len(rn.Log)-1]
+		rn.mu.Unlock()
+		log.Printf("⚠️ node [%s] failed to persist entry at index %d: %v", rn.NodeID, entry.Index, err)
+		http.Error(w, "failed to persist entry", http.StatusInternalServerError)
+		return
+	}
 	rn.mu.Unlock()
 
 	// Replicate to followers and wait for a quorum acknowledgement before
@@ -894,6 +941,13 @@ func main() {
 	}
 
 	node := NewRaftNode(nodeID, peers, peerURLs)
+
+	if statePath := os.Getenv("RAFT_STATE_PATH"); statePath != "" {
+		if err := node.recoverFromWAL(statePath); err != nil {
+			log.Fatalf("Fatal consensus storage error: %v", err)
+		}
+		log.Printf("💾 node [%s] recovered raft state from %s (log length %d, term %d)", nodeID, statePath, len(node.Log), node.CurrentTerm)
+	}
 
 	http.HandleFunc("/api/v1/raft/status", node.HandleStatus)
 	http.HandleFunc("/api/v1/raft/commit", node.HandleCommitOrder)
