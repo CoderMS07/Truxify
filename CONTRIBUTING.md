@@ -217,6 +217,19 @@ git commit --no-verify -m "fix(cache): resolve Redis cache-aside TTL expiry on d
 | **Python ML Service** | `ruff check .` or `flake8` |
 | **Solidity Contracts** | `npx solhint 'contracts/**/*.sol'` |
 
----
+**Mac/Linux:**
+```bash
+flutter run --dart-define=ENV=dev \
+            --dart-define=SUPABASE_URL=http://localhost:54321 \
+            --dart-define=SUPABASE_ANON_KEY=your-local-key \
+            --dart-define=TRUXIFY_API_BASE_URL=http://localhost:5000
+```
 
-Thank you for building Truxify! 🚛💨
+**Windows PowerShell:**
+```powershell
+flutter run `
+  --dart-define=ENV=dev `
+  --dart-define=SUPABASE_URL=http://localhost:54321 `
+  --dart-define=SUPABASE_ANON_KEY=your-local-key `
+  --dart-define=TRUXIFY_API_BASE_URL=http://localhost:5000
+```
