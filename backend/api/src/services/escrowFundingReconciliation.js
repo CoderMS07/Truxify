@@ -1,6 +1,6 @@
 import { redisClient, supabaseAdmin } from '../config/db.js';
 import logger from '../middleware/logger.js';
-import { submitEscrowRefund, getEscrowBooking } from './escrow.js';
+import { submitEscrowRefund, getEscrowBooking, weiWithinTolerance } from './escrow.js';
 import { acquireLock, renewLock, releaseLock } from '../lib/redisLock.js';
 import { sendPushNotification } from './notificationService.js';
 
@@ -45,13 +45,16 @@ async function finalizeOrRevert(order, orderRepository) {
     const bookingFunded = booking && bookingAmount != null && bookingAmount > 0n;
 
     // An on-chain booking only counts as "the deposit landed" if it is funded
-    // with EXACTLY the authoritative amount recorded for the order. A booking
-    // funded with any other amount must never finalize the acceptance — the
-    // order is reverted and the deposit refunded instead.
+    // with the authoritative amount recorded for the order, within the same
+    // tolerance the rest of the escrow pipeline uses (1 gwei default). Sub-gwei
+    // deviations from blockchain mechanics (gas refunds, priority fees) must
+    // not reject a legitimate deposit; a booking funded with any other amount
+    // must never finalize the acceptance — the order is reverted and the
+    // deposit refunded instead.
     let mismatchReason = null;
     if (bookingFunded && order.escrow_amount_wei != null) {
       const expectedWei = BigInt(order.escrow_amount_wei);
-      if (bookingAmount !== expectedWei) {
+      if (!weiWithinTolerance(bookingAmount, expectedWei)) {
         mismatchReason = `booking amount ${bookingAmount} wei does not match expected ${expectedWei} wei`;
         logger.error(`[escrow-funding] Order ${order.order_display_id} ${mismatchReason} — reverting instead of healing.`);
       }
