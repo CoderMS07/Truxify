@@ -12,4 +12,15 @@ describe('i18n', () => {
     const mod = await import('../../src/middleware/i18n.js');
     expect(typeof mod.default).toBe('function');
   });
+
+  it('passes a non-object body through unchanged', () => {
+    mockReq.t = vi.fn();
+    capturedOriginalJson.mockReturnValue(mockRes);
+    errorTranslationInterceptor(mockReq, mockRes, mockNext);
+    const wrappedJson = mockRes.json;
+    const arr = ['a', 'b'];
+    wrappedJson(arr);
+    expect(arr).toEqual(['a', 'b']);
+    expect(mockReq.t).not.toHaveBeenCalled();
+  });
 });
