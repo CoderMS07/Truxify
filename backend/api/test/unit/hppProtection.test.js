@@ -25,4 +25,20 @@ describe('hppProtection', () => {
       'Potential HTTP Parameter Pollution detected'
     );
   });
+
+  it('handles a mix of scalar and array params in one request', () => {
+    const req = makeReq({ page: '1', ids: ['a', 'b'], limit: '10' });
+    const res = makeRes();
+    const next = vi.fn();
+    hppProtection(req, res, next);
+    expect(req.query.page).toBe('1');
+    expect(req.query.limit).toBe('10');
+    expect(req.query.ids).toBe('a');
+    expect(Array.isArray(req.query.ids)).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ duplicateParams: ['ids'] }),
+      'Potential HTTP Parameter Pollution detected'
+    );
+    expect(next).toHaveBeenCalledOnce();
+  });
 });
