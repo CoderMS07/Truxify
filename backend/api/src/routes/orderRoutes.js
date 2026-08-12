@@ -1155,6 +1155,13 @@ router.get('/history', authenticate, userLimiter, requirePolicy('order:view-hist
   const page = cursor ? parseInt(cursor, 10) : (parseInt(req.query.page, 10) || 1);
   const limit = parseInt(req.query.limit, 10) || 20;
 
+  if (page < 1) {
+    return res.status(400).json({ error: 'Invalid page parameter. Must be a positive integer.' });
+  }
+  if (limit < 1 || limit > 100) {
+    return res.status(400).json({ error: 'Invalid limit parameter. Must be between 1 and 100.' });
+  }
+
   try {
     const result = await orderLifecycleService.getOrderHistory(req.user.id, page, limit);
     return res.json(result);
@@ -1188,6 +1195,13 @@ router.get('/my/history', authenticate, userLimiter, requirePolicy('order:view-h
 
   const page = cursor ? parseInt(cursor, 10) : (parseInt(req.query.page, 10) || 1);
   const limit = parseInt(req.query.limit, 10) || 20;
+
+  if (page < 1) {
+    return res.status(400).json({ error: 'Invalid page parameter. Must be a positive integer.' });
+  }
+  if (limit < 1 || limit > 100) {
+    return res.status(400).json({ error: 'Invalid limit parameter. Must be between 1 and 100.' });
+  }
 
   try {
     const result = await orderLifecycleService.getOrderHistory(req.user.id, page, limit);
