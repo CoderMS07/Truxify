@@ -58,7 +58,9 @@ router.post('/query', authenticate, userLimiter, upload.single('file'), async (r
       safeFilename = sanitizeUploadFilename(file.originalname || 'voice-query.wav', 'voice-query.wav');
     }
 
-    const result = await processVoiceQuery(req.user?.id, bookingId, audioBuffer, safeFilename, textQuery);
+    const safeFilename = sanitizeUploadFilename(file.originalname, 'voice-query.wav');
+
+    const result = await processVoiceQuery(req.user.id, bookingId, file.buffer, safeFilename, req.token);
     
     // Prefix the audio_url with host if relative path
     const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
