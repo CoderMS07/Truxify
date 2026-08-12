@@ -159,6 +159,12 @@ type RaftNode struct {
 	// never accepts new entries without evidence of a reachable quorum.
 	liveAck            map[string]bool
 	httpClient         *http.Client
+
+	snapshotIndex       uint64
+	snapshotTerm        uint64
+	snapshotState       map[string]string
+	snapshotPath        string
+	compactionThreshold uint64
 }
 
 // rng is a source of randomness for election timeouts.
@@ -189,16 +195,18 @@ func NewRaftNode(id string, peers []string, peerURLs []string) *RaftNode {
 		matchIndex:         make(map[string]uint64),
 		liveAck:            make(map[string]bool),
 		httpClient:         &http.Client{Timeout: 500 * time.Millisecond},
+		snapshotState:       make(map[string]string),
+		compactionThreshold: uint64(envInt("RAFT_COMPACTION_THRESHOLD", 1000)),
 	}
 }
 
 func (rn *RaftNode) lastLogIndex() uint64 {
-	return uint64(len(rn.Log))
+	return rn.snapshotIndex + uint64(len(rn.Log))
 }
 
 func (rn *RaftNode) lastLogTerm() uint64 {
 	if len(rn.Log) == 0 {
-		return 0
+		return rn.snapshotTerm
 	}
 	return rn.Log[len(rn.Log)-1].Term
 }
@@ -356,6 +364,28 @@ func (rn *RaftNode) callAppend(peerURL string, req AppendEntriesRequest) (Append
 	return resp, err
 }
 
+// callSnapshot sends an InstallSnapshot RPC to a peer.
+func (rn *RaftNode) callSnapshot(peerURL string, req InstallSnapshotRequest) (InstallSnapshotResponse, error) {
+	var resp InstallSnapshotResponse
+	body, err := json.Marshal(req)
+	if err != nil {
+		return resp, err
+	}
+	reqHTTP, err := http.NewRequest(http.MethodPost, peerURL+"/api/v1/raft/snapshot", bytes.NewReader(body))
+	if err != nil {
+		return resp, err
+	}
+	reqHTTP.Header.Set("Content-Type", "application/json")
+	reqHTTP.Header.Set("X-API-Key", string(raftAPIKey))
+	res, err := rn.httpClient.Do(reqHTTP)
+	if err != nil {
+		return resp, err
+	}
+	defer res.Body.Close()
+	err = json.NewDecoder(res.Body).Decode(&resp)
+	return resp, err
+}
+
 // sendHeartbeats replicates the leader's log to followers and advances
 // CommitIndex once a quorum acknowledges the replicated entries. Each heartbeat
 // sends AppendEntries with the entries a follower is still missing (based on
@@ -370,19 +400,34 @@ func (rn *RaftNode) sendHeartbeats() {
 	term := rn.CurrentTerm
 
 	type peerState struct {
-		url     string
-		request AppendEntriesRequest
+		url      string
+		request  AppendEntriesRequest
+		snapshot *InstallSnapshotRequest
 	}
 	states := make([]peerState, 0, len(rn.PeerURLs))
 	for _, url := range rn.PeerURLs {
 		next := rn.nextIndex[url]
 		if next == 0 {
-			next = 1
+			next = rn.snapshotIndex + 1
+		}
+		if next <= rn.snapshotIndex {
+			// The follower is behind the retained log prefix: send it the
+			// snapshot instead of re-sending the full (possibly unbounded)
+			// entry tail.
+			snap := &InstallSnapshotRequest{
+				Term:          term,
+				LeaderID:      rn.NodeID,
+				SnapshotIndex: rn.snapshotIndex,
+				SnapshotTerm:  rn.snapshotTerm,
+				State:         rn.snapshotState,
+			}
+			states = append(states, peerState{url: url, snapshot: snap})
+			continue
 		}
 		prevLogIndex := next - 1
-		prevLogTerm := uint64(0)
-		if prevLogIndex > 0 && prevLogIndex <= uint64(len(rn.Log)) {
-			prevLogTerm = rn.Log[prevLogIndex-1].Term
+		prevLogTerm := rn.snapshotTerm
+		if prevLogIndex > rn.snapshotIndex {
+			prevLogTerm = rn.Log[prevLogIndex-rn.snapshotIndex-1].Term
 		}
 		req := AppendEntriesRequest{
 			Term:         term,
@@ -391,18 +436,20 @@ func (rn *RaftNode) sendHeartbeats() {
 			PrevLogTerm:  prevLogTerm,
 			LeaderCommit: rn.CommitIndex,
 		}
-		if next <= uint64(len(rn.Log)) {
-			req.Entries = append(req.Entries, rn.Log[next-1:]...)
+		if next <= rn.lastLogIndex() {
+			req.Entries = append(req.Entries, rn.Log[next-rn.snapshotIndex-1:]...)
 		}
 		states = append(states, peerState{url: url, request: req})
 	}
 	rn.mu.Unlock()
 
 	type result struct {
-		url     string
-		request AppendEntriesRequest
-		resp    AppendEntriesResponse
-		err     error
+		url      string
+		request  AppendEntriesRequest
+		snapshot *InstallSnapshotRequest
+		resp     AppendEntriesResponse
+		snapResp InstallSnapshotResponse
+		err      error
 	}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -410,13 +457,20 @@ func (rn *RaftNode) sendHeartbeats() {
 
 	for _, st := range states {
 		wg.Add(1)
-		go func(url string, req AppendEntriesRequest) {
+		go func(url string, req AppendEntriesRequest, snap *InstallSnapshotRequest) {
 			defer wg.Done()
+			if snap != nil {
+				resp, err := rn.callSnapshot(url, *snap)
+				mu.Lock()
+				results = append(results, result{url: url, snapshot: snap, snapResp: resp, err: err})
+				mu.Unlock()
+				return
+			}
 			resp, err := rn.callAppend(url, req)
 			mu.Lock()
 			results = append(results, result{url: url, request: req, resp: resp, err: err})
 			mu.Unlock()
-		}(st.url, st.request)
+		}(st.url, st.request, st.snapshot)
 	}
 	wg.Wait()
 
@@ -429,6 +483,21 @@ func (rn *RaftNode) sendHeartbeats() {
 
 	for _, res := range results {
 		if res.err != nil {
+			continue
+		}
+		if res.snapshot != nil {
+			if res.snapResp.Term > rn.CurrentTerm {
+				rn.stepDownLocked(res.snapResp.Term)
+				return
+			}
+			if res.snapResp.Success {
+				if res.snapshot.SnapshotIndex > rn.matchIndex[res.url] {
+					rn.matchIndex[res.url] = res.snapshot.SnapshotIndex
+				}
+				if next := res.snapshot.SnapshotIndex + 1; next > rn.nextIndex[res.url] {
+					rn.nextIndex[res.url] = next
+				}
+			}
 			continue
 		}
 		if res.resp.Term > rn.CurrentTerm {
@@ -458,6 +527,7 @@ func (rn *RaftNode) sendHeartbeats() {
 	}
 
 	rn.advanceCommitIndexLocked()
+	rn.maybeSnapshotLocked()
 }
 
 // advanceCommitIndexLocked advances CommitIndex to the highest index replicated
@@ -467,8 +537,13 @@ func (rn *RaftNode) sendHeartbeats() {
 // (Raft §5.4.2).
 func (rn *RaftNode) advanceCommitIndexLocked() {
 	last := rn.lastLogIndex()
-	for n := rn.CommitIndex + 1; n <= last; n++ {
-		if rn.Log[n-1].Term != rn.CurrentTerm {
+	// Indices at or below the snapshot boundary are compacted away.
+	start := rn.CommitIndex + 1
+	if start < rn.snapshotIndex+1 {
+		start = rn.snapshotIndex + 1
+	}
+	for n := start; n <= last; n++ {
+		if rn.logTermAtLocked(n) != rn.CurrentTerm {
 			continue
 		}
 		acked := 1 // the leader's own log always matches
@@ -566,17 +641,18 @@ func (rn *RaftNode) HandleStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"node_id":      rn.NodeID,
-		"role":         rn.Role,
-		"term":         rn.CurrentTerm,
-		"voted_for":    rn.VotedFor,
-		"leader_id":    rn.LeaderID,
-		"commit_index": rn.CommitIndex,
-		"log_length":   len(rn.Log),
-		"peers":        rn.Peers,
-		"quorum":       rn.quorum(),
-		"status":       rn.clusterStatusLocked(),
-		"timestamp":    time.Now().Format(time.RFC3339),
+		"node_id":        rn.NodeID,
+		"role":           rn.Role,
+		"term":           rn.CurrentTerm,
+		"voted_for":      rn.VotedFor,
+		"leader_id":      rn.LeaderID,
+		"commit_index":   rn.CommitIndex,
+		"log_length":     len(rn.Log),
+		"snapshot_index": rn.snapshotIndex,
+		"peers":          rn.Peers,
+		"quorum":         rn.quorum(),
+		"status":         rn.clusterStatusLocked(),
+		"timestamp":      time.Now().Format(time.RFC3339),
 	})
 }
 
@@ -658,7 +734,7 @@ func (rn *RaftNode) HandleAppend(w http.ResponseWriter, r *http.Request) {
 
 		if rn.appendLogFromLeaderLocked(req) {
 			if req.LeaderCommit > rn.CommitIndex {
-				last := uint64(len(rn.Log))
+				last := rn.lastLogIndex()
 				if req.LeaderCommit < last {
 					last = req.LeaderCommit
 				}
@@ -672,6 +748,7 @@ func (rn *RaftNode) HandleAppend(w http.ResponseWriter, r *http.Request) {
 			if rn.CommitIndex > rn.LastApplied {
 				rn.LastApplied = rn.CommitIndex
 			}
+			rn.maybeSnapshotLocked()
 			resp.Success = true
 		}
 	}
@@ -685,17 +762,24 @@ func (rn *RaftNode) HandleAppend(w http.ResponseWriter, r *http.Request) {
 // appendLogFromLeaderLocked appends replicated entries after checking log
 // consistency with the previous entry.
 func (rn *RaftNode) appendLogFromLeaderLocked(req AppendEntriesRequest) bool {
-	if req.PrevLogIndex > uint64(len(rn.Log)) {
+	if req.PrevLogIndex < rn.snapshotIndex {
 		return false
 	}
-	if req.PrevLogIndex > 0 {
-		prev := rn.Log[req.PrevLogIndex-1]
+	if req.PrevLogIndex == rn.snapshotIndex {
+		if req.PrevLogTerm != rn.snapshotTerm {
+			return false
+		}
+	} else {
+		prev := rn.Log[req.PrevLogIndex-rn.snapshotIndex-1]
 		if prev.Term != req.PrevLogTerm {
 			return false
 		}
 	}
 	for i, e := range req.Entries {
-		idx := int(req.PrevLogIndex) + 1 + i
+		if e.Index <= rn.snapshotIndex {
+			continue
+		}
+		idx := int(e.Index - rn.snapshotIndex)
 		if idx <= len(rn.Log) {
 			if rn.Log[idx-1].Term != e.Term {
 				rn.Log = rn.Log[:idx-1]
@@ -895,10 +979,18 @@ func main() {
 
 	node := NewRaftNode(nodeID, peers, peerURLs)
 
+	if snapPath := os.Getenv("RAFT_SNAPSHOT_PATH"); snapPath != "" {
+		if err := node.loadSnapshot(snapPath); err != nil {
+			log.Fatalf("Fatal snapshot storage error: %v", err)
+		}
+		log.Printf("💽 node [%s] loaded snapshot from %s (index %d, term %d)", nodeID, snapPath, node.snapshotIndex, node.snapshotTerm)
+	}
+
 	http.HandleFunc("/api/v1/raft/status", node.HandleStatus)
 	http.HandleFunc("/api/v1/raft/commit", node.HandleCommitOrder)
 	http.HandleFunc("/api/v1/raft/vote", node.HandleVote)
 	http.HandleFunc("/api/v1/raft/append", node.HandleAppend)
+	http.HandleFunc("/api/v1/raft/snapshot", node.HandleSnapshot)
 
 	log.Printf("🌐 Go Raft Distributed Consensus Node [%s] starting on port %s...", nodeID, port)
 	go node.run()
