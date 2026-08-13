@@ -254,6 +254,7 @@ async function handlePaymentReleased(payload) {
     await reconcileWalletLedger(order, verification.txHash);
     logger.info(`[Webhook] Order ${order.order_display_id} release_tx_hash healed after on-chain verification (tx: ${verification.txHash})`);
     await tryReconcileWalletLedger(order, payload.txHash || order.release_tx_hash);
+    await reconcileWalletLedger(order, payload.txHash || order.release_tx_hash);
     logger.info(`[Webhook] Order ${order.order_display_id} already released — duplicate delivery ignored.`);
     return;
   }
@@ -387,6 +388,7 @@ async function handleWithdrawalSettled(payload) {
     if (!isRefund) {
       await reconcileWalletLedger(order, txHash || order.release_tx_hash);
       await tryReconcileWalletLedger(order, txHash);
+      await reconcileWalletLedger(order, txHash);
     }
     logger.info(`[Webhook] Order ${order.order_display_id} already ${targetStatus} — duplicate delivery ignored.`);
     return;
