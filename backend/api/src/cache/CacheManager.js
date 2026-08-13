@@ -102,7 +102,7 @@ export async function invalidateBatch(namespace, entityIds, opts = {}) {
     }
   } catch (err) {
     stats.errors++;
-    logger.error({ err, namespace }, '[CacheManager] Batch invalidation error');
+    logger.error({ err, namespace, entityIds: entityIds?.length ?? 0 }, '[CacheManager] Batch invalidation error');
   }
 }
 
