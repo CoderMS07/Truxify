@@ -225,6 +225,7 @@ class _ShellScreenState extends State<ShellScreen> {
         _openTab(1); // Active Trip
         break;
       case NotificationTarget.earnings:
+      case NotificationTarget.wallet:
         _openTab(0); // Home (earnings card)
         break;
       case NotificationTarget.loadDetail:

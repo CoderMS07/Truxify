@@ -93,6 +93,7 @@ class _TruxifyShellScreenState extends State<TruxifyShellScreen> {
         _switchTab(2);
         break;
       case NotificationTarget.earnings:
+      case NotificationTarget.wallet:
         // Payment released to the customer's wallet — open the Profile tab.
         _switchTab(3);
         break;
