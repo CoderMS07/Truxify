@@ -328,3 +328,16 @@ class MEVService {
 }
 
 export default new MEVService();
+
+// === Spec 44: ===
+// === Spec 44: cap bundle size ===
+const MAX = 10, MAX_GAS = 15_000_000n;
+export function validateBundleSize(b) {
+  if (!Array.isArray(b)) throw new Error('not array');
+  if (b.length === 0) throw new Error('empty');
+  if (b.length > MAX) throw new Error(`>${MAX}`);
+  const g = b.reduce((a, x) => a + BigInt(x.gasLimit || 0), 0n);
+  if (g > MAX_GAS) throw new Error(`gas>${MAX_GAS}`);
+  return { txCount: b.length, totalGas: g };
+}
+
