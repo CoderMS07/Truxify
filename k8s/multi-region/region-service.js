@@ -200,6 +200,8 @@ class RegionService {
             logger.info(`✅ Data replicated to ${this.regions.length - 1} regions`);
         } catch (error) {
             logger.error('Data replication failed:', error);
+            await this.redis.incr('replication:global:error_count');
+            await this.redis.set('replication:global:last_error', new Date().toISOString());
         }
     }
 
@@ -214,11 +216,24 @@ class RegionService {
     }
 
     async replicateToRegion(region, data) {
-        try {
-            await axios.post(`${region.endpoint}/api/replication/receive`, data);
-        } catch (error) {
-            logger.error(`Failed to replicate to ${region.name}:`, error);
+        const maxAttempts = 3;
+        let lastError;
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+            try {
+                await axios.post(`${region.endpoint}/api/replication/receive`, data);
+                await this.redis.set(`replication:${region.name}:last_sync`, Date.now());
+                return;
+            } catch (error) {
+                lastError = error;
+                logger.error(`Failed to replicate to ${region.name} (attempt ${attempt}/${maxAttempts}):`, error);
+                if (attempt < maxAttempts) {
+                    await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+                }
+            }
         }
+        await this.redis.incr(`replication:${region.name}:error_count`);
+        await this.redis.set(`replication:${region.name}:last_error`, new Date().toISOString());
+        throw lastError;
     }
 
     // ============ Database Operations ============
