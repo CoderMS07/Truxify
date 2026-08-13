@@ -118,3 +118,16 @@ router.get('/mev/stats', async (req, res) => {
 });
 
 export default router;
+
+// === Spec 45: ===
+// === Spec 45: per-account rate limit ===
+const WIN = 60_000, MAX = 20;
+const _b = new Map();
+export function checkBundleRateLimit(a) {
+  const now = Date.now();
+  const arr = (_b.get(a) || []).filter((t) => now - t < WIN);
+  if (arr.length >= MAX) return { allowed: false, remaining: 0 };
+  arr.push(now); _b.set(a, arr);
+  return { allowed: true, remaining: MAX - arr.length };
+}
+
