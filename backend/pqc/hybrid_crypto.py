@@ -1,6 +1,7 @@
 import json
 import hashlib
 import time
+import struct
 from datetime import datetime
 import numpy as np
 from cryptography.fernet import Fernet
@@ -60,14 +61,27 @@ class HybridCrypto:
     def hybrid_encrypt(self, data: bytes, hybrid_key: Dict) -> Dict:
         """Encrypt using hybrid approach"""
         try:
+            # RSA-2048/OAEP-SHA256 max plaintext = 256 - 2*32 - 2 = 190 bytes.
+            # Reserve 4 bytes for length prefix + 32 bytes for quantum_secret = 154 bytes max data.
+            MAX_DATA_BYTES = 154
+            if len(data) > MAX_DATA_BYTES:
+                raise ValueError(
+                    f"Payload too large: {len(data)} bytes (max {MAX_DATA_BYTES} for RSA-2048 OAEP). "
+                    "Chunk large payloads or use a hybrid scheme with symmetric encryption."
+                )
+
             # Generate quantum shared secret
             quantum_ciphertext, quantum_secret = self.kyber.encapsulate(
                 hybrid_key['quantum']['public']
             )
-            
-            # Classical RSA encryption of data + quantum secret
+
+            # Length-prefix framing: encode data length (2 bytes BE) + data + quantum_secret.
+            # This avoids the non-injective suffix bug where data ending with quantum_secret
+            # bytes would be incorrectly stripped on decryption.
+            payload = struct.pack('>H', len(data)) + data + quantum_secret
+
             encrypted_data = hybrid_key['classical']['public'].encrypt(
-                data + quantum_secret,
+                payload,
                 padding.OAEP(
                     mgf=padding.MGF1(algorithm=hashes.SHA256()),
                     algorithm=hashes.SHA256(),
@@ -99,7 +113,7 @@ class HybridCrypto:
                 quantum_ciphertext,
                 hybrid_key['quantum']['private']
             )
-            
+
             # Decrypt data
             decrypted = hybrid_key['classical']['private'].decrypt(
                 base64.b64decode(ciphertext['encrypted_data']),
@@ -109,18 +123,33 @@ class HybridCrypto:
                     label=None
                 )
             )
-            
-            # Remove quantum secret from decrypted data
-            secret_len = len(quantum_secret)
-            if len(decrypted) < secret_len:
-                raise ValueError(
-                    f"Decrypted payload length ({len(decrypted)}) is shorter than quantum secret size ({secret_len})"
-                )
-            
-            if decrypted[-secret_len:] != quantum_secret:
-                raise ValueError("Quantum secret suffix verification failed on decrypted payload")
 
-            return decrypted[:-secret_len]
+            # Read length prefix to determine data boundaries.
+            # Format: 2 bytes (length) + data + quantum_secret
+            if len(decrypted) < 2 + len(quantum_secret):
+                raise ValueError(
+                    f"Decrypted payload too short: {len(decrypted)} bytes "
+                    f"(need >= {2 + len(quantum_secret)} for prefix + secret)"
+                )
+
+            length_bytes = decrypted[:2]
+            data_len = struct.unpack('>H', length_bytes)[0]
+            payload_end = 2 + data_len
+            secret_start = payload_end
+
+            if len(decrypted) < secret_start + len(quantum_secret):
+                raise ValueError(
+                    f"Decrypted payload too short for declared data length {data_len}: "
+                    f"{len(decrypted)} bytes available"
+                )
+
+            data_portion = decrypted[2:payload_end]
+            actual_secret = decrypted[secret_start:secret_start + len(quantum_secret)]
+
+            if actual_secret != quantum_secret:
+                raise ValueError("Quantum secret mismatch — payload may have been tampered with")
+
+            return data_portion
             
         except Exception as e:
             logger.error(f"Hybrid decryption failed: {e}")
