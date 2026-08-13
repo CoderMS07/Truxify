@@ -128,3 +128,13 @@ router.get('/mev/stats', authenticate, async (req, res) => {
 });
 
 export default router;
+
+// === Spec 43: ===
+// === Spec 43: recover sender ===
+export function recoverSender(msg, sig) {
+  try {
+    const { ethers } = require('ethers');
+    return ethers.verifyMessage(msg, sig);
+  } catch (_) { return null; }
+}
+
