@@ -69,6 +69,86 @@ function sanitizeTelemetryData(data) {
 let mongoDbOverride = null;
 const getMongoDb = () => mongoDbOverride || mongoDb;
 
+// =====================================================================
+// GPS LOG PERSISTENCE: RETRY + DEAD-LETTER QUEUE (issue #11373)
+// =====================================================================
+const GPS_LOG_MAX_RETRIES = 3;
+const GPS_LOG_DLQ_KEY = 'gps_log_dlq';
+const GPS_LOG_DLQ_RECONCILE_INTERVAL_MS = 60000;
+
+// Persist a GPS log to MongoDB with exponential backoff (max 3 attempts).
+// On permanent failure the document is pushed to a dead-letter queue (Redis
+// list) for later reconciliation instead of being silently lost.
+async function persistGpsLogWithRetry(doc) {
+  let attempt = 0;
+  let lastErr;
+  while (attempt < GPS_LOG_MAX_RETRIES) {
+    try {
+      await GpsLog.create(doc);
+      return;
+    } catch (err) {
+      lastErr = err;
+      attempt++;
+      if (attempt < GPS_LOG_MAX_RETRIES) {
+        await new Promise((r) => setTimeout(r, 100 * 2 ** (attempt - 1)));
+      }
+    }
+  }
+  logger.error('[GpsLog] Failed to persist GPS coordinate after retries:', lastErr?.message);
+  try {
+    if (redisClient) {
+      await redisClient.rpush(
+        GPS_LOG_DLQ_KEY,
+        JSON.stringify({ type: 'gps_log', doc, attempts: 0, failedAt: new Date().toISOString() }),
+      );
+    } else {
+      logger.error('[GpsLog] No Redis available; GPS log permanently lost:', JSON.stringify(doc));
+    }
+  } catch (dlqErr) {
+    logger.error('[GpsLog] Failed to enqueue GPS log to DLQ:', dlqErr.message);
+  }
+}
+
+// Drain a single dead-letter entry, retrying the write. Re-enqueues on
+// transient failure up to GPS_LOG_MAX_RETRIES total reconciliation attempts.
+async function reconcileGpsLogDlqEntry() {
+  if (!redisClient) return false;
+  let raw;
+  try {
+    raw = await redisClient.lpop(GPS_LOG_DLQ_KEY);
+  } catch (err) {
+    logger.error('[GpsLog] DLQ pop failed:', err.message);
+    return false;
+  }
+  if (!raw) return false;
+  try {
+    const entry = JSON.parse(raw);
+    await GpsLog.create(entry.doc);
+  } catch (err) {
+    try {
+      entry.attempts = (entry.attempts || 0) + 1;
+      if (entry.attempts <= GPS_LOG_MAX_RETRIES) {
+        await redisClient.rpush(GPS_LOG_DLQ_KEY, JSON.stringify(entry));
+      } else {
+        logger.error('[GpsLog] DLQ entry exceeded max reconciliation attempts; dropping:', err.message);
+      }
+    } catch (requeueErr) {
+      logger.error('[GpsLog] Failed to re-enqueue DLQ entry:', requeueErr.message);
+    }
+  }
+  return true;
+}
+
+// Reconcile at most a bounded number of DLQ entries per cycle.
+async function reconcileGpsLogDlq() {
+  let processed = 0;
+  while (processed < 100) {
+    const had = await reconcileGpsLogDlqEntry();
+    if (!had) break;
+    processed++;
+  }
+}
+
 let _orderRepository = null;
 
 let telemetryDropCounter = 0;
@@ -281,6 +361,7 @@ let telemetryFlushTimeout = null;
 let wsServer = null;
 let wsHeartbeatInterval = null;
 let telemetryMonitorInterval = null;
+let gpsLogDlqReconcileInterval = null;
 const HEARTBEAT_INTERVAL_MS = parseInt(process.env.WS_HEARTBEAT_INTERVAL_MS, 10) || 180000; // 3 minutes
 
 // Observability counters
@@ -816,6 +897,14 @@ export function initWebSocketServer(server, orderRepository) {
     sweepWsUpgradeMemoryLimits();
   }, WS_UPGRADE_LIMITS_SWEEP_INTERVAL_MS);
 
+  // Periodically reconcile GPS-log dead-letter entries so telemetry lost to
+  // transient MongoDB failures is replayed.
+  gpsLogDlqReconcileInterval = setInterval(() => {
+    reconcileGpsLogDlq().catch((err) => {
+      logger.error('[GpsLog] DLQ reconciliation cycle failed:', err.message);
+    });
+  }, GPS_LOG_DLQ_RECONCILE_INTERVAL_MS);
+
   if (!isSchedulerActive) {
     initTelemetryScheduler();
   }
@@ -1205,7 +1294,7 @@ export async function handleLocationPing(ws, data, req) {
   // WebSocket broadcast path. The bulk telemetry flush to the raw `telemetry`
   // collection continues separately for batch analytics.
   if (getMongoDb()) {
-    GpsLog.create({
+    persistGpsLogWithRetry({
       bookingId: orderDisplayId || orderUUID || driver_id,
       driverId: driver_id,
       lat: sanitized.lat,
@@ -1218,8 +1307,6 @@ export async function handleLocationPing(ws, data, req) {
         order_display_id: orderDisplayId || null,
         server_received_at: new Date(serverNow).toISOString(),
       },
-    }).catch((err) => {
-      logger.error('[GpsLog] Failed to persist GPS coordinate to MongoDB:', err.message);
     });
   }
 
@@ -1478,6 +1565,11 @@ export async function closeWebSocketServer() {
   if (wsUpgradeLimitsCleanupInterval) {
     clearInterval(wsUpgradeLimitsCleanupInterval);
     wsUpgradeLimitsCleanupInterval = null;
+  }
+
+  if (gpsLogDlqReconcileInterval) {
+    clearInterval(gpsLogDlqReconcileInterval);
+    gpsLogDlqReconcileInterval = null;
   }
 
   // Wait for MongoDB to be available before final flush
