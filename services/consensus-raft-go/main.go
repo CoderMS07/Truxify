@@ -273,8 +273,11 @@ func (rn *RaftNode) startElection() {
 	if votes >= rn.quorum() {
 		rn.Role = Leader
 		rn.LeaderID = rn.NodeID
-		// Per-follower replication state (Raft §5.3): the leader assumes each
-		// follower's log matches its own and works backward from the end.
+		// Per-follower replication state (Raft §5.3): the leader seeds
+		// nextIndex = lastLogIndex+1 and learns each follower's true match
+		// index from AppendEntries acknowledgements, backing off on rejection.
+		// matchIndex and peerLive are never seeded optimistically: a leader
+		// without a reachable quorum must not accept new entries.
 		rn.nextIndex = make(map[string]uint64, len(rn.PeerURLs))
 		rn.matchIndex = make(map[string]uint64, len(rn.PeerURLs))
 		rn.peerLive = make(map[string]bool, len(rn.PeerURLs))
@@ -488,13 +491,13 @@ func (rn *RaftNode) advanceCommitIndexLocked() {
 	}
 }
 
-// leaderHasQuorumLocked reports whether a majority of the cluster acknowledges
-// the current leadership, based on the durable matchIndex (the last index each
-// follower has acknowledged replicating) rather than the ephemeral per-round
-// heartbeat cache. Right after an election matchIndex is seeded optimistically,
-// so healthy clusters do not spuriously reject commits before the first
-// heartbeat completes.
-func (rn *RaftNode) leaderHasQuorumLocked() bool {
+// leaderHasLiveQuorumLocked reports whether a majority of the cluster is
+// reachable and acknowledging AppendEntries in the current term. Unlike a
+// matchIndex-based check it does not trust an optimistically-seeded matchIndex:
+// it counts only peers that have completed at least one successful AppendEntries
+// round since this node became leader, so a partitioned leader fails fast
+// instead of accepting /commit entries it cannot replicate.
+func (rn *RaftNode) leaderHasLiveQuorumLocked() bool {
 	acked := 1 // self
 	for url, m := range rn.matchIndex {
 		if rn.peerLive[url] && m >= rn.CommitIndex {
@@ -507,7 +510,7 @@ func (rn *RaftNode) leaderHasQuorumLocked() bool {
 func (rn *RaftNode) clusterStatusLocked() string {
 	switch rn.Role {
 	case Leader:
-		if rn.leaderHasQuorumLocked() {
+		if rn.leaderHasLiveQuorumLocked() {
 			return "HEALTHY_CLUSTER"
 		}
 		return "UNHEALTHY_CLUSTER"
@@ -792,7 +795,7 @@ func (rn *RaftNode) HandleCommitOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !rn.leaderHasQuorumLocked() {
+	if !rn.leaderHasLiveQuorumLocked() {
 		rn.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
