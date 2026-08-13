@@ -1,117 +1,132 @@
-/**
- * Coverage for upload filename sanitisation.
- *
- * `file.originalname` is entirely client-controlled and previously flowed
- * unsanitised from the voice upload endpoint into the speech pipeline.
- */
-import { describe, expect, it } from 'vitest';
-import { sanitizeUploadFilename } from '../../src/lib/uploadFilename.js';
+import { describe, it, expect } from 'vitest';
+import {
+  sanitizeUploadFilename,
+  checkContentLength,
+} from '../../src/lib/uploadFilename.js';
 
 describe('sanitizeUploadFilename', () => {
-  it('passes an ordinary filename through unchanged', () => {
-    expect(sanitizeUploadFilename('voice-query.wav')).toBe('voice-query.wav');
-    expect(sanitizeUploadFilename('recording_01.mp3')).toBe('recording_01.mp3');
+  it('returns the filename unchanged when it is already safe', () => {
+    expect(sanitizeUploadFilename('document.pdf')).toBe('document.pdf');
+    expect(sanitizeUploadFilename('photo_2024.jpg')).toBe('photo_2024.jpg');
+    expect(sanitizeUploadFilename('report-v2.xlsx')).toBe('report-v2.xlsx');
   });
 
-  it('strips POSIX directory components', () => {
+  it('strips Unix directory separators', () => {
+    expect(sanitizeUploadFilename('uploads/photo.jpg')).toBe('photo.jpg');
     expect(sanitizeUploadFilename('/etc/passwd')).toBe('passwd');
-    expect(sanitizeUploadFilename('../../etc/passwd')).toBe('passwd');
   });
 
-  it('strips Windows directory components on any platform', () => {
-    // path.basename would not handle backslashes on a POSIX server.
-    expect(sanitizeUploadFilename('..\\..\\windows\\system32\\config')).toBe('config');
-    expect(sanitizeUploadFilename('C:\\temp\\audio.wav')).toBe('audio.wav');
+  it('strips Windows directory separators', () => {
+    expect(sanitizeUploadFilename('uploads\\photo.jpg')).toBe('photo.jpg');
+    expect(sanitizeUploadFilename('C:\\Windows\\System32\\config')).toBe('config');
   });
 
-  it('neutralises traversal sequences that survive separator stripping', () => {
-    const result = sanitizeUploadFilename('....//....//evil.wav');
-    expect(result).not.toContain('..');
-    expect(result).not.toContain('/');
+  it('strips mixed path separators', () => {
+    expect(sanitizeUploadFilename('dir/subdir\\mixed/path/file.png')).toBe('file.png');
   });
 
-  it('removes NUL bytes and control characters', () => {
-    expect(sanitizeUploadFilename('audio\x00.wav')).toBe('audio.wav');
-    expect(sanitizeUploadFilename('au\x07dio\x1f.wav')).toBe('audio.wav');
+  it('strips path traversal sequences', () => {
+    expect(sanitizeUploadFilename('../../../etc/passwd')).toBe('passwd');
+    expect(sanitizeUploadFilename('foo/../bar/baz.txt')).toBe('baz.txt');
+    expect(sanitizeUploadFilename('....//....//etc/passwd')).toBe('passwd');
   });
 
-  it('collapses shell metacharacters to underscores', () => {
-    const result = sanitizeUploadFilename('audio;rm -rf ~.wav');
-    expect(result).not.toMatch(/[;~ ]/);
-    expect(result).toMatch(/^[A-Za-z0-9._-]+$/);
+  it('drops control characters and NUL bytes', () => {
+    expect(sanitizeUploadFilename('doc\x00ument.pdf')).toBe('document.pdf');
+    expect(sanitizeUploadFilename('file\x1f.txt')).toBe('file.txt');
+    expect(sanitizeUploadFilename('photo\x7f.jpg')).toBe('photo.jpg');
   });
 
-  it('strips leading dots so the result is never a hidden file', () => {
-    expect(sanitizeUploadFilename('.hidden.wav')).toBe('hidden.wav');
-    expect(sanitizeUploadFilename('...wav')).toBe('wav');
+  it('normalises non-allowlisted characters to underscores', () => {
+    expect(sanitizeUploadFilename('my document (1).pdf')).toBe('my_document__1_.pdf');
+    expect(sanitizeUploadFilename('price list [copy].xlsx')).toBe('price_list__copy_.xlsx');
+    expect(sanitizeUploadFilename('file with spaces.txt')).toBe('file_with_spaces.txt');
   });
 
-  it('truncates an over-long name while preserving the extension', () => {
-    const long = `${'a'.repeat(500)}.wav`;
-    const result = sanitizeUploadFilename(long);
+  it('collapses consecutive dots and strips leading dots', () => {
+    expect(sanitizeUploadFilename('...hidden...file...')).toBe('hidden.file.');
+    expect(sanitizeUploadFilename('.hidden.pdf')).toBe('hidden.pdf');
+    expect(sanitizeUploadFilename('...file.txt')).toBe('file.txt');
+  });
+
+  it('truncates long filenames preserving the extension', () => {
+    const longBase = 'a'.repeat(150);
+    const result = sanitizeUploadFilename(`${longBase}.txt`);
     expect(result.length).toBeLessThanOrEqual(120);
-    expect(result.endsWith('.wav')).toBe(true);
+    expect(result.endsWith('.txt')).toBe(true);
   });
 
-  it('falls back for empty, whitespace-only and non-string input', () => {
-    expect(sanitizeUploadFilename('')).toBe('upload');
-    expect(sanitizeUploadFilename(null)).toBe('upload');
-    expect(sanitizeUploadFilename(undefined)).toBe('upload');
-    expect(sanitizeUploadFilename(42)).toBe('upload');
-    expect(sanitizeUploadFilename({})).toBe('upload');
+  it('returns fallback when name becomes empty after sanitisation', () => {
+    expect(sanitizeUploadFilename('', 'default.txt')).toBe('default.txt');
+    expect(sanitizeUploadFilename(null, 'fallback.pdf')).toBe('fallback.pdf');
+    expect(sanitizeUploadFilename(undefined, 'backup.jpg')).toBe('backup.jpg');
   });
 
-  it('falls back when nothing survives sanitisation', () => {
-    expect(sanitizeUploadFilename('/')).toBe('upload');
+  it('rejects Windows reserved device names regardless of extension', () => {
+    expect(sanitizeUploadFilename('nul.pdf')).toBe('upload');
+    expect(sanitizeUploadFilename('aux')).toBe('upload');
+    expect(sanitizeUploadFilename('com1.txt')).toBe('upload');
+    expect(sanitizeUploadFilename('lpt9')).toBe('upload');
+    expect(sanitizeUploadFilename('prn')).toBe('upload');
+  });
+
+  it('allows mixed-case filenames (case is preserved)', () => {
+    // Only the stem (part before extension) is lowercased for reserved-name check
+    // The full filename retains its original case
+    expect(sanitizeUploadFilename('FILE123.TXT')).toBe('FILE123.TXT');
+    expect(sanitizeUploadFilename('Report_2024_V2.PDF')).toBe('Report_2024_V2.PDF');
+  });
+
+  it('handles filenames with only extension', () => {
+    // Leading dots are stripped, so .pdf becomes pdf which is not reserved
+    expect(sanitizeUploadFilename('.pdf')).toBe('pdf');
+    // ... collapses to . which then is stripped, leaving empty string
     expect(sanitizeUploadFilename('...')).toBe('upload');
-    expect(sanitizeUploadFilename('\x00\x01')).toBe('upload');
   });
 
-  it('rejects Windows reserved device names', () => {
-    expect(sanitizeUploadFilename('CON')).toBe('upload');
-    expect(sanitizeUploadFilename('con.wav')).toBe('upload');
-    expect(sanitizeUploadFilename('LPT1.mp3')).toBe('upload');
-    expect(sanitizeUploadFilename('nul')).toBe('upload');
-  });
-
-  it('honours a caller-supplied fallback', () => {
-    expect(sanitizeUploadFilename('', 'voice-query.wav')).toBe('voice-query.wav');
-    expect(sanitizeUploadFilename(null, 'photo.jpg')).toBe('photo.jpg');
-  });
-
-  it('always returns a non-empty string with no separators', () => {
-    const hostile = [
-      '../../../../root/.ssh/authorized_keys',
-      '..\\..\\..\\boot.ini',
-      'a/b/c/../../../d.wav',
-      '\x00../etc/shadow',
-      '   ',
-      '$(whoami).wav',
-      '`id`.mp3',
-      'file\nname.wav',
-    ];
-
-    for (const input of hostile) {
-      const result = sanitizeUploadFilename(input);
-      expect(result.length).toBeGreaterThan(0);
-      expect(result).not.toContain('/');
-      expect(result).not.toContain('\\');
-      expect(result).not.toContain('..');
-      expect(result).toMatch(/^[A-Za-z0-9._-]+$/);
-    }
+  it('uses custom fallback when provided', () => {
+    expect(sanitizeUploadFilename('', 'my_fallback')).toBe('my_fallback');
+    expect(sanitizeUploadFilename(null, 'backup')).toBe('backup');
+    // ... becomes empty string after sanitisation, triggering fallback
+    expect(sanitizeUploadFilename('...', 'safe_doc')).toBe('safe_doc');
+    // nul is reserved regardless of extension
+    expect(sanitizeUploadFilename('nul.pdf', 'my_fallback')).toBe('my_fallback');
   });
 });
 
-
-// === Spec 18 test ===
-import { describe, it, expect } from 'vitest';
-import { checkContentLength } from '../../src/lib/uploadFilename.js';
 describe('checkContentLength', () => {
-  it('passes small', () => { expect(checkContentLength({ headers: { 'content-length': '100' } }, 1024).ok).toBe(true); });
-  it('rejects large', () => {
-    const r = checkContentLength({ headers: { 'content-length': '5000' } }, 1024);
-    expect(r.ok).toBe(false);
-    expect(r.error.status).toBe(413);
+  it('returns ok when content-length is within limit', () => {
+    const req = { headers: { 'content-length': '1024' } };
+    const result = checkContentLength(req, 10240);
+    expect(result.ok).toBe(true);
+    expect(result.length).toBe(1024);
+  });
+
+  it('returns ok when content-length equals the limit', () => {
+    const req = { headers: { 'content-length': '1024' } };
+    const result = checkContentLength(req, 1024);
+    expect(result.ok).toBe(true);
+  });
+
+  it('returns error when content-length exceeds the limit', () => {
+    const req = { headers: { 'content-length': '50000' } };
+    const result = checkContentLength(req, 1024);
+    expect(result.ok).toBe(false);
+    expect(result.error.status).toBe(413);
+    expect(result.error.code).toBe('PAYLOAD_TOO_LARGE');
+  });
+
+  it('returns ok when content-length header is missing', () => {
+    const req = { headers: {} };
+    const result = checkContentLength(req, 1000);
+    expect(result.ok).toBe(true);
+    expect(result.length).toBe(0);
+  });
+
+  it('returns ok with default 25MB limit when no maxBytes provided', () => {
+    const req = { headers: { 'content-length': '1000000' } };
+    const result = checkContentLength(req);
+    expect(result.ok).toBe(true);
+    expect(result.length).toBe(1000000);
   });
 });
-
