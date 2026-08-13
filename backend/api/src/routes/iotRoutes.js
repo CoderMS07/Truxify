@@ -68,7 +68,13 @@ router.post('/telemetry/:id', telemetryHistoryLimiter, authenticate, validatePar
       let isAuthorized = false;
 
       if (req.user.role === 'iot_device') {
-        isAuthorized = req.user.id === loadId;
+        const { data: binding, error: bindErr } = await supabaseAdmin
+          .from('device_load_bindings')
+          .select('load_id')
+          .eq('device_id', req.user.id)
+          .eq('load_id', loadId)
+          .maybeSingle();
+        isAuthorized = !bindErr && Boolean(binding);
       } else {
         isAuthorized = load.customer_id === req.user.id;
         if (!isAuthorized && load.order_display_id) {
