@@ -238,9 +238,10 @@ class KeyRotationService {
     }
   }
 
-  async logKeyRotationEvent(userId, walletAddress, reason, status, errorMessage = null) {
+  async logKeyRotationEvent(userId, walletAddress, reason, status, errorMessage = null, requestIp = null, userClient = null) {
+    const client = userClient || supabase;
     try {
-      await supabase
+      await client
         .from('key_rotation_audit_log')
         .insert([{
           user_id: userId,
@@ -249,7 +250,7 @@ class KeyRotationService {
           status,
           error_message: errorMessage,
           timestamp: new Date().toISOString(),
-          ip_address: process.env.REQUEST_IP || 'unknown',
+          ip_address: requestIp || 'unknown',
         }]);
     } catch (err) {
       logger.error('[KeyRotationService] Failed to log rotation event:', err.message);
