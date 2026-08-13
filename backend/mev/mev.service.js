@@ -328,3 +328,11 @@ class MEVService {
 }
 
 export default new MEVService();
+
+// === Spec 42: ===
+// === Spec 42: BigInt gas ===
+export function computePriorityFee(_bf, gwei) {
+  const wei = 10n ** 9n;
+  return BigInt(Math.floor(Number(gwei))) * wei;
+}
+
