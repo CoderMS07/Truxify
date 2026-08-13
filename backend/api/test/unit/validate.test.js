@@ -196,6 +196,17 @@ describe('validateQuery middleware', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
+  it('returns 400 for an array-valued query parameter', () => {
+    // A repeated query param (e.g. ?page=1&page=2) arrives as an array,
+    // which zod should reject for a scalar schema.
+    const req = { query: { page: ['1', '2'] } };
+    const res = makeRes();
+    const next = makeNext();
+    validateQuery(schema)(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it('returns 400 instead of 500 when the schema throws a ZodError', () => {
     // A schema whose transform throws (e.g. a value that cannot be coerced)
     // must surface as a client error, not an internal server error.
@@ -218,5 +229,4 @@ describe('validateQuery middleware', () => {
     });
     expect(next).not.toHaveBeenCalled();
   });
-
 });
