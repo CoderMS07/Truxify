@@ -4,7 +4,7 @@
  * Run with:  npm run test:unit -- test/unit/requestCache.test.js
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { RequestCache } from '../../src/lib/requestCache.js';
+import { RequestCache, attachResponseCleanup } from '../../src/lib/requestCache.js';
 
 describe('RequestCache', () => {
   let cache;
@@ -121,9 +121,7 @@ describe('RequestCache', () => {
 
 
 // === Spec 25 test ===
-import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { attachResponseCleanup } from '../../src/lib/requestCache.js';
 describe('attachResponseCleanup', () => {
   it('removes on finish', () => {
     const em = new EventEmitter();
