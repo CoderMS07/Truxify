@@ -65,11 +65,16 @@ class _MultiCurrencyWalletScreenState extends State<MultiCurrencyWalletScreen> {
     );
   }
 
+  CurrencyWallet _walletOrZero(String currencyCode) => _wallets.firstWhere(
+        (w) => w.currencyCode == currencyCode,
+        orElse: () => CurrencyWallet(currencyCode: currencyCode, balance: 0, flagAsset: ''),
+      );
+
   Widget _buildTotalBalance() {
     // Mock calculation of total balance in USD for display
-    double totalUsd = _wallets.firstWhere((w) => w.currencyCode == 'USD').balance +
-                      (_wallets.firstWhere((w) => w.currencyCode == 'CAD').balance / 1.35) +
-                      (_wallets.firstWhere((w) => w.currencyCode == 'MXN').balance / 16.90);
+    double totalUsd = _walletOrZero('USD').balance +
+                      (_walletOrZero('CAD').balance / 1.35) +
+                      (_walletOrZero('MXN').balance / 16.90);
 
     return Container(
       width: double.infinity,
