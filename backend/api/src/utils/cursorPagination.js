@@ -26,7 +26,9 @@ export function decodeCursor(cursor) {
   try {
     const json = Buffer.from(cursor, 'base64url').toString('utf8');
     return JSON.parse(json);
-  } catch {
+  } catch (err) {
+    // Silently return null for invalid cursors — this is expected for
+    // tampered or expired cursors and does not indicate a server error.
     return null;
   }
 }
