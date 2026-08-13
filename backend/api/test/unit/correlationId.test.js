@@ -129,7 +129,6 @@ describe('correlationIdMiddleware', () => {
 
 
 // === Spec 14 test ===
-import { describe, it, expect } from 'vitest';
 import { runWithCorrelationId, getCorrelationStore } from '../../src/middleware/correlationId.js';
 describe('correlationId', () => {
   it('stores in run()', () => {
