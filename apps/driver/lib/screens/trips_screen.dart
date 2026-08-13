@@ -34,6 +34,7 @@ class _TripsScreenState extends State<TripsScreen> {
   List<Map<String, dynamic>> _trips = [];
   Map<String, List<Map<String, dynamic>>> _tripStopsByTripId = {};
   Map<String, List<Map<String, dynamic>>> _routePointsByTripId = {};
+  Map<String, List<Map<String, dynamic>>> _itemsByTripId = {};
 
   bool _isLoadingTrips = true;
   String? _tripsError;
@@ -77,6 +78,7 @@ class _TripsScreenState extends State<TripsScreen> {
 
       final stopsByTrip = <String, List<Map<String, dynamic>>>{};
       final routePointsByTrip = <String, List<Map<String, dynamic>>>{};
+      final itemsByTrip = <String, List<Map<String, dynamic>>>{};
 
       await Future.wait(trips.map((trip) async {
         final tripId = trip['trip_display_id']?.toString();
@@ -85,9 +87,11 @@ class _TripsScreenState extends State<TripsScreen> {
         final results = await Future.wait([
           _tripService.fetchTripStops(tripId),
           _tripService.fetchRouteMapPoints(tripId),
+          _tripService.fetchTripItems(tripId),
         ]);
         stopsByTrip[tripId] = results[0];
         routePointsByTrip[tripId] = results[1];
+        itemsByTrip[tripId] = results[2];
       }));
 
       if (!mounted) return;
@@ -96,6 +100,7 @@ class _TripsScreenState extends State<TripsScreen> {
         _trips = trips;
         _tripStopsByTripId = stopsByTrip;
         _routePointsByTripId = routePointsByTrip;
+        _itemsByTripId = itemsByTrip;
         _isLoadingTrips = false;
       });
     } catch (e) {
@@ -138,28 +143,44 @@ class _TripsScreenState extends State<TripsScreen> {
 
   List<Trip> _mapSupabaseTripsToUiTrips() {
     return _trips.map((row) {
+      final tripId = row['trip_display_id']?.toString() ?? '';
+      final rawItems = _itemsByTripId[tripId] ?? [];
+
+      final tripItems = rawItems.map((item) {
+        debugPrint(item.toString());
+        return TripItem(
+          customerName: item['customer_name']?.toString() ?? 'Unknown',
+          goods: item['goods']?.toString() ?? '',
+          destination: item['destination']?.toString() ?? '',
+          earnings: '₹${(((item['earnings'] ?? 0) as num) / 100).toStringAsFixed(0)}',
+          delivered: item['is_delivered'] == true,
+        );
+      }).toList();
+
       return Trip(
         route: row['route_label']?.toString() ?? 'Unknown route',
         date: row['trip_date']?.toString() ?? '',
-        items: const [],
+        items: tripItems.isNotEmpty
+            ? tripItems.map((i) => i.goods).toList()
+            : const [],
         itemCount: row['distance']?.toString() ?? '',
         distance: row['distance']?.toString() ?? '',
-        earnings: '₹${((row['net_earnings'] ?? 0) / 100).toStringAsFixed(0)}',
+        earnings: '₹${(((row['net_earnings'] ?? 0) as num) / 100).toStringAsFixed(0)}',
         status: _mapStatus(row['status']?.toString()),
-        tripId: row['trip_display_id']?.toString() ?? '',
+        tripId: tripId,
         hash: '',
         duration: row['duration']?.toString() ?? '',
         endTime: '',
         paymentBreakdown: PaymentBreakdown(
           baseFreight:
-              '₹${((row['total_earnings'] ?? 0) / 100).toStringAsFixed(0)}',
+              '₹${(((row['total_earnings'] ?? 0) as num) / 100).toStringAsFixed(0)}',
           fuelDeducted: '₹0',
           tollDeducted: '₹0',
           platformFee: '₹0',
           netEarnings:
-              '₹${((row['net_earnings'] ?? 0) / 100).toStringAsFixed(0)}',
+              '₹${(((row['net_earnings'] ?? 0) as num) / 100).toStringAsFixed(0)}',
         ),
-        tripItems: const [],
+        tripItems: tripItems,
       );
     }).toList();
   }
