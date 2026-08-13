@@ -30,11 +30,15 @@ async def create_model(architecture: ModelArchitecture):
     """Create encrypted model"""
     try:
         result = fhe_service.create_model(architecture.layers)
+        if not result.get('success'):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Model creation failed'))
         return {
             'success': True,
             'data': result,
             'timestamp': datetime.now().isoformat()
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Model creation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -47,11 +51,15 @@ async def train_model(request: TrainRequest):
         y = np.array(request.labels)
         
         result = fhe_service.train(X, y, request.epochs)
+        if not result.get('success'):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Training failed'))
         return {
             'success': True,
             'data': result,
             'timestamp': datetime.now().isoformat()
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Training failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -62,11 +70,15 @@ async def predict(request: PredictRequest):
     try:
         X = np.array(request.data)
         result = fhe_service.predict(X)
+        if not result.get('success'):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Prediction failed'))
         return {
             'success': True,
             'data': result,
             'timestamp': datetime.now().isoformat()
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Prediction failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -76,11 +88,15 @@ async def encrypt_model():
     """Encrypt model weights"""
     try:
         result = fhe_service.encrypt_model_weights()
+        if not result.get('success'):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Encryption failed'))
         return {
             'success': True,
             'data': result,
             'timestamp': datetime.now().isoformat()
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Encryption failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
