@@ -126,16 +126,21 @@ class OrderConsumer {
       } else {
         // Side-effect topics (wallet credits, notifications, ...): claim the
         // event as processed BEFORE running handlers so a redelivery can never
-        // apply the same side effect twice.
+        // apply the same side effect twice. The claim is scoped to this
+        // consumer group so that four independent groups subscribed to the
+        // same topic (order-service, notification-service, analytics-service,
+        // fraud-service) each get their own independent claim — one group
+        // claiming an event must never suppress delivery to the others.
         const eventId = message?.metadata?.eventId || rawMessage?.key?.toString() || null;
         if (eventId) {
           const isNew = await processedEventRepository.claimProcessed(
+            groupId,
             topic,
             eventId,
             message?.orderId || message?.payload?.orderId || null
           );
           if (!isNew) {
-            logger.info(`[OrderConsumer] Skipping duplicate event ${eventId} on ${topic}`);
+            logger.info(`[OrderConsumer] Skipping duplicate event ${eventId} on ${topic} for group ${groupId}`);
             return;
           }
         }
