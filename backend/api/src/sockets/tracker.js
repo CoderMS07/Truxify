@@ -799,6 +799,12 @@ export function initWebSocketServer(server, orderRepository) {
     }
   });
 
+  // Periodically purge expired per-IP WebSocket upgrade-limit entries, so the
+  // in-memory fallback map does not leak during Redis outages.
+  const wsUpgradeLimitsCleanupInterval = setInterval(() => {
+    sweepWsUpgradeMemoryLimits();
+  }, WS_UPGRADE_LIMITS_SWEEP_INTERVAL_MS);
+
   if (!isSchedulerActive) {
     initTelemetryScheduler();
   }
