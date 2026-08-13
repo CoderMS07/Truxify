@@ -146,6 +146,30 @@ describe('headerSizeMonitor', () => {
     }
   });
 
+  it('skips undefined header names without throwing', () => {
+    const originalEnv = process.env.NODE_ENV;
+    const originalLimit = process.env.HEADER_SIZE_LIMIT;
+    process.env.NODE_ENV = 'development';
+    process.env.HEADER_SIZE_LIMIT = '5000';
+    try {
+      const req = makeReq({});
+      // Simulate a proxy-injected undefined key via a custom enumerable prop
+      Object.defineProperty(req.headers, 'x-undefined', {
+        value: undefined,
+        enumerable: true,
+        configurable: true,
+      });
+      const res = makeRes();
+      const next = vi.fn();
+      expect(() => headerSizeMonitor(req, res, next)).not.toThrow();
+      expect(next).toHaveBeenCalledOnce();
+    } finally {
+      process.env.NODE_ENV = originalEnv;
+      if (originalLimit !== undefined) process.env.HEADER_SIZE_LIMIT = originalLimit;
+      else delete process.env.HEADER_SIZE_LIMIT;
+    }
+  });
+
   it('does not throw when array header items are non-string values', () => {
     const originalEnv = process.env.NODE_ENV;
     const originalLimit = process.env.HEADER_SIZE_LIMIT;
@@ -160,6 +184,25 @@ describe('headerSizeMonitor', () => {
       expect(() => headerSizeMonitor(req, res, next)).not.toThrow();
       expect(next).toHaveBeenCalledOnce();
       expect(logger.warn).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = originalEnv;
+      if (originalLimit !== undefined) process.env.HEADER_SIZE_LIMIT = originalLimit;
+      else delete process.env.HEADER_SIZE_LIMIT;
+    }
+  });
+
+  it('stops measuring early once the limit is crossed', () => {
+    const originalEnv = process.env.NODE_ENV;
+    const originalLimit = process.env.HEADER_SIZE_LIMIT;
+    process.env.NODE_ENV = 'development';
+    process.env.HEADER_SIZE_LIMIT = '10';
+    try {
+      const req = makeReq({ 'x-a': 'aaaa', 'x-b': 'bbbb' });
+      const res = makeRes();
+      const next = vi.fn();
+      headerSizeMonitor(req, res, next);
+      expect(res.status).toHaveBeenCalledWith(431);
+      expect(next).not.toHaveBeenCalled();
     } finally {
       process.env.NODE_ENV = originalEnv;
       if (originalLimit !== undefined) process.env.HEADER_SIZE_LIMIT = originalLimit;

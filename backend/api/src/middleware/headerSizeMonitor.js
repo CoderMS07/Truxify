@@ -10,6 +10,7 @@ export default function headerSizeMonitor(req, res, next) {
   let totalSize = 0;
 
   for (const [name, value] of Object.entries(req.headers)) {
+    if (name === undefined || name === null) continue;
     totalSize += Buffer.byteLength(String(name));
 
     if (Array.isArray(value)) {
@@ -18,10 +19,13 @@ export default function headerSizeMonitor(req, res, next) {
         // Stringify objects defensively; Buffer.byteLength on a non-string
         // throws, and header values can be nested in exotic proxies.
         totalSize += Buffer.byteLength(typeof item === 'string' ? item : JSON.stringify(item));
+        if (totalSize > limit) break;
       }
     } else if (value !== undefined && value !== null) {
       totalSize += Buffer.byteLength(typeof value === 'string' ? value : String(value));
     }
+
+    if (totalSize > limit) break;
   }
 
   if (totalSize > limit) {
