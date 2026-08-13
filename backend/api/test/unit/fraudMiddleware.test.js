@@ -101,6 +101,26 @@ describe('fraudMiddleware', () => {
       expect(next).not.toHaveBeenCalled();
     });
 
+    it('clamps a NaN risk score to 0 and never blocks', async () => {
+      fraudMock.getRealTimeRisk.mockResolvedValue({ riskScore: NaN, riskLevel: 'UNKNOWN' });
+      const { req, res, next } = makeReqRes({ originalUrl: '/api/orders' });
+      await fraudDetectionMiddleware(req, res, next);
+      expect(req.riskScore).toBe(0);
+      expect(fraudMock.addToReviewQueue).not.toHaveBeenCalled();
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('clamps a risk score above 1 down to 1', async () => {
+      fraudMock.getRealTimeRisk.mockResolvedValue({ riskScore: 5, riskLevel: 'HIGH' });
+      const { req, res, next } = makeReqRes({ originalUrl: '/api/orders' });
+      await fraudDetectionMiddleware(req, res, next);
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ riskScore: 1 })
+      );
+      expect(next).not.toHaveBeenCalled();
+    });
+
     it('includes the request id in the review queue reason', async () => {
       fraudMock.getRealTimeRisk.mockResolvedValue({ riskScore: 0.8, riskLevel: 'HIGH' });
       const { req, res, next } = makeReqRes({ requestId: 'fraud-req-42' });
