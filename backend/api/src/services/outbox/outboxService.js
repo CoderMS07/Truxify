@@ -80,12 +80,18 @@ export class OutboxService {
    * Mark an event as failed and increment retry_count.
    */
   async markFailed(eventId, errorMessage) {
+    const { data: existing } = await supabase
+      .from('outbox_events')
+      .select('retry_count')
+      .eq('id', eventId)
+      .maybeSingle();
+    const currentRetry = (existing?.retry_count ?? -1) + 1;
     const { error } = await supabase
       .from('outbox_events')
       .update({
         status: 'failed',
         last_error: String(errorMessage).slice(0, 1000),
-        retry_count: supabase.rpc('increment', { row_id: eventId }),
+        retry_count: currentRetry,
         last_attempted_at: new Date().toISOString(),
       })
       .eq('id', eventId);
