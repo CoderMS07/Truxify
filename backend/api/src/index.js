@@ -332,7 +332,18 @@ app.use(headerSizeMonitor);
 //   - Production (behind Nginx/ALB/Cloudflare) → 1 (default)
 //   - Docker Compose (no proxy)                 → 0
 //   - Multiple proxy hops (e.g. Cloudflare→Nginx) → 2
-const trustProxy = process.env.TRUST_PROXY !== undefined ? Number(process.env.TRUST_PROXY) : 1
+let trustProxy = 1;
+if (process.env.TRUST_PROXY !== undefined) {
+  const rawTrustProxy = String(process.env.TRUST_PROXY).trim().toLowerCase();
+  if (rawTrustProxy === 'true') {
+    trustProxy = true;
+  } else if (rawTrustProxy === 'false') {
+    trustProxy = false;
+  } else {
+    const parsedTrustProxy = Number(process.env.TRUST_PROXY);
+    trustProxy = Number.isFinite(parsedTrustProxy) ? parsedTrustProxy : 1;
+  }
+}
 app.set('trust proxy', trustProxy)
 
 // ============================================================================
