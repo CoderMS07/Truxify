@@ -73,6 +73,13 @@ export async function dispatchPayout({ driverId, withdrawal }) {
     }
 
     const body = await response.json().catch(() => ({}));
+
+    // Treat explicit failure indicators as a failed payout even on HTTP 200.
+    if (body.success === false || body.status === 'failed' || body.status === 'error') {
+      const reason = body.message || body.error || 'Webhook indicated failure';
+      throw new Error(`Payout webhook indicated failure: ${reason}`);
+    }
+
     return {
       success: true,
       settlementRef:
