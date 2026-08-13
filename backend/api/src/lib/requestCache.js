@@ -1,14 +1,16 @@
 export class RequestCache {
   constructor() {
     this._cache = new Map();
+    this._sentinel = '__REQUEST_CACHE_MISS__';
   }
 
   get(key) {
-    return this._cache.get(key);
+    const val = this._cache.get(key);
+    return val === this._sentinel ? null : val;
   }
 
   set(key, value) {
-    this._cache.set(key, value);
+    this._cache.set(key, value === undefined ? this._sentinel : value);
     return this;
   }
 
