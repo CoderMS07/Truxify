@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import logger from '../middleware/logger.js';
 import { supabase, supabaseAdmin, redisClient } from '../config/db.js';
 import { sendPushNotification } from '../services/notificationService.js';
+import { submitEscrowRefund } from '../services/escrow.js';
 import { WorkerTracer } from '../core/telemetry/WorkerTracer.js';
 import spanFactory from '../core/telemetry/SpanFactory.js';
 import { OrderRepository } from '../repositories/orderRepository.js';
@@ -188,6 +189,16 @@ async function cancelStaleOrder(staleOrder, staleSince, repository, metrics) {
     await repository.updateLoadOffer(orderDisplayId, { status: 'cancelled' }).catch((offerErr) => {
       logger.warn(`[StaleOrderWorker] Failed to cancel load offer for order ${orderDisplayId}: ${offerErr.message}`);
     });
+
+    // Submit the escrow refund before notifying the customer that funds are being refunded.
+    if (requiresRefund) {
+      try {
+        await submitEscrowRefund(orderDisplayId);
+        logger.info(`[StaleOrderWorker] Submitted escrow refund for order ${orderDisplayId}.`);
+      } catch (refundErr) {
+        logger.warn(`[StaleOrderWorker] Failed to submit refund for order ${orderDisplayId}: ${refundErr.message}`);
+      }
+    }
 
     // Send a notification to the customer
     try {
