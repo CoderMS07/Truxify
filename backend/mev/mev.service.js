@@ -185,57 +185,6 @@ class MEVService {
 
     async submitFlashbotsBundle(escrowId, transactions) {
         try {
-            // Sign transactions
-            const signedTxs = await this.signTransactions(transactions);
-            
-            // Get current block number
-            const blockNumber = await this.provider.getBlockNumber();
-            const targetBlock = blockNumber + 1;
-            
-            // Submit to Flashbots
-            const response = await axios.post(
-                `${this.flashbotsEndpoint}/eth/v1/bundle`,
-                {
-                    jsonrpc: "2.0",
-                    method: "eth_sendBundle",
-                    params: [{
-                        txs: signedTxs,
-                        blockNumber: `0x${targetBlock.toString(16)}`
-                    }],
-                    id: 1
-                }
-            );
-            
-            // Store bundle
-            await this.storeBundle({
-                escrowId,
-                bundleId: response.data.result,
-                blockNumber: targetBlock
-            });
-            
-            logger.info(`✅ Flashbots bundle submitted for escrow ${escrowId}`);
-            return {
-                success: true,
-                bundleId: response.data.result,
-                blockNumber: targetBlock
-            };
-        } catch (error) {
-            logger.error('Flashbots bundle submission failed:', error);
-            throw error;
-        }
-    }
-
-    async signTransactions(transactions) {
-        const signedTxs = [];
-        for (const tx of transactions) {
-            const signedTx = await this.wallet.signTransaction(tx);
-            signedTxs.push(signedTx);
-        }
-        return signedTxs;
-    }
-
-    async submitFlashbotsBundle(escrowId, transactions) {
-        try {
             const relayer = getMevRelayer();
             const targetBlock = (await this.provider.getBlockNumber()) + 1;
             const result = await relayer.sendPrivateBundle({
