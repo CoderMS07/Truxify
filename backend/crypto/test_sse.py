@@ -1,5 +1,7 @@
 import unittest
+import pytest
 from sse_engine import SymmetricSearchableEncryptionEngine
+from backend.crypto.sse_engine import gc_inverted_index
 
 class TestSSE(unittest.TestCase):
     def setUp(self):
@@ -45,6 +47,9 @@ class TestSSE(unittest.TestCase):
         index = self.engine.build_encrypted_index("DOC_C", ["Delhi", "Delhi"])
         matches = self.engine.search_index(self.engine.generate_trapdoor("Delhi"), index)
         self.assertEqual(matches, ["DOC_C"])
+
+def test_gc():
+    assert gc_inverted_index({"a": ["x", "y"]}, {"x"}) == 1
 
 if __name__ == '__main__':
     unittest.main()
