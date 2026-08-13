@@ -73,6 +73,9 @@ export async function dispatchPayout({ driverId, withdrawal }) {
     }
 
     const body = await response.json().catch(() => ({}));
+    if (body && (body.error || body.status === 'failed' || body.status === 'error' || body.status === 'rejected')) {
+      throw new Error(`Payout webhook returned HTTP 200 but body indicates failure: ${JSON.stringify(body).slice(0, 200)}`);
+    }
     return {
       success: true,
       settlementRef:
