@@ -14,6 +14,8 @@ struct {
     __uint(max_entries, 256 * 1024); // 256 KB Ring Buffer
 } telemetry_ringbuf SEC(".maps");
 
+<<<<<<< HEAD
+=======
 // Rate-limit map: key = connection tuple hash, value = entries in current window
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -30,6 +32,7 @@ struct {
     __type(value, __u16);
 } trusted_port_map SEC(".maps");
 
+>>>>>>> upstream/main
 struct telemetry_event {
     __u32 src_ip;
     __u16 src_port;
@@ -50,6 +53,9 @@ int socket_telemetry_filter(struct __sk_buff *skb) {
     if (bpf_skb_load_bytes(skb, ETH_HLEN + sizeof(ip), &tcp, sizeof(tcp)) < 0)
         return 0;
 
+<<<<<<< HEAD
+    // Filter telemetry frames by magic header or port
+=======
     // Get trusted port from config map (default 0 = disabled, meaning all ports filtered)
     __u32 port_key = 0;
     __u16 *trusted_port = bpf_map_lookup_elem(&trusted_port_map, &port_key);
@@ -72,6 +78,7 @@ int socket_telemetry_filter(struct __sk_buff *skb) {
     }
 
     // Calculate payload length
+>>>>>>> upstream/main
     __u32 payload_len = skb->len - (ETH_HLEN + sizeof(ip) + (tcp.doff * 4));
     if (payload_len > 0) {
         struct telemetry_event *evt = bpf_ringbuf_reserve(&telemetry_ringbuf, sizeof(struct telemetry_event), 0);
@@ -86,4 +93,8 @@ int socket_telemetry_filter(struct __sk_buff *skb) {
     return skb->len; // Pass frame to socket buffer
 }
 
+<<<<<<< HEAD
 char _license[] SEC("license") = "GPL";
+=======
+char _license[] SEC("license") = "GPL";
+>>>>>>> upstream/main

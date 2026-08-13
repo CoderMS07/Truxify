@@ -27,7 +27,6 @@ import {
 } from "../escrow.js";
 import logger from "../../middleware/logger.js";
 import { OrderTimelineService } from "./orderTimelineService.js";
-import { invalidateDriverOrderCache } from "../../sockets/tracker.js";
 
 const orderTimelineService = new OrderTimelineService({ supabase, logger });
 
@@ -281,7 +280,6 @@ export class DeliveryVerificationService {
             updated_at: new Date().toISOString(),
           });
         }
-        return notifResult;
       },
     );
   }
@@ -421,16 +419,9 @@ export class DeliveryVerificationService {
 
     // Ownership + provenance: only telemetry for THIS driver on THIS order.
     // driver_id is stamped server-side from the authenticated connection.
-    // Also filter by order_display_id to prevent stale telemetry from a
-    // previous order with the same driver from satisfying the geofence check
-    // (issue #11185).
     const latestTelemetry = await mongoDb
       .collection("telemetry")
-      .find({
-        driver_id: order.driver_id,
-        order_id: order.id,
-        order_display_id: order.order_display_id,
-      })
+      .find({ driver_id: order.driver_id, order_id: order.id })
       .sort({ server_received_at: -1 })
       .limit(1)
       .toArray();
@@ -508,7 +499,7 @@ export class DeliveryVerificationService {
           // then enforced by escrowReleaseFn against the same expected figure,
           // so a booking funded with Y ≠ X can never be released while the app
           // pays the driver X from its own funds.
-          let expectedAmountWei;
+          let expectedAmountWei = null;
           const resolvedAmount = resolveExpectedDepositAmount(order);
           if (resolvedAmount.expectedAmountWei != null) {
             expectedAmountWei = resolvedAmount.expectedAmountWei;
@@ -774,32 +765,6 @@ export class DeliveryVerificationService {
           logger.info(
             `[verify-delivery] Retry for stuck escrow for order ${orderId} by driver ${driverId} — release confirmed (tx_hash=${releaseTxHash || "alreadyReleased"}).`,
           );
-          // For stuck escrow retries: the on-chain release has been confirmed.
-          // Still call complete_trip_tx (with p_otp_id=null since OTP is already
-          // verified) to credit the driver's wallet and finalize the trip.
-          // This prevents the driver from not being paid when escrow release
-          // succeeded but RPC failed initially (issue #11183).
-          const rpcResult = await this.orderRepository.executeRpc(
-            "complete_trip_tx",
-            {
-              p_order_id: orderId,
-              p_otp_id: null,
-              p_release_tx_hash: releaseTxHash,
-            },
-            supabaseAdmin
-          );
-
-          if (rpcResult.error) {
-            logger.error(
-              `[verify-delivery] complete_trip_tx failed on stuck escrow retry for order ${orderId}:`,
-              rpcResult.error.message
-            );
-            throw new DomainError(500, {
-              error: "Failed to complete trip on stuck escrow retry.",
-              details: rpcResult.error.message,
-            });
-          }
-
           // The verified OTP is consumed on the retry path too so it cannot be
           // replayed by a later attempt. It is only consumed after the release
           // is confirmed, so a failed release leaves the OTP intact for the
@@ -810,29 +775,12 @@ export class DeliveryVerificationService {
           });
         }
 
-        // The trip is complete (payment_released) — drop the cached
-        // driver→order mapping so telemetry/geofence provenance and the
-        // tracker's cache-first lookup no longer report the driver on the
-        // finished order (issue #10676).
-        const tripDriverId = tripData?.driver_id || order.driver_id;
-        if (tripDriverId) {
-          await invalidateDriverOrderCache(tripDriverId);
-        }
-
         // The trip is complete (payment_released) — kill any active public
         // tracking tokens so a shared link can no longer broadcast the driver's
-        // live location. Best-effort: token revocation failure must not break
-        // the delivery-complete flow, so swallow the throw here.
-        try {
-          await this.trackingTokenService?.revokeAllForOrder(
-            order.order_display_id,
-          );
-        } catch (error) {
-          logger.error(
-            `[verify-delivery] Failed to revoke tracking tokens for order ${order.order_display_id}:`,
-            error,
-          );
-        }
+        // live location. Best-effort: revokeAllForOrder never throws.
+        await this.trackingTokenService?.revokeAllForOrder(
+          order.order_display_id,
+        );
 
         // --- Fire FCM push to driver: "Payment Released ✓" ---
         const resolvedDriverIdForPush = tripData?.driver_id || order.driver_id;

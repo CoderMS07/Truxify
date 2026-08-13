@@ -1,5 +1,8 @@
+<<<<<<< HEAD
+=======
 import 'dart:io';
 
+>>>>>>> upstream/main
 import 'package:flutter_test/flutter_test.dart';
 import 'package:truxify_shared/truxify_shared.dart';
 
@@ -168,6 +171,8 @@ void main() {
       expect(connectCount, 0);
       await ws.close();
     });
+<<<<<<< HEAD
+=======
 
     test('handshake timeout reconnects instead of hanging forever', () async {
       // A raw TCP server accepts the connection but never completes the
@@ -197,5 +202,6 @@ void main() {
       await ws.close();
       await server.close();
     });
+>>>>>>> upstream/main
   });
 }

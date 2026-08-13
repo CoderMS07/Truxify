@@ -2,6 +2,7 @@ import { supabase, supabaseAdmin } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { errorResponse } from '../utils/apiResponse.js';
 import { AppError, UnauthorizedError, ValidationError } from '../utils/errors.js';
+import { errorResponse } from '../utils/apiResponse.js';
 
 const VALID_PLATFORMS = ['android', 'ios', 'web'];
 
@@ -51,7 +52,7 @@ export async function registerDeviceToken(req, res, next) {
 
     const tokenErr = validateFcmToken(fcmToken);
     if (tokenErr) {
-      return res.status(400).json({ error: typeof tokenErr === 'object' && tokenErr !== null ? tokenErr.message : tokenErr });
+      return res.status(400).json({ error: tokenErr });
     }
 
     const platErr = validatePlatform(platform);

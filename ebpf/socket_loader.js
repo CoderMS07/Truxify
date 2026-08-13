@@ -1,15 +1,32 @@
 import { spawn } from 'child_process';
 import path from 'path';
+<<<<<<< HEAD
+=======
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+>>>>>>> upstream/main
 
 /**
  * Node.js loader script attaching eBPF socket filter (SO_ATTACH_BPF)
  */
 export class EbpfSocketLoader {
+<<<<<<< HEAD
+  constructor() {
+    this.objPath = path.join(process.cwd(), 'ebpf', 'socket_buffer_filter.o');
+  }
+
+  attachToSocket(socketFd) {
+    console.log(`[eBPF Socket Loader] Attaching eBPF filter to socket descriptor ${socketFd}...`);
+    // Simulated native BPF socket attachment
+    return true;
+  }
+}
+
+export const socketLoader = new EbpfSocketLoader();
+=======
   constructor(options = {}) {
     this.objPath = options.objPath || path.join(__dirname, 'socket_buffer_filter.o');
     this.trustedPort = options.trustedPort || 0;
@@ -134,3 +151,4 @@ export class EbpfSocketLoader {
 }
 
 export const socketLoader = new EbpfSocketLoader();
+>>>>>>> upstream/main

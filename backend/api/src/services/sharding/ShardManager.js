@@ -15,7 +15,7 @@ class ShardManager {
     const missingPasswords = [];
 
     // North Zone - Delhi, UP, Punjab, Haryana, Rajasthan
-    const northPassword = process.env.SHARD_PASSWORD_NORTH || process.env.SHARD_PASSWORD;
+    const northPassword = process.env.SHARD_PASSWORD_NORTH;
     if (!northPassword) missingPasswords.push('SHARD_PASSWORD_NORTH');
     this.shards.set('north', {
       name: 'north',
@@ -29,7 +29,7 @@ class ShardManager {
     });
 
     // South Zone - Tamil Nadu, Karnataka, Kerala, AP, Telangana
-    const southPassword = process.env.SHARD_PASSWORD_SOUTH || process.env.SHARD_PASSWORD;
+    const southPassword = process.env.SHARD_PASSWORD_SOUTH;
     if (!southPassword) missingPasswords.push('SHARD_PASSWORD_SOUTH');
     this.shards.set('south', {
       name: 'south',
@@ -43,7 +43,7 @@ class ShardManager {
     });
 
     // East Zone - WB, Bihar, Odisha, Jharkhand, NE States
-    const eastPassword = process.env.SHARD_PASSWORD_EAST || process.env.SHARD_PASSWORD;
+    const eastPassword = process.env.SHARD_PASSWORD_EAST;
     if (!eastPassword) missingPasswords.push('SHARD_PASSWORD_EAST');
     this.shards.set('east', {
       name: 'east',
@@ -57,7 +57,7 @@ class ShardManager {
     });
 
     // West Zone - Maharashtra, Gujarat, MP, Goa
-    const westPassword = process.env.SHARD_PASSWORD_WEST || process.env.SHARD_PASSWORD;
+    const westPassword = process.env.SHARD_PASSWORD_WEST;
     if (!westPassword) missingPasswords.push('SHARD_PASSWORD_WEST');
     this.shards.set('west', {
       name: 'west',
@@ -71,13 +71,7 @@ class ShardManager {
     });
 
     if (missingPasswords.length > 0) {
-      if (process.env.SHARDING_ENABLED === 'true') {
-        throw new Error(`Missing required shard password env vars: ${missingPasswords.join(', ')}`);
-      }
-      logger.warn(
-        `Sharding not enabled — missing shard password env vars: ${missingPasswords.join(', ')}. ` +
-        'Set SHARDING_ENABLED=true (with the SHARD_PASSWORD_* vars) to require shard credentials.'
-      );
+      throw new Error(`Missing required shard password env vars: ${missingPasswords.join(', ')}`);
     }
 
     // Initialize connection pools
@@ -188,66 +182,19 @@ class ShardManager {
     }
   }
 
-  async executeCrossShardQuery(queries, options = {}) {
-    const { mergeResults = false, sortField = null, sortOrder = 'asc', limit = null, offset = 0 } = options;
-
-    const shardNames = [];
-    const promises = [];
-
+  async executeCrossShardQuery(queries) {
+    // Execute same query across all shards and combine results
+    const results = [];
     for (const [name, shard] of this.shards) {
       if (shard.pool) {
-        shardNames.push(name);
-        promises.push(shard.pool.query(queries.query, queries.params || []));
-      }
-    }
-
-    const settled = await Promise.allSettled(promises);
-    const results = [];
-
-    for (let i = 0; i < settled.length; i++) {
-      const name = shardNames[i];
-      const res = settled[i];
-      if (res.status === 'fulfilled') {
-        results.push({ shard: name, data: res.value.rows });
-      } else {
-        logger.error(`Error querying shard ${name}:`, res.reason);
-      }
-    }
-
-    if (mergeResults) {
-      let combined = [];
-      for (const r of results) {
-        if (r.data) {
-          combined.push(...r.data);
+        try {
+          const result = await shard.pool.query(queries.query, queries.params || []);
+          results.push({ shard: name, data: result.rows });
+        } catch (error) {
+          logger.error(`Error querying shard ${name}:`, error);
         }
       }
-
-      if (sortField) {
-        combined.sort((a, b) => {
-          const valA = a[sortField];
-          const valB = b[sortField];
-          if (valA === valB) return 0;
-          if (valA == null) return 1;
-          if (valB == null) return -1;
-          
-          let comp = 0;
-          if (typeof valA === 'string' && typeof valB === 'string') {
-            comp = valA.localeCompare(valB);
-          } else {
-            comp = valA < valB ? -1 : 1;
-          }
-          return sortOrder.toLowerCase() === 'desc' ? -comp : comp;
-        });
-      }
-
-      if (limit !== null) {
-        combined = combined.slice(offset, offset + limit);
-      } else if (offset > 0) {
-        combined = combined.slice(offset);
-      }
-      return combined;
     }
-
     return results;
   }
 

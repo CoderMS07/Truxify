@@ -107,9 +107,6 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get biometricAuthSuccessful => 'Biometric authentication successful';
 
-  String get biometricAuthRequiresSignIn =>
-      'Biometric unlock succeeded, but you still need to sign in to restore your session.';
-
   @override
   String get pleaseEnterPhone => 'Please enter your phone number';
 

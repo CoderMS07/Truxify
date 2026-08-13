@@ -22,7 +22,6 @@ class SyncEngine {
     ConflictResolver? resolver,
     this.maxRetries = 5,
     this.batchSize = 20,
-    this.maxDrainPerCycle = 200,
   }) : resolver = resolver ?? ConflictResolver();
 
   final OfflineEventDb db;
@@ -30,7 +29,6 @@ class SyncEngine {
   final ConflictResolver resolver;
   final int maxRetries;
   final int batchSize;
-  final int maxDrainPerCycle;
 
   bool _isSyncing = false;
 
@@ -55,11 +53,6 @@ class SyncEngine {
     if (_isSyncing) return 0;
     _isSyncing = true;
     try {
-      // Recover events orphaned in the transient `syncing` state by a failed DB
-      // write mid-loop. This must run on every pass (not just at init) so an
-      // event stranding in `syncing` is retried while the app is alive rather
-      // than only on the next cold start.
-      await db.reconcileStuckSyncing();
       return await _syncPendingInternal();
     } finally {
       _isSyncing = false;
@@ -67,17 +60,6 @@ class SyncEngine {
   }
 
   Future<int> _syncPendingInternal() async {
-    int total = 0;
-    while (true) {
-      final n = await _syncBatchOnce();
-      if (n == 0) break;
-      total += n;
-      if (total >= maxDrainPerCycle) break; // backpressure guard
-    }
-    return total;
-  }
-
-  Future<int> _syncBatchOnce() async {
     final pending = await db.pendingEvents(limit: batchSize);
     if (pending.isEmpty) {
       return 0;

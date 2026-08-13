@@ -26,10 +26,6 @@ vi.mock("../../src/middleware/logger.js", () => ({
 
 vi.mock("@sentry/node", async (real) => ({
   ...(await real()),
-  // The installed SDK version has no `Handlers` export (removed upstream);
-  // sentry.js probes it via optional chaining. Declaring the key here (even
-  // as undefined) keeps that access from throwing under vitest's mock
-  // strictness, so the fallback to expressErrorHandler() is actually exercised.
   init: vi.fn(),
   flush: vi.fn(),
   expressErrorHandler: () => vi.fn(),
@@ -165,7 +161,7 @@ describe("sentry — error filter and level", () => {
     try {
       const resetEvent = {
         exception: {
-          values: [{ value: "Connection reset", type: "ECONNRESET" }]
+          values: [{ value: "Connection reset" }]
         }
       };
       expect(beforeSend(resetEvent)).toBeNull();
@@ -182,22 +178,22 @@ describe("sentry — error filter and level", () => {
   });
 
 describe('shouldIgnoreError', () => {
-  it('returns true for ECONNRESET errors', () => {
+  it('returns warn level for ECONNRESET errors', () => {
     const err = new Error('Connection reset');
     err.code = 'ECONNRESET';
-    expect(shouldIgnoreError(err)).toBe(true);
+    expect(shouldIgnoreError(err)).toBe('warn');
   });
 
-  it('returns true for ECONNREFUSED errors', () => {
+  it('returns warn level for ECONNREFUSED errors', () => {
     const err = new Error('Connection refused');
     err.code = 'ECONNREFUSED';
-    expect(shouldIgnoreError(err)).toBe(true);
+    expect(shouldIgnoreError(err)).toBe('warn');
   });
 
-  it('returns true for ETIMEDOUT errors', () => {
+  it('returns false for ETIMEDOUT errors (not in filter list)', () => {
     const err = new Error('Operation timed out');
     err.code = 'ETIMEDOUT';
-    expect(shouldIgnoreError(err)).toBe(true);
+    expect(shouldIgnoreError(err)).toBe(false);
   });
 
   it('returns false for errors with unknown codes', () => {

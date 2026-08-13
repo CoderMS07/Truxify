@@ -15,16 +15,12 @@ vi.mock('../../src/middleware/requirePolicy.js', () => ({
 }));
 
 const { dbMock, mlMock } = vi.hoisted(() => ({
-  dbMock: {
-    supabase: { from: vi.fn() },
-    createUserClient: vi.fn(),
-  },
+  dbMock: { supabase: { from: vi.fn() } },
   mlMock: { predictDemand: vi.fn() },
 }));
 
 vi.mock('../../src/config/db.js', () => ({
   get supabase() { return dbMock.supabase; },
-  createUserClient: (token) => dbMock.createUserClient(token),
 }));
 
 vi.mock('../../src/services/ml.js', () => mlMock);
@@ -49,10 +45,8 @@ describe('demandRoutes', () => {
 
   describe('GET /', () => {
     it('returns a heatmap payload on success', async () => {
-      dbMock.createUserClient.mockReturnValue({
-        from: vi.fn(() => ({
-          select: vi.fn(() => ({ in: vi.fn(() => ({ limit: vi.fn().mockResolvedValue({ data: [{ pickup_address: 'A', pickup_lat: 10, pickup_lng: 20, status: 'available' }], error: null }) })) })),
-        })),
+      dbMock.supabase.from.mockReturnValue({
+        select: vi.fn(() => ({ in: vi.fn(() => ({ limit: vi.fn().mockResolvedValue({ data: [{ pickup_address: 'A', pickup_lat: 10, pickup_lng: 20, status: 'available' }], error: null }) })) })),
       });
       const res = await request(makeApp()).get('/');
       expect(res.status).toBe(200);
@@ -62,10 +56,8 @@ describe('demandRoutes', () => {
     });
 
     it('returns 500 when the loads query errors', async () => {
-      dbMock.createUserClient.mockReturnValue({
-        from: vi.fn(() => ({
-          select: vi.fn(() => ({ in: vi.fn(() => ({ limit: vi.fn().mockResolvedValue({ data: null, error: { message: 'db down' } }) })) })),
-        })),
+      dbMock.supabase.from.mockReturnValue({
+        select: vi.fn(() => ({ in: vi.fn(() => ({ limit: vi.fn().mockResolvedValue({ data: null, error: { message: 'db down' } }) })) })),
       });
       const res = await request(makeApp()).get('/');
       expect(res.status).toBe(500);

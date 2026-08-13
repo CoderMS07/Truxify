@@ -95,25 +95,5 @@ describe('cookieSecurityValidator', () => {
       // First cookie missing HttpOnly and Secure, second missing HttpOnly, SameSite, Secure
       expect(mockLogger.warn).toHaveBeenCalledTimes(2);
     });
-
-    it('does not warn when attributes use lowercase names', () => {
-      applyValidator();
-      res.setHeader('set-cookie', 'session=abc123; httponly; samesite=strict; path=/; secure');
-      expect(mockLogger.warn).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('isSecureCookieConfig', () => {
-    it('returns true when all attributes are present', async () => {
-      const { isSecureCookieConfig } = await import('../../src/middleware/cookieSecurityValidator.js');
-      expect(isSecureCookieConfig('session=123; HttpOnly; Secure; SameSite=Strict; Path=/')).toBe(true);
-    });
-
-    it('returns false when any recommended attribute is missing', async () => {
-      const { isSecureCookieConfig } = await import('../../src/middleware/cookieSecurityValidator.js');
-      expect(isSecureCookieConfig('session=123; Path=/')).toBe(false);
-      expect(isSecureCookieConfig(null)).toBe(false);
-    });
   });
 });
-

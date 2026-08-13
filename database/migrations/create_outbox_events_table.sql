@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS outbox_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+<<<<<<< HEAD
+=======
 -- SECURITY MODEL: outbox_events is an internal ledger written and read only by
 -- backend services using the service-role admin client (see
 -- backend/api/src/services/outbox/outboxService.js). Enable RLS and scope every
@@ -27,6 +29,7 @@ CREATE POLICY "Service role full access on outbox_events"
 
 REVOKE ALL ON TABLE outbox_events FROM anon, authenticated;
 
+>>>>>>> upstream/main
 CREATE INDEX IF NOT EXISTS idx_outbox_events_status_created
   ON outbox_events (status, created_at)
   WHERE status = 'pending';

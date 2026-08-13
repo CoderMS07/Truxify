@@ -31,13 +31,3 @@ export default function securityHeadersVerifier(req, res, next) {
 
   next();
 }
-
-// === Spec 24: ===
-// === Spec 24: prevent duplicate header ===
-export function safeSetHeader(res, name, value) {
-  if (!res || !res.setHeader || !res.getHeader) return false;
-  if (res.getHeader(name)) return false;
-  res.setHeader(name, value);
-  return true;
-}
-

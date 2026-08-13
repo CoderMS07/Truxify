@@ -1,17 +1,16 @@
 import { DomainError } from './domainError.js';
-import { createHash } from 'crypto';
 import { DeliveryVerificationService } from './deliveryVerificationService.js';
 import { expireDeliveryOtps, sendPushNotification } from '../notificationService.js';
-import { invalidateDriverOrderCache } from '../../sockets/tracker.js';
 import { acquireLock, releaseLock } from '../../lib/redisLock.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 import { supabaseAdmin } from '../../config/db.js';
 import {
   submitEscrowRefund,
+  recordDepositTx,
   submitEscrowCancelWithPenalty,
   confirmEscrowRefund,
   getEscrowBookingId,
-  getEscrowBooking,
+  resolveExpectedDepositAmount,
   paisaToMaticWei,
 } from '../escrow.js';
 import { computeOrderPricing } from '../../lib/pricing.js';
@@ -117,28 +116,14 @@ export class OrderLifecycleService {
         logger.warn({ err: mlErr.message }, 'Price prediction unavailable, falling back to base pricing');
       }
 
-      // Atomic, idempotent creation. The create_order_tx RPC inserts the order,
-      // its default timeline, and the load offer in a single transaction, so a
-      // partial failure can no longer leave orphaned rows. The idempotency key
-      // is derived from the request content so retried / duplicate submissions
-      // are de-duplicated instead of creating multiple orders.
-      const idempotencyKey = `create_order:${createHash('sha256').update(JSON.stringify({
-        customerId,
-        pickup_address,
-        drop_address,
-        weight_tonnes,
-        goods_type,
-        pickup_date,
-        pickup_time,
-      })).digest('hex')}`;
-
       const MAX_ID_RETRIES = ORDER_DISPLAY_ID_MAX_RETRIES;
       let order = null;
-      let lastErr = null;
+      let orderErr = null;
+      let orderDisplayId = null;
 
       for (let attempt = 0; attempt < MAX_ID_RETRIES; attempt++) {
-        const orderDisplayId = generateOrderDisplayId();
-        const orderData = {
+        orderDisplayId = generateOrderDisplayId();
+        const result = await this.orderRepository.createOrder({
           order_display_id: orderDisplayId,
           customer_id: customerId,
           status: 'pending',
@@ -154,56 +139,52 @@ export class OrderLifecycleService {
           estimated_price: estimatedPrice,
           payment_method_id, upi_id,
           waypoints: optimizedWaypoints,
-        };
-        const loadOfferData = {
-          customer_name: customerName || 'Customer',
-          route_label: `${pickup_address.split(',')[0]} \u2192 ${drop_address.split(',')[0]}`,
-          route_subtitle: `${weight_tonnes} tonnes \u2022 ${goods_type}`,
-          pickup_address, pickup_lat, pickup_lng,
-          drop_address, drop_lat, drop_lng,
-          goods_type,
-          weight: `${weight_tonnes} tonnes`,
-          freight_value: pricing.totalAmount,
-          fuel_cost: pricing.fuelCost,
-          toll_cost: pricing.tollEstimate,
-          net_profit: pricing.netProfit,
-          extra_distance_km: pricing.distanceKm,
-          status: 'available',
-          waypoints: optimizedWaypoints,
-        };
+        });
 
-        try {
-          const txResult = await createOrderTransactional({
-            idempotencyKey,
-            orderData,
-            timelineData: null,
-            loadOfferData,
-          });
-          order = {
-            id: txResult.order_id,
-            order_display_id: txResult.display_id,
-            status: txResult.status,
-          };
-          lastErr = null;
-          break;
-        } catch (err) {
-          lastErr = err;
-          // Retry only on a display-id uniqueness collision; surface everything
-          // else (the RPC already rolled back any partial writes).
-          if (
-            err?.code === '23505' ||
-            (err?.message && /duplicate key.*order_display_id/i.test(err.message))
-          ) {
-            logger.warn(`[Orders] display ID collision on ${orderDisplayId}, retrying (attempt ${attempt + 1}/${MAX_ID_RETRIES})`);
-            continue;
-          }
-          throw err;
-        }
+        order = result.data;
+        orderErr = result.error;
+
+        if (!orderErr || orderErr.code !== '23505') break;
+        logger.warn(`[Orders] display ID collision on ${orderDisplayId}, retrying (attempt ${attempt + 1}/${MAX_ID_RETRIES})`);
       }
 
-      if (lastErr) {
-        logger.error('Order Insertion Error:', lastErr.message);
-        throw new DomainError(500, { error: 'Failed to create order record.', details: lastErr.message });
+      if (orderErr) {
+        logger.error('Order Insertion Error:', orderErr.message);
+        throw new DomainError(500, { error: 'Failed to create order record.', details: orderErr.message });
+      }
+
+      const { error: timelineErr } = await this.orderTimelineService.generateDefaultTimeline(orderDisplayId);
+
+      if (timelineErr) {
+        logger.error('Timeline Insertion Error:', timelineErr.message);
+        await this.orderRepository.deleteOrder(order.id);
+        throw new DomainError(500, { error: 'Failed to create order timeline.', details: timelineErr.message });
+      }
+
+      const { error: offerErr } = await this.orderRepository.createLoadOffer({
+        order_display_id: orderDisplayId,
+        customer_id: customerId,
+        customer_name: customerName || 'Customer',
+        route_label: `${pickup_address.split(',')[0]} \u2192 ${drop_address.split(',')[0]}`,
+        route_subtitle: `${weight_tonnes} tonnes \u2022 ${goods_type}`,
+        pickup_address, pickup_lat, pickup_lng,
+        drop_address, drop_lat, drop_lng,
+        goods_type,
+        weight: `${weight_tonnes} tonnes`,
+        freight_value: pricing.totalAmount,
+        fuel_cost: pricing.fuelCost,
+        toll_cost: pricing.tollEstimate,
+        net_profit: pricing.netProfit,
+        extra_distance_km: pricing.distanceKm,
+        status: 'available',
+        waypoints: optimizedWaypoints,
+      });
+
+      if (offerErr) {
+        logger.error('Load Offer Insertion Error:', offerErr.message);
+        await this.orderTimelineService.deleteTimeline(orderDisplayId);
+        await this.orderRepository.deleteOrder(order.id);
+        throw new DomainError(500, { error: 'Failed to create load offer.', details: offerErr.message });
       }
 
       return { order };
@@ -215,9 +196,7 @@ export class OrderLifecycleService {
       const activeStatuses = ['pending', 'active', 'truck_assigned', 'en_route_pickup', 'arrived_pickup', 'picked_up', 'in_transit', 'arriving'];
 
       const { data: orders, error } = await this.orderRepository.findOrdersByCustomer(
-        customerId,
-        'id, order_display_id, status, pickup_address, drop_address, pickup_date, pickup_lat, pickup_lng, drop_lat, drop_lng, eta, driver_id, truck_id, truck_number, total_amount, goods_type, weight_tonnes, length_ft, width_ft, height_ft, is_stackable, is_fragile, special_requirements, created_at, updated_at',
-        activeStatuses, 'pickup_date', false, { limit: 100 }
+        customerId, '*', activeStatuses, 'pickup_date', false
       );
 
       if (error) throw new DomainError(500, { error: 'Failed to fetch active orders.', details: error.message });
@@ -485,17 +464,12 @@ export class OrderLifecycleService {
       }
 
       if (generatedOtp) {
-        const notifResult = await this.deliveryVerification.sendOtpNotification({
+        await this.deliveryVerification.sendOtpNotification({
           orderId,
           customerId: order.customer_id,
           orderDisplayId: order.order_display_id,
           otp: generatedOtp,
         });
-        if (notifResult && !notifResult.success) {
-          await this.orderTimelineService.rollbackMilestone(order.order_display_id, milestone);
-          await expireDeliveryOtps(order.id);
-          throw new DomainError(500, { error: 'Failed to send delivery OTP to customer. Milestone rolled back.' });
-        }
       }
 
       sendPushNotification(
@@ -604,7 +578,7 @@ export class OrderLifecycleService {
         // against at deposit time and on release), so it must track
         // total_amount using the same canonical paisa→wei conversion the rest
         // of the escrow pipeline uses.
-        const newAmountWei = paisaToMaticWei(pricing.totalAmount);
+        const newAmountWei = BigInt(paisaToMaticWei(pricing.totalAmount));
 
         const updates = {
           drop_address,
@@ -676,10 +650,7 @@ export class OrderLifecycleService {
       if (order.customer_id !== customerId) throw new DomainError(403, { error: 'Access Denied: You do not own this order.' });
 
       const lockKey = `escrow_lock:${order.id}`;
-      // Blockchain refund submission + confirmation can take 30-60s, so the
-      // lock TTL must cover the full cancellation window to prevent a
-      // concurrent attempt from double-processing the order (issue #11191).
-      const lockValue = await acquireLock(lockKey, 180000);
+      const lockValue = await acquireLock(lockKey, 30000);
       if (!lockValue) {
         throw new DomainError(409, { error: 'Cancellation is currently being processed. Please try again later.' });
       }
@@ -720,7 +691,6 @@ export class OrderLifecycleService {
 
         if (currentOrder.status === 'cancelled' && (!requiresRefund || currentOrder.escrow_status === 'refunded')) {
           await this.revokeTrackingTokensForOrder(currentOrder.order_display_id);
-          await invalidateDriverOrderCache(currentOrder.driver_id);
           return {
             status: 200,
             body: {
@@ -768,18 +738,9 @@ export class OrderLifecycleService {
           try {
             let receipt;
 
-            // Guard against double submission: check the authoritative on-chain
-            // booking state before issuing another cancel tx. The contract
-            // reverts cancelBooking for an already-cancelled booking, which the
-            // app would otherwise misinterpret as a refund failure.
-            const bookingId = getEscrowBookingId(workingOrder.order_display_id);
-            const onChainBooking = await getEscrowBooking(bookingId);
-            const alreadyCancelled =
-              onChainBooking && Number(onChainBooking.status) === 2; // BookingStatus.Cancelled
-
-            if (refundTxHash && !alreadyCancelled) {
+            if (refundTxHash) {
               receipt = await confirmEscrowRefund(refundTxHash);
-            } else if (!alreadyCancelled) {
+            } else {
               const submitted = driverFeeWei > 0n
                 ? await submitEscrowCancelWithPenalty(workingOrder.order_display_id, driverFeeWei)
                 : await submitEscrowRefund(workingOrder.order_display_id);
@@ -796,9 +757,6 @@ export class OrderLifecycleService {
               });
 
               receipt = await submitted.waitForConfirmation();
-            } else {
-              logger.info(`[escrow] Booking ${workingOrder.order_display_id} already cancelled on-chain; skipping duplicate refund submission.`);
-              receipt = { hash: refundTxHash ?? null, alreadyCancelled: true };
             }
 
             const refundedAt = new Date().toISOString();
@@ -834,7 +792,6 @@ export class OrderLifecycleService {
             await this.orderTimelineService.insertCancelEvent(currentOrder.order_display_id);
             await expireDeliveryOtps(currentOrder.id);
             await this.revokeTrackingTokensForOrder(currentOrder.order_display_id);
-            await invalidateDriverOrderCache(currentOrder.driver_id);
 
             return {
               status: 200,
@@ -857,7 +814,6 @@ export class OrderLifecycleService {
               escrow_refund_last_attempt_at: failedAt,
               updated_at: failedAt,
             });
-            await invalidateDriverOrderCache(currentOrder.driver_id);
 
             return {
               status: 202,
@@ -898,12 +854,114 @@ export class OrderLifecycleService {
         await this.orderTimelineService.insertCancelEvent(currentOrder.order_display_id);
         await expireDeliveryOtps(currentOrder.id);
         await this.revokeTrackingTokensForOrder(currentOrder.order_display_id);
-        await invalidateDriverOrderCache(currentOrder.driver_id);
 
         return {
           status: 200,
           body: { message: 'Order cancelled successfully.', cancellation_fee: persistedCancellationFee, order: updatedOrder },
         };
+      } finally {
+        await releaseLock(lockKey, lockValue);
+      }
+    });
+  }
+
+  async confirmDeposit(orderId, userId, txHash, userClient) {
+    return measureExecution('OrderLifecycleService.confirmDeposit', async () => {
+      const lockKey = `escrow_lock:${orderId}`;
+      const lockValue = await acquireLock(lockKey, 30000);
+      if (!lockValue) {
+        throw new DomainError(409, { error: 'Order is currently being processed. Please try again later.' });
+      }
+
+      try {
+        const { data: order, error: fetchErr } = await this.orderRepository.findOrderById(
+          orderId, 'id, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet, pending_bid_acceptance'
+        );
+
+        if (fetchErr || !order) throw new DomainError(404, { error: 'Order not found' });
+        if (order.customer_id !== userId) {
+          throw new DomainError(403, { error: 'Access Denied: You do not own this order.' });
+        }
+        if (order.escrow_status !== 'funding') {
+          throw new DomainError(400, { error: 'Order is not in funding state' });
+        }
+
+        const { data: customerProfile } = await this.orderRepository.findCustomerWallet(userId);
+        const customerWallet = customerProfile?.polygon_wallet_address ?? null;
+
+        const bookingId = order.escrow_booking_id || getEscrowBookingId(order.order_display_id);
+
+        // Resolve the authoritative expected deposit amount (cross-checked
+        // against the server-written bid context) and reject the deposit if it
+        // cannot be pinned down or if the stored figures disagree.
+        const resolvedAmount = resolveExpectedDepositAmount(order);
+        if (resolvedAmount.error) {
+          throw new DomainError(422, { error: resolvedAmount.error, code: resolvedAmount.code });
+        }
+        const expectedAmountWei = resolvedAmount.expectedAmountWei;
+
+        const result = await recordDepositTx(
+          bookingId,
+          txHash,
+          customerWallet,
+          order.escrow_driver_wallet ?? null,
+          expectedAmountWei
+        );
+
+        if (result.error) throw new DomainError(422, { error: result.error, code: result.code });
+
+        const { error: updateErr } = await this.orderRepository.updateOrder(orderId, {
+          escrow_status: 'funded',
+        });
+
+        if (updateErr) {
+          logger.error('[confirm-deposit] DB update failed:', updateErr.message);
+          throw new DomainError(500, { error: 'Database update failed after deposit confirmation. Please contact support.' });
+        }
+
+        // Two-phase acceptance (#5724): finalize the driver assignment now that
+        // the escrow deposit is confirmed.
+        const pending = order.pending_bid_acceptance;
+        if (pending) {
+          const { error: acceptErr } = await this.orderRepository.executeRpc('accept_bid_tx', {
+            p_bid_id: pending.bid_id,
+            p_order_id: orderId,
+            p_load_id: pending.load_id,
+            p_driver_id: pending.driver_id,
+            p_truck_id: pending.truck_id,
+            p_driver_name: pending.driver_name,
+            p_driver_rating: pending.driver_rating,
+            p_truck_number: pending.truck_number,
+            p_bid_amount: pending.bid_amount,
+            p_order_display_id: pending.order_display_id,
+            p_expected_version: pending.version,
+            p_escrow_booking_id: bookingId,
+          }, userClient ?? supabaseAdmin);
+          if (acceptErr) {
+            logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
+            try {
+              await submitEscrowRefund(order.order_display_id);
+            } catch (refundErr) {
+              logger.error('[confirm-deposit] Escrow refund also failed:', refundErr.message);
+            }
+            await this.orderRepository.revertEscrowStatus(orderId).catch((revertErr) => {
+              logger.error('[confirm-deposit] Failed to revert escrow status:', revertErr.message);
+            });
+            throw new DomainError(409, {
+              error: 'Deposit confirmed but the driver assignment could not be finalized. The escrow deposit has been refunded. Please try again.',
+              details: acceptErr.message,
+            });
+          }
+          sendPushNotification(
+            pending.driver_id,
+            'Bid Accepted!',
+            `Your bid for order ${pending.order_display_id} has been accepted. You are now assigned to this load.`,
+            'order_update',
+            { orderId, orderDisplayId: pending.order_display_id }
+          ).catch((err) => logger.error(`[FCM] Failed to notify driver of bid acceptance: ${err.message}`));
+        }
+
+        return { message: 'Escrow deposit confirmed', txHash: result.txHash };
       } finally {
         await releaseLock(lockKey, lockValue);
       }

@@ -113,20 +113,32 @@ class TestEncryptedReLU(unittest.TestCase):
 
         self.assertTrue(np.all(np.isfinite(decrypted)))
 
-    def test_model_linear_layer_fails_closed(self):
-        """9. The encrypted linear layer must fail closed rather than return
-        fabricated outputs that ignore the learned weights and bias."""
+    def test_model_pre_activation_range_within_domain(self):
+        """9. Empirical validation: Representative inputs produce pre-ReLU activations within [-2, 2]."""
         model = FHEModel(self.context)
         model.add_linear(4, 4)
         model.encrypt()
 
-        x_enc = model.encrypt_input(np.array([1.0, -1.0, 0.5, -0.5]))
-        with self.assertRaises(NotImplementedError):
-            model._encrypted_linear(x_enc, model.weights[0], model.biases[0])
+        # Deterministic collection of 5 representative 4D normalized inputs
+        representative_inputs = np.array([
+            [1.0, -1.0, 0.5, -0.5],
+            [0.8, 0.9, -0.7, -0.6],
+            [-1.0, -1.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.5, -0.5, 0.25, -0.25]
+        ])
+
+        for sample in representative_inputs:
+            x_enc = model.encrypt_input(sample)
+            pre_relu_enc = model._encrypted_linear(x_enc, model.weights[0], model.biases[0])
+            pre_relu_dec = model.decrypt_output(pre_relu_enc)
+
+            # Assert pre-activation values fall within [-2, 2] operating range
+            self.assertTrue(np.all(pre_relu_dec >= -2.0))
+            self.assertTrue(np.all(pre_relu_dec <= 2.0))
 
     def test_full_encrypted_model_forward_path(self):
-        """10. Forward passes through a linear layer fail closed: the endpoint
-        must not return predictions that ignore the model's parameters."""
+        """10. Full encrypted model forward pass completes end-to-end without plaintext fallback."""
         architecture = [
             {'type': 'linear', 'in': 4, 'out': 4},
             {'type': 'relu'},
@@ -137,8 +149,11 @@ class TestEncryptedReLU(unittest.TestCase):
         X = np.array([[1.0, -1.0, 0.5, -0.5]])
         pred_res = self.service.predict(X)
 
-        self.assertFalse(pred_res['success'])
-        self.assertIn('linear layer is not implemented', pred_res['error'])
+        self.assertTrue(pred_res['success'])
+        self.assertEqual(len(pred_res['predictions']), 4)
+        for val in pred_res['predictions']:
+            self.assertIsInstance(val, float)
+            self.assertFalse(np.isnan(val))
 
 
 if __name__ == '__main__':

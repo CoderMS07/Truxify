@@ -16,13 +16,6 @@ import '../theme/app_theme.dart';
 import '../constants/supabase_config.dart';
 import '../services/supabase_service.dart';
 import '../widgets/common_widgets.dart';
-
-/// Shared cancellation-fee parser so the preview and confirm flows treat a
-/// missing fee identically (both must render "no fee", never "₹0.00 charged").
-double? parseFeeRupees(dynamic raw) {
-  return raw is num ? raw / 100 : null;
-}
-
 class LiveTrackingScreen extends StatefulWidget {
   final String orderId;
   final OrderService? orderService;
@@ -184,31 +177,22 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
     _trackingWebSocket = ResilientWebSocket(
       initialWsUrl,
       urlFactory: buildUrl,
-      onConnect: () async {
+      onConnect: () {
         debugPrint('WebSocket connected, authenticating...');
-        if (!mounted) return;
-        setState(() => _wsConnected = true);
-        try {
-          // Refresh the Supabase session so we never send a stale/expired token
-          // after a long trip. Fall back to the current session if refresh fails.
-          final res = await SupabaseService.client.auth.refreshSession();
-          final token = res.session?.accessToken ??
-              SupabaseService.client.auth.currentSession?.accessToken ??
-              '';
-          _trackingWebSocket?.send({
-            'event': 'auth',
-            'data': {
-              'token': token,
-            },
-          });
-        } catch (_) {
-          if (mounted) setState(() => _wsConnected = false);
-        }
+        if (mounted) setState(() => _wsConnected = true);
+        final session = SupabaseService.client.auth.currentSession;
+        final token = session?.accessToken ?? '';
+        _trackingWebSocket?.send({
+          'event': 'auth',
+          'data': {
+            'token': token,
+          },
+        });
       },
     );
 
     _trackingSubscription = _trackingWebSocket!.stream.listen((message) {
-      debugPrint('Tracking WebSocket message received');
+      debugPrint('Tracking WebSocket message received: $message');
       if (message is! String) return;
       try {
         if (message == 'pong') return;
@@ -234,15 +218,11 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
           }
         } else if (payload['event'] == 'milestone_update') {
           // Refresh timeline whenever the driver hits a new milestone.
-          debugPrint('[LiveTracking] Milestone update received');
+          debugPrint('[LiveTracking] Milestone update received: ${payload['data']}');
           _loadTimeline();
         } else if (payload['event'] == null && payload['error'] != null) {
           debugPrint('[LiveTracking] WS server error: ${payload['error']}');
-          // Auth/subscribe was rejected (e.g. token expired). Mark disconnected
-          // and schedule a re-auth by forcing a fresh reconnect, which re-runs
-          // onConnect (refresh + re-auth). Avoids silently dropping tracking.
           if (mounted) setState(() => _wsConnected = false);
-          _scheduleReAuth();
         }
       } catch (e) {
         debugPrint('Error parsing tracking WebSocket message: $e');
@@ -254,23 +234,6 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
     });
 
     _trackingWebSocket!.connect();
-  }
-
-  /// Re-establishes the tracking socket after an auth/subscribe error so the
-  /// server-side session can be refreshed and re-validated. A short backoff
-  /// prevents a tight reconnect loop when the backend keeps rejecting us.
-  void _scheduleReAuth() {
-    if (!mounted || _trackingWebSocket == null) return;
-    Future<void>.delayed(const Duration(seconds: 3), () async {
-      if (!mounted || _trackingWebSocket == null) return;
-      try {
-        await SupabaseService.client.auth.refreshSession();
-      } catch (_) {
-        // Ignore — the reconnect below surfaces the connection state; a fresh
-        // onConnect will re-attempt auth with whatever token is available.
-      }
-      await _trackingWebSocket!.connect();
-    });
   }
 
   void _updateTruckPosition(LatLng newPosition) {
@@ -322,6 +285,8 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
   Future<void> _loadOrder() async {
     try {
       final order = await _orderService.fetchOrderById(widget.orderId);
+
+      debugPrint('ORDER DATA = $order');
 
       if (!mounted) return;
 
@@ -410,7 +375,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
     _supabaseRealtimeChannel!.onBroadcast(
       event: 'location',
       callback: (payload) {
-        debugPrint('Received Supabase Realtime location update');
+        debugPrint('Received Supabase Realtime location update: $payload');
         final lat = (payload['lat'] as num?)?.toDouble();
         final lng = (payload['lng'] as num?)?.toDouble();
         if (lat != null && lng != null && mounted) {
@@ -762,10 +727,9 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
 
   Future<void> _showCancel() async {
     bool isLoading = false;
-    final feeInRupees = parseFeeRupees(_order?['cancellation_fee']);
-    String? feeText = feeInRupees != null
-        ? 'Cancellation fee ₹${feeInRupees.toStringAsFixed(2)}'
-        : 'No cancellation fee';
+    final rawFee = _order?['cancellation_fee'];
+    final feeInRupees = rawFee is num ? rawFee / 100 : null;
+    String? feeText = feeInRupees != null ? 'Cancellation fee ₹${feeInRupees.toStringAsFixed(2)}' : null;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -797,14 +761,12 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
                           setModalState(() => isLoading = true);
                           try {
                             final resp = await _orderService.cancelOrder(orderDisplayId: widget.orderId);
-                            final feeInRupees = parseFeeRupees(resp['cancellation_fee']);
+                            final rawFee = resp['cancellation_fee'];
+                            final feeInRupees = rawFee is num ? rawFee / 100 : 0;
                             await _loadOrder();
                             if (!context.mounted) return;
                             Navigator.of(context).pop();
-                            final feeMsg = feeInRupees != null
-                                ? 'Order cancelled. Fee: ₹${feeInRupees.toStringAsFixed(2)}'
-                                : 'Order cancelled. No cancellation fee.';
-                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(feeMsg)));
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Order cancelled. Fee: ₹${feeInRupees.toStringAsFixed(2)}')));
                           } catch (e) {
                             setModalState(() => isLoading = false);
                             if (!context.mounted) return;
@@ -880,7 +842,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
             value: widget.orderId,
           ),
           callback: (payload) {
-            debugPrint('Realtime order update received');
+            debugPrint('Realtime order update: ${payload.newRecord}');
             _loadOrder();
             _loadTimeline();
           },

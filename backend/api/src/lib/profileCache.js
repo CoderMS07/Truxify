@@ -5,8 +5,6 @@ import {
   supabaseProfileKey,
   customerStatsKey,
   driverDetailsKey,
-  firebaseProfileVersionKey,
-  supabaseProfileVersionKey,
 } from "../cache/profileCacheKeys.js";
 
 let _publishFn = null;
@@ -104,31 +102,19 @@ function getRedisClient() {
  * @param {string} firebaseUid - The expected Firebase UID.
  * @param {object|null} cachedProfile - The cached profile to validate.
  *   Must have: isActive (boolean), uid (string matching firebaseUid), id (string),
- *   role (string). Optional: fullName (string|null), phone (string|null), updatedAt (string|null).
+ *   role (string). Optional: fullName (string|null), phone (string|null).
  * @returns {boolean} True if the cached profile shape is valid, false otherwise.
  */
 export function isValidCachedProfile(firebaseUid, cachedProfile) {
-  if (typeof firebaseUid !== 'string' || !firebaseUid.trim()) {
+  if (typeof firebaseUid !== "string" || !firebaseUid.trim()) {
     return false;
   }
   if (
     !cachedProfile ||
-    typeof cachedProfile !== 'object' ||
+    typeof cachedProfile !== "object" ||
     Array.isArray(cachedProfile)
   ) {
     return false;
-  }
-
-  // Reject objects with unexpected fields to enforce strict schema
-  const ALLOWED_FIELDS = new Set([
-    'isActive', 'uid', 'id', 'role',
-    'fullName', 'phone', 'updatedAt',
-  ]);
-  const profileKeys = Object.keys(cachedProfile);
-  for (const key of profileKeys) {
-    if (!ALLOWED_FIELDS.has(key)) {
-      return false;
-    }
   }
   if (typeof cachedProfile.isActive !== "boolean") {
     return false;
@@ -220,27 +206,8 @@ export async function getCachedProfile(firebaseUid) {
   try {
     const raw = await redisClient.get(firebaseProfileKey(firebaseUid));
     if (raw) {
-      const parsed = JSON.parse(raw);
-      // A corrupted payload that parses to a non-object (e.g. "42", "null",
-      // "some string") must not be treated as a valid cached profile.
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        cacheMisses++;
-        await redisClient.del(firebaseProfileKey(firebaseUid)).catch(() => {});
-        return null;
-      }
-      // Version check: ensure cached profile matches current version in Redis.
-      // If version mismatch, treat as miss and delete stale entry (issue #11182).
-      const currentVersion = await redisClient.get(firebaseProfileVersionKey(firebaseUid));
-      if (currentVersion && parsed._version !== currentVersion) {
-        cacheMisses++;
-        await Promise.all([
-          redisClient.del(firebaseProfileKey(firebaseUid)),
-          redisClient.del(firebaseProfileVersionKey(firebaseUid)),
-        ]).catch(() => {});
-        return null;
-      }
       cacheHits++;
-      return parsed;
+      return JSON.parse(raw);
     }
     cacheMisses++;
     return null;
@@ -271,25 +238,10 @@ export async function setCachedProfile(
 ) {
   const redisClient = getRedisClient();
   if (!redisClient || !firebaseUid || !profile) return;
-  // Clamp the TTL the same way the Supabase setters do: a non-positive TTL
-  // would immediately expire the key, and an unbounded TTL could pin a
-  // stale (e.g. deactivated) profile in cache for a very long time.
-  if (!Number.isFinite(Number(ttlSeconds)) || ttlSeconds < 1) ttlSeconds = 1;
-  if (ttlSeconds > 86400) ttlSeconds = 86400;
   try {
-    // Fetch current version and store it with the profile for validation
-    const version = await redisClient.incr(firebaseProfileVersionKey(firebaseUid));
-    const profileWithVersion = { ...profile, _version: version };
     await redisClient.set(
       firebaseProfileKey(firebaseUid),
-      JSON.stringify(profileWithVersion),
-      "EX",
-      ttlSeconds,
-    );
-    // Set version key with same TTL
-    await redisClient.set(
-      firebaseProfileVersionKey(firebaseUid),
-      version,
+      JSON.stringify(profile),
       "EX",
       ttlSeconds,
     );
@@ -309,10 +261,6 @@ export async function invalidateCachedProfile(firebaseUid) {
   const redisClient = getRedisClient();
   if (!redisClient || !firebaseUid) return;
   try {
-    // Increment version to invalidate all existing cached profiles.
-    // Any cached profile with the old _version will fail validation on read.
-    await redisClient.incr(firebaseProfileVersionKey(firebaseUid));
-    // Delete the profile key to force immediate refetch
     await redisClient.del(firebaseProfileKey(firebaseUid));
     _publishProfileInvalidation({
       type: "INVALIDATE_KEY",
@@ -336,21 +284,7 @@ export async function getCachedSupabaseProfile(userId) {
   if (!redisClient || !userId) return null;
   try {
     const raw = await redisClient.get(supabaseProfileKey(userId));
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      // Version check: ensure cached profile matches current version in Redis.
-      // If version mismatch, treat as miss and delete stale entry (issue #11182).
-      const currentVersion = await redisClient.get(supabaseProfileVersionKey(userId));
-      if (currentVersion && parsed._version !== currentVersion) {
-        await Promise.all([
-          redisClient.del(supabaseProfileKey(userId)),
-          redisClient.del(supabaseProfileVersionKey(userId)),
-        ]).catch(() => {});
-        return null;
-      }
-      return parsed;
-    }
-    return null;
+    return raw ? JSON.parse(raw) : null;
   } catch (err) {
     logCacheError("getCachedSupabaseProfile", err);
     try {
@@ -383,19 +317,9 @@ export async function setCachedSupabaseProfile(
   if (ttlSeconds < 1) ttlSeconds = 1;
   if (ttlSeconds > 86400) ttlSeconds = 86400;
   try {
-    // Fetch current version and store it with the profile for validation
-    const version = await redisClient.incr(supabaseProfileVersionKey(userId));
-    const profileWithVersion = { ...profile, _version: version };
     await redisClient.set(
       supabaseProfileKey(userId),
-      JSON.stringify(profileWithVersion),
-      "EX",
-      ttlSeconds,
-    );
-    // Set version key with same TTL
-    await redisClient.set(
-      supabaseProfileVersionKey(userId),
-      version,
+      JSON.stringify(profile),
       "EX",
       ttlSeconds,
     );
@@ -415,10 +339,6 @@ export async function invalidateCachedSupabaseProfile(userId) {
   const redisClient = getRedisClient();
   if (!redisClient || !userId) return;
   try {
-    // Increment version to invalidate all existing cached profiles.
-    // Any cached profile with the old _version will fail validation on read.
-    await redisClient.incr(supabaseProfileVersionKey(userId));
-    // Delete the profile key to force immediate refetch
     await redisClient.del(supabaseProfileKey(userId));
     _publishProfileInvalidation({
       type: "INVALIDATE_KEY",
@@ -544,10 +464,7 @@ export async function invalidateCachedSupabaseProfileAll(userId) {
   const redisClient = getRedisClient();
   if (!redisClient || !userId) return;
   try {
-    // Increment version to invalidate all existing cached profiles.
-    // Any cached profile with the old _version will fail validation on read.
     await Promise.all([
-      redisClient.incr(supabaseProfileVersionKey(userId)),
       redisClient.del(supabaseProfileKey(userId)),
       redisClient.del(customerStatsKey(userId)),
       redisClient.del(driverDetailsKey(userId)),
@@ -561,16 +478,3 @@ export async function invalidateCachedSupabaseProfileAll(userId) {
     logCacheError("invalidateCachedSupabaseProfileAll", err);
   }
 }
-
-
-// === Spec 8: ===
-// === Spec 8: profile cache schema validation ===
-export function isValidProfile(value) {
-  if (!value || typeof value !== 'object') return false;
-  if (Array.isArray(value)) return false;
-  if (typeof value.id !== 'string' || value.id.length === 0) return false;
-  if (typeof value.createdAt !== 'string') return false;
-  if (Number.isNaN(Date.parse(value.createdAt))) return false;
-  return true;
-}
-

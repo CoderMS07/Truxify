@@ -1,9 +1,8 @@
-﻿import { redisClient, supabaseAdmin } from '../config/db.js';
+import { redisClient, supabaseAdmin } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { submitEscrowRefund, getEscrowBooking } from './escrow.js';
-import { acquireLock, releaseLock, renewLock } from '../lib/redisLock.js';
+import { acquireLock, releaseLock } from '../lib/redisLock.js';
 import { sendPushNotification } from './notificationService.js';
-import { invalidateDriverOrderCache } from '../sockets/tracker.js';
 
 // Two-phase acceptance sweeper (#5724): orders that reached escrow_status
 // 'funding' but whose escrow deposit never lands within the funding TTL are
@@ -14,13 +13,7 @@ const DEFAULT_FUNDING_TTL_MINUTES = 30;
 const MAX_ATTEMPTS = 10;
 const BASE_BACKOFF_MS = 60_000;
 const LOCK_KEY = 'escrow:funding:reconciliation:lock';
-const LOCK_TTL_MS = 120_000;
-const LOCK_RENEW_INTERVAL_MS = 30_000;
-// Per-order lock TTL must comfortably exceed the longest per-order
-// operation (escrow refund submit + on-chain confirmation can take
-// 60+ seconds) so the lock never expires mid-processing and a second
-// instance cannot re-process the same order concurrently (issue #11178).
-const ORDER_LOCK_TTL_MS = 180_000;
+const LOCK_TTL_SECONDS = 120;
 // PostgREST caps a single response at 1000 rows; page through the stale set
 // deterministically so a large stuck funding queue is drained rather than
 // only ever processing the leading slice (#9219).
@@ -40,7 +33,7 @@ function dueForRetry(order) {
 
 async function finalizeOrRevert(order, orderRepository) {
   const lockKey = `escrow_lock:${order.id}`;
-  const lockValue = await acquireLock(lockKey, ORDER_LOCK_TTL_MS);
+  const lockValue = await acquireLock(lockKey, 30000);
   if (!lockValue) {
     logger.info(`[escrow-funding] Order ${order.order_display_id} locked by another process, skipping.`);
     return;
@@ -66,63 +59,21 @@ async function finalizeOrRevert(order, orderRepository) {
 
     if (bookingFunded && !mismatchReason && order.status === 'cancelled') {
       logger.info(`[escrow-funding] Order ${order.order_display_id} is cancelled but deposit landed on-chain. Triggering refund.`);
-      // Mirror the careful revert path below: submitEscrowRefund resolves with
-      // { txHash: null, error } / missing txHash on chain failures instead of
-      // throwing, so only clear the funding as refunded once the refund
-      // actually submitted AND confirmed on-chain.
-      let refundResult;
       try {
-        refundResult = await submitEscrowRefund(order.order_display_id);
-      } catch (err) {
-        refundResult = { txHash: null, error: err.message };
-        logger.error(`[escrow-funding] Refund failed for cancelled order ${order.order_display_id}: ${err.message}`);
-      }
-
-      if (refundResult?.error || !refundResult?.txHash) {
-        const refundError = refundResult?.error || 'escrow refund was not submitted';
-        logger.error(
-          `[escrow-funding] Skipping refunded clear for ${order.order_display_id}: refund not confirmed (${refundError})`
-        );
-        await orderRepository.updateOrderWithFilter(order.id, {
-          escrow_status: 'refund_failed',
-          escrow_refund_error: refundError,
+        await submitEscrowRefund(order.order_display_id);
+        await orderRepository.updateOrder(order.id, {
+          escrow_status: 'refunded',
+          escrow_refund_error: null,
           updated_at: new Date().toISOString(),
-        }, [
-          { op: 'eq', column: 'escrow_status', value: 'funding' },
-          { op: 'eq', column: 'id', value: order.id },
-        ], 'id').catch((err) => {
-          logger.error(`[escrow-funding] Failed to record refund failure for ${order.order_display_id}: ${err.message}`);
         });
-        return;
-      }
-
-      try {
-        await refundResult.waitForConfirmation();
       } catch (err) {
-        logger.error(`[escrow-funding] Refund confirmation failed for cancelled order ${order.order_display_id}: ${err.message}`);
-        await orderRepository.updateOrderWithFilter(order.id, {
+        logger.error(`[escrow-funding] Failed to refund cancelled order ${order.order_display_id}: ${err.message}`);
+        await orderRepository.updateOrder(order.id, {
           escrow_status: 'refund_failed',
-          escrow_refund_error: `refund confirmation failed: ${err.message}`,
+          escrow_refund_error: err.message,
           updated_at: new Date().toISOString(),
-        }, [
-          { op: 'eq', column: 'escrow_status', value: 'funding' },
-          { op: 'eq', column: 'id', value: order.id },
-        ], 'id').catch((err) => {
-          logger.error(`[escrow-funding] Failed to record confirmation failure for ${order.order_display_id}: ${err.message}`);
         });
-        return;
       }
-
-      await orderRepository.updateOrderWithFilter(order.id, {
-        escrow_status: 'refunded',
-        escrow_refund_error: null,
-        updated_at: new Date().toISOString(),
-      }, [
-        { op: 'eq', column: 'escrow_status', value: 'funding' },
-        { op: 'eq', column: 'id', value: order.id },
-      ], 'id').catch((err) => {
-        logger.error(`[escrow-funding] Failed to mark cancelled order ${order.order_display_id} as refunded: ${err.message}`);
-      });
       return;
     }
 
@@ -155,11 +106,6 @@ async function finalizeOrRevert(order, orderRepository) {
           });
           return;
         }
-
-        // Driver assignment confirmed — drop any stale cached mapping so the
-        // tracker resolves the newly assigned driver on the next ping
-        // (issue #10676).
-        await invalidateDriverOrderCache(pending.driver_id);
 
         sendPushNotification(
           pending.driver_id,
@@ -250,12 +196,6 @@ async function finalizeOrRevert(order, orderRepository) {
     if (revertErr) {
       logger.error(`[escrow-funding] Failed to revert order ${order.order_display_id}: ${revertErr.message}`);
     } else {
-      // Driver released back to pool — drop any stale cached mapping so the
-      // tracker resolves the driver's next assignment (issue #10676).
-      const releasedDriverId = order.pending_bid_acceptance?.driver_id;
-      if (releasedDriverId) {
-        await invalidateDriverOrderCache(releasedDriverId);
-      }
       sendPushNotification(
         order.customer_id,
         'Bid Acceptance Expired',
@@ -286,44 +226,20 @@ export async function reconcileStaleFunding(orderRepository) {
   if (!orderRepository) throw new Error('reconcileStaleFunding requires an OrderRepository instance');
   if (fundingRunning) return;
   fundingRunning = true;
-  let globalLockToken = null;
-  let lockRenewalTimer = null;
-
-  const stopLockRenewal = () => {
-    if (lockRenewalTimer) {
-      clearInterval(lockRenewalTimer);
-      lockRenewalTimer = null;
-    }
-  };
+  let globalLockAcquired = false;
 
   try {
     if (redisClient) {
       try {
-        globalLockToken = await acquireLock(LOCK_KEY, LOCK_TTL_MS);
+        globalLockAcquired = await redisClient.set(LOCK_KEY, process.pid.toString(), 'NX', 'EX', LOCK_TTL_SECONDS);
       } catch (err) {
         logger.error('[escrow-funding] Failed to acquire Redis global lock, skipping batch:', err.message);
         return;
       }
-      if (!globalLockToken) {
+      if (!globalLockAcquired) {
         logger.info('[escrow-funding] Global lock held by another instance, skipping batch.');
         return;
       }
-      // Hold the global lock for the entire batch and extend it on a
-      // background interval (ownership-verified renewal) so a long
-      // per-order blockchain operation can never let the global lock
-      // expire mid-batch and allow another reconciliation instance to
-      // process the same orders concurrently (issue #11178).
-      lockRenewalTimer = setInterval(async () => {
-        try {
-          const renewed = await renewLock(LOCK_KEY, globalLockToken, LOCK_TTL_MS);
-          if (!renewed) {
-            logger.warn('[escrow-funding] Global lock no longer owned by this instance.');
-          }
-        } catch (err) {
-          logger.warn('[escrow-funding] Failed to renew global lock:', err.message);
-        }
-      }, LOCK_RENEW_INTERVAL_MS);
-      lockRenewalTimer.unref?.();
     }
 
     const ttlMinutes = Number(process.env.ESCROW_FUNDING_TTL_MINUTES);
@@ -347,16 +263,22 @@ export async function reconcileStaleFunding(orderRepository) {
           continue;
         }
         if (!dueForRetry(order)) continue;
+        if (globalLockAcquired && redisClient) {
+          try {
+            await redisClient.expire(LOCK_KEY, LOCK_TTL_SECONDS);
+          } catch (err) {
+            logger.warn('[escrow-funding] Failed to refresh lock:', err.message);
+          }
+        }
         await finalizeOrRevert(order, orderRepository);
       }
 
       if (staleOrders.length < STALE_FUNDING_PAGE_SIZE) break;
     }
   } finally {
-    stopLockRenewal();
-    if (globalLockToken && redisClient) {
+    if (globalLockAcquired && redisClient) {
       try {
-        await releaseLock(LOCK_KEY, globalLockToken);
+        await redisClient.del(LOCK_KEY);
       } catch (err) {
         logger.warn('[escrow-funding] Failed to release global lock:', err.message);
       }

@@ -31,9 +31,6 @@ function base58btc(input) {
 
 class DIDService {
     constructor() {
-        if (!process.env.DID_PROOF_SECRET) {
-            throw new Error('DID_PROOF_SECRET environment variable is required and must not be empty');
-        }
         this.provider = new ethers.JsonRpcProvider(process.env.POLYGON_RPC_URL);
         this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider);
         this.didRegistryAddress = process.env.DID_REGISTRY_ADDRESS;
@@ -136,9 +133,8 @@ class DIDService {
 
     async issueCredential(subject, credentialType, schema, validUntil) {
         try {
-            const issuedAtMs = Date.now();
             const schemaHash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(schema)));
-            const proof = this.generateProof(subject, credentialType, schema, issuedAtMs);
+            const proof = this.generateProof(subject, credentialType, schema);
             const proofHash = ethers.keccak256(ethers.toUtf8Bytes(proof));
 
             const validUntilTimestamp = validUntil || Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
@@ -186,7 +182,7 @@ class DIDService {
                 subject,
                 credentialType,
                 schema,
-                issuedAt: new Date(issuedAtMs).toISOString(),
+                issuedAt: new Date().toISOString(),
                 validUntil: new Date(validUntilTimestamp * 1000).toISOString(),
                 txHash: receipt.hash,
                 proof
@@ -239,13 +235,11 @@ class DIDService {
         }
     }
 
-    generateProof(subject, credentialType, schema, issuedAtMs) {
-        const secret = process.env.DID_PROOF_SECRET;
-        if (!secret) {
-            throw new Error('DID_PROOF_SECRET is not configured; refusing to generate proof');
-        }
-        const payload = JSON.stringify({ subject, credentialType, schema, timestamp: issuedAtMs });
-        return crypto.createHmac('sha256', secret).update(payload).digest('hex');
+    generateProof(subject, credentialType, schema) {
+        const secret = process.env.DID_PROOF_SECRET || 'default-proof-secret';
+        const payload = JSON.stringify({ subject, credentialType, schema, timestamp: Date.now() });
+        const proof = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+        return proof;
     }
 
     async getDID(did) {
@@ -296,37 +290,8 @@ class DIDService {
     async storeDID(data) {
         const { error } = await (supabaseAdmin || supabase)
             .from('dids')
-            .insert([{
-                did: data.did,
-                owner: data.owner,
-                public_key: data.publicKey,
-                is_active: true,
-                created_at: new Date().toISOString()
-            }]);
+            .insert([{ did: data.did, owner: data.owner, public_key: data.publicKey, created_at: new Date().toISOString() }]);
         if (error) throw error;
-    }
-
-    async updateDIDStatus(did, isActive) {
-        const { error } = await (supabaseAdmin || supabase)
-            .from('dids')
-            .update({ is_active: isActive, updated_at: new Date().toISOString() })
-            .eq('did', did);
-        if (error) throw error;
-    }
-
-    async deactivateDID(did) {
-        try {
-            const tx = await this.didRegistry.deactivateDID(did);
-            await tx.wait();
-
-            await this.updateDIDStatus(did, false);
-
-            logger.info(`✅ DID deactivated: ${did}`);
-            return { success: true, did };
-        } catch (error) {
-            logger.error('DID deactivation failed:', error);
-            throw error;
-        }
     }
 
     async storeCredential(data) {
@@ -354,27 +319,21 @@ class DIDService {
     }
 
     async getDIDStats() {
-        const client = supabaseAdmin || supabase;
+        const { data: dids, error: didsErr } = await (supabaseAdmin || supabase).from('dids').select('*').order('created_at', { ascending: false }).limit(100);
+        const { data: credentials, error: credsErr } = await (supabaseAdmin || supabase).from('credentials').select('*').order('issued_at', { ascending: false }).limit(100);
 
-        const [totalDids, activeDids, totalCreds, revokedCreds] = await Promise.all([
-            client.from('dids').select('id', { count: 'exact', head: true }),
-            client.from('dids').select('id', { count: 'exact', head: true }).eq('is_active', true),
-            client.from('credentials').select('id', { count: 'exact', head: true }),
-            client.from('credentials').select('id', { count: 'exact', head: true }).eq('revoked', true)
-        ]);
-
-        const errors = [totalDids, activeDids, totalCreds, revokedCreds]
-            .filter((result) => result.error)
-            .map((result) => result.error);
-        if (errors.length > 0) {
-            logger.error('Failed to fetch DID stats', errors);
+        if (didsErr || credsErr) {
+            logger.error('Failed to fetch DID stats', { didsErr, credsErr });
         }
 
+        const safeDids = dids || [];
+        const safeCreds = credentials || [];
+
         return {
-            totalDIDs: totalDids.error ? 0 : (totalDids.count ?? 0),
-            activeDIDs: activeDids.error ? 0 : (activeDids.count ?? 0),
-            totalCredentials: totalCreds.error ? 0 : (totalCreds.count ?? 0),
-            revokedCredentials: revokedCreds.error ? 0 : (revokedCreds.count ?? 0)
+            totalDIDs: safeDids.length,
+            activeDIDs: safeDids.filter(d => d.is_active !== false).length,
+            totalCredentials: safeCreds.length,
+            revokedCredentials: safeCreds.filter(c => c.revoked === true).length
         };
     }
 }

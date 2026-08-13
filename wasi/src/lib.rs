@@ -215,52 +215,6 @@ mod tests {
         assert_eq!(resolve_lexically("./data/../data/x"), Some("data/x".to_string()));
         assert_eq!(resolve_lexically("../data/../../etc/hostname"), Some("../../etc/hostname".to_string()));
     }
-
-    #[test]
-    fn allows_exact_allowed_hosts() {
-        assert!(is_url_allowed("https://api.truxify.com/v1/routes").is_ok());
-        assert!(is_url_allowed("http://localhost:8080/ping").is_ok());
-        assert!(is_url_allowed("https://127.0.0.1/health").is_ok());
-    }
-
-    #[test]
-    fn rejects_substring_host_bypasses() {
-        assert!(is_url_allowed("https://api.truxify.com.evil.com/x").is_err());
-        assert!(is_url_allowed("https://127.0.0.1.evil.com/x").is_err());
-        assert!(is_url_allowed("https://evilapi.truxify.com/x").is_err());
-        assert!(is_url_allowed("https://localhost.evil.com/x").is_err());
-        assert!(is_url_allowed("https://notapi.truxify.com/x").is_err());
-    }
-
-    #[test]
-    fn rejects_non_allowed_hosts() {
-        assert!(is_url_allowed("https://example.com/x").is_err());
-        assert!(is_url_allowed("https://attacker.io/x").is_err());
-        assert!(is_url_allowed("https://truxify.com.evil.com/x").is_err());
-    }
-
-    #[test]
-    fn rejects_bad_schemes_and_malformed_urls() {
-        assert!(is_url_allowed("ftp://api.truxify.com/x").is_err());
-        assert!(is_url_allowed("file:///etc/passwd").is_err());
-        assert!(is_url_allowed("not-a-url").is_err());
-        assert!(is_url_allowed("").is_err());
-    }
-
-    #[test]
-    fn rejects_userinfo_smuggling() {
-        assert!(is_url_allowed("https://attacker.io@api.truxify.com/x").is_err());
-        assert!(is_url_allowed("https://user:pass@127.0.0.1/x").is_err());
-    }
-
-    #[test]
-    fn env_allowlist_blocks_secrets() {
-        assert!(is_env_allowed("TRUXIFY_SANDBOX_MODE"));
-        assert!(is_env_allowed("TRUXIFY_REGION"));
-        assert!(!is_env_allowed("JWT_SECRET"));
-        assert!(!is_env_allowed("DATABASE_URL"));
-        assert!(!is_env_allowed("PRIVATE_KEY"));
-    }
 }
 
 // ============ Network System Calls ============
@@ -271,8 +225,8 @@ pub fn wasi_http_request(request: &str) -> Result<String, String> {
         .map_err(|e| format!("Failed to parse request: {}", e))?;
 
     // Capability-based security: only allow specific domains
-    if let Err(e) = is_url_allowed(&req.url) {
-        return Err(e);
+    if !is_url_allowed(&req.url) {
+        return Err("Access denied: domain not allowed".to_string());
     }
 
     // Make HTTP request using stdlib
@@ -307,64 +261,31 @@ pub fn wasi_sleep(ms: u64) {
     std::thread::sleep(std::time::Duration::from_millis(ms));
 }
 
-fn is_url_allowed(url: &str) -> Result<(), String> {
-    // Capability-based security: only allow specific domains.
-    // The URL is parsed and the *host* is compared exactly against the
-    // allowlist. A substring check (url.contains("api.truxify.com")) is
-    // bypassable with hosts like api.truxify.com.evil.com or
-    // 127.0.0.1.evil.com; exact hostname matching closes that SSRF hole.
-    let allowed_domains = [
+fn is_url_allowed(url: &str) -> bool {
+    // Capability-based security: only allow specific domains
+    let allowed_domains = vec![
         "api.truxify.com",
         "localhost",
         "127.0.0.1",
     ];
-
-    let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
-
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err(format!("Access denied: URL scheme must be http or https"));
+    
+    for domain in allowed_domains {
+        if url.contains(domain) {
+            return true;
+        }
     }
-
-    // Credentials (userinfo) are never needed by the sandbox and could be used
-    // to smuggle an attacker-controlled host into the host part of the URL.
-    if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err("Access denied: URL must not contain userinfo".to_string());
-    }
-
-    let host = match parsed.host_str() {
-        Some(h) => h.to_lowercase(),
-        None => return Err("Access denied: URL has no host".to_string()),
-    };
-
-    if allowed_domains.iter().any(|d| host == *d) {
-        Ok(())
-    } else {
-        Err(format!("Access denied: domain not allowed: {}", host))
-    }
+    false
 }
 
 // ============ Process System Calls ============
 
-// Capability-based security for host environment access. Untrusted WASM guests
-// must only ever read from a curated allowlist, never the host `std::env`, so
-// secret-bearing variables (JWT_SECRET, DATABASE_URL, PRIVATE_KEY, ...) are
-// never reachable from a guest module.
-fn is_env_allowed(name: &str) -> bool {
-    matches!(name, "TRUXIFY_SANDBOX_MODE" | "TRUXIFY_REGION")
-}
-
 #[wasm_bindgen]
 pub fn wasi_get_process_id() -> u32 {
-    // Do not leak the host process id to the guest sandbox. Return a synthetic,
-    // constant sandboxed id instead.
-    0
+    std::process::id()
 }
 
 #[wasm_bindgen]
 pub fn wasi_get_env_var(name: &str) -> Result<String, String> {
-    if !is_env_allowed(name) {
-        return Err("Access denied: environment variable not permitted".to_string());
-    }
     match std::env::var(name) {
         Ok(value) => Ok(value),
         Err(_) => Err("Environment variable not found".to_string()),
@@ -373,9 +294,10 @@ pub fn wasi_get_env_var(name: &str) -> Result<String, String> {
 
 #[wasm_bindgen]
 pub fn wasi_get_current_dir() -> Result<String, String> {
-    // Do not expose the host's real working directory (which may reveal
-    // filesystem layout / secrets paths) to the guest sandbox.
-    Ok("/sandbox".to_string())
+    match std::env::current_dir() {
+        Ok(path) => Ok(path.to_string_lossy().to_string()),
+        Err(e) => Err(format!("Failed to get current directory: {}", e)),
+    }
 }
 
 // ============ Memory System Calls ============

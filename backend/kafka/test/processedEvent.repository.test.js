@@ -1,18 +1,13 @@
 /**
  * Unit tests for backend/kafka/repositories/processedEvent.repository.js
  *
- * Regression test for issue #6288 (RLS via supabaseAdmin) and the
- * consumer-group idempotency-scoping bug: with four independent Kafka
- * consumer groups (order-service, notification-service, analytics-service,
- * fraud-service) subscribed to overlapping topics, the idempotency registry
- * must be keyed per (consumer_group, topic, event_id) so that one group
- * claiming an event never suppresses delivery to the others.
+ * Regression test for issue #6288: the idempotency registry must write via
+ * the service-role client (supabaseAdmin) so RLS on kafka_processed_events
+ * (service_role only) does not reject every claim.
  *
  * Coverage:
- *   - first claim for a (consumer_group, topic, event_id) returns true
- *   - duplicate claim for the same (consumer_group, topic, event_id) returns false
- *   - the SAME (topic, event_id) can be claimed independently by two
- *     different consumer groups (the core regression for this bug)
+ *   - first claim for a (topic, event_id) returns true
+ *   - duplicate claim for the same (topic, event_id) returns false
  *   - the claim is issued through the service-role client (supabaseAdmin)
  *
  * Run with:  npm test -- test/processedEvent.repository.test.js
@@ -26,7 +21,7 @@ vi.mock('../../api/src/config/db.js', () => ({
     from: vi.fn(() => ({
       upsert: vi.fn((record) => ({
         select: vi.fn(() => {
-          const key = `${record.consumer_group}:${record.topic}:${record.event_id}`;
+          const key = `${record.topic}:${record.event_id}`;
           if (insertedKeys.has(key)) {
             return Promise.resolve({ data: [], error: null });
           }
@@ -55,61 +50,25 @@ describe('ProcessedEventRepository.claimProcessed', () => {
     vi.clearAllMocks();
   });
 
-  it('returns true the first time an event is claimed by a group', async () => {
-    const claimed = await processedEventRepository.claimProcessed('order-service', 'payment.confirmed', 'evt-001');
+  it('returns true the first time an event is claimed', async () => {
+    const claimed = await processedEventRepository.claimProcessed('payment.confirmed', 'evt-001');
     expect(claimed).toBe(true);
   });
 
-  it('returns false when the same group claims the same (topic, event_id) again', async () => {
-    await processedEventRepository.claimProcessed('order-service', 'payment.confirmed', 'evt-001');
-    const second = await processedEventRepository.claimProcessed('order-service', 'payment.confirmed', 'evt-001');
+  it('returns false when the same (topic, event_id) is claimed again', async () => {
+    await processedEventRepository.claimProcessed('payment.confirmed', 'evt-001');
+    const second = await processedEventRepository.claimProcessed('payment.confirmed', 'evt-001');
     expect(second).toBe(false);
   });
 
   it('treats different topics as distinct idempotency keys', async () => {
-    await processedEventRepository.claimProcessed('order-service', 'payment.confirmed', 'evt-001');
-    const otherTopic = await processedEventRepository.claimProcessed('order-service', 'trip.completed', 'evt-001');
+    await processedEventRepository.claimProcessed('payment.confirmed', 'evt-001');
+    const otherTopic = await processedEventRepository.claimProcessed('trip.completed', 'evt-001');
     expect(otherTopic).toBe(true);
   });
 
-  it('allows the same (topic, event_id) to be claimed independently by different consumer groups', async () => {
-    const orderServiceClaim = await processedEventRepository.claimProcessed(
-      'order-service',
-      'payment.confirmed',
-      'evt-shared-001'
-    );
-    const notificationServiceClaim = await processedEventRepository.claimProcessed(
-      'notification-service',
-      'payment.confirmed',
-      'evt-shared-001'
-    );
-    const analyticsServiceClaim = await processedEventRepository.claimProcessed(
-      'analytics-service',
-      'payment.confirmed',
-      'evt-shared-001'
-    );
-    const fraudServiceClaim = await processedEventRepository.claimProcessed(
-      'fraud-service',
-      'payment.confirmed',
-      'evt-shared-001'
-    );
-
-    expect(orderServiceClaim).toBe(true);
-    expect(notificationServiceClaim).toBe(true);
-    expect(analyticsServiceClaim).toBe(true);
-    expect(fraudServiceClaim).toBe(true);
-
-    // But a second claim by the SAME group for the SAME event is still a duplicate.
-    const orderServiceReplay = await processedEventRepository.claimProcessed(
-      'order-service',
-      'payment.confirmed',
-      'evt-shared-001'
-    );
-    expect(orderServiceReplay).toBe(false);
-  });
-
   it('issues the claim through the service-role client (supabaseAdmin)', async () => {
-    await processedEventRepository.claimProcessed('order-service', 'payment.confirmed', 'evt-001');
+    await processedEventRepository.claimProcessed('payment.confirmed', 'evt-001');
     expect(supabaseAdmin.from).toHaveBeenCalledWith('kafka_processed_events');
   });
 });

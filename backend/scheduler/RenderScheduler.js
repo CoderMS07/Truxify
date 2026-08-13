@@ -114,6 +114,8 @@ class RenderScheduler extends EventEmitter {
             const index = queue.indexOf(task);
             if (index !== -1) {
                 queue.splice(index, 1);
+<<<<<<< HEAD
+=======
                 // Unlink this task from any dependents so they are not
                 // permanently deadlocked by a dependency that will never
                 // complete. Removing the edge lets a dependent with no other
@@ -125,12 +127,16 @@ class RenderScheduler extends EventEmitter {
                         this.emit('dependentUnblocked', { taskId: depId, dependencyId: taskId });
                     }
                 }
+>>>>>>> upstream/main
                 task.status = 'cancelled';
                 this.stats.cancelledTasks++;
                 this.emit('taskCancelled', { taskId });
                 this.taskMap.delete(taskId);
                 logger.debug(`Task ${taskId} cancelled`);
+<<<<<<< HEAD
+=======
                 this.pruneTaskMap();
+>>>>>>> upstream/main
                 return true;
             }
         }
@@ -327,7 +333,10 @@ class RenderScheduler extends EventEmitter {
             
             // Process dependents
             this.processDependents(task);
+<<<<<<< HEAD
+=======
             this.pruneTaskMap();
+>>>>>>> upstream/main
             
         } catch (error) {
             // Handle error
@@ -349,7 +358,10 @@ class RenderScheduler extends EventEmitter {
                 this.stats.failedTasks++;
                 this.emit('taskFailed', { taskId: task.id, error: error.message });
                 logger.error(`Task ${task.id} failed: ${error.message}`);
+<<<<<<< HEAD
+=======
                 this.pruneTaskMap();
+>>>>>>> upstream/main
             }
         }
     }
@@ -373,6 +385,8 @@ class RenderScheduler extends EventEmitter {
             }
         }
     }
+<<<<<<< HEAD
+=======
 
     // Completed/failed tasks are kept in this.taskMap forever, so a long-lived
     // scheduler accumulates one entry per scheduled task (unbounded memory).
@@ -415,6 +429,7 @@ class RenderScheduler extends EventEmitter {
             }
         }
     }
+>>>>>>> upstream/main
     
     sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));

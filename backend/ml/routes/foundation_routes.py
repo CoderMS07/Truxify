@@ -1,41 +1,31 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import torch
 import json
-import os
 from datetime import datetime
 import logging
 
 from foundation.model import LogisticsFoundationModel, FoundationModelConfig, FoundationModelTrainer
 from foundation.data import LogisticsDataProcessor, LogisticsDatasetGenerator
+import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/foundation", tags=["Foundation Model"])
 
-
-# Request-scoped dependencies: each request gets its own model/trainer/
-# processor instance so weights, vocab, and config are never shared across
-# concurrent requests.
-def get_model() -> LogisticsFoundationModel:
-    config = FoundationModelConfig()
-    return LogisticsFoundationModel(
-        vocab_size=config.vocab_size,
-        d_model=config.d_model,
-        num_heads=config.num_heads,
-        num_layers=config.num_layers,
-        d_ff=config.d_ff,
-        max_len=config.max_len,
-        dropout=config.dropout
-    )
-
-
-def get_trainer(model: LogisticsFoundationModel = Depends(get_model)) -> FoundationModelTrainer:
-    return FoundationModelTrainer(model, FoundationModelConfig())
-
-
-def get_processor() -> LogisticsDataProcessor:
-    return LogisticsDataProcessor()
+# Initialize model and config
+config = FoundationModelConfig()
+model = LogisticsFoundationModel(
+    vocab_size=config.vocab_size,
+    d_model=config.d_model,
+    num_heads=config.num_heads,
+    num_layers=config.num_layers,
+    d_ff=config.d_ff,
+    max_len=config.max_len,
+    dropout=config.dropout
+)
+trainer = FoundationModelTrainer(model, config)
+processor = LogisticsDataProcessor()
 
 class GenerateDataRequest(BaseModel):
     num_samples: int = 1000
@@ -67,7 +57,7 @@ async def generate_data(request: GenerateDataRequest):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/data/prepare")
-async def prepare_data(file: UploadFile = File(...), processor: LogisticsDataProcessor = Depends(get_processor)):
+async def prepare_data(file: UploadFile = File(...)):
     """Prepare data for training"""
     try:
         content = await file.read()
@@ -97,11 +87,7 @@ async def prepare_data(file: UploadFile = File(...), processor: LogisticsDataPro
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/pretrain")
-async def pretrain_model(
-    file: Optional[UploadFile] = None,
-    processor: LogisticsDataProcessor = Depends(get_processor),
-    trainer: FoundationModelTrainer = Depends(get_trainer),
-):
+async def pretrain_model(file: Optional[UploadFile] = None):
     """Pre-train foundation model"""
     try:
         # Load data
@@ -139,9 +125,7 @@ async def pretrain_model(
 async def finetune_model(
     task: str = 'classification',
     epochs: int = 5,
-    file: Optional[UploadFile] = None,
-    processor: LogisticsDataProcessor = Depends(get_processor),
-    trainer: FoundationModelTrainer = Depends(get_trainer),
+    file: Optional[UploadFile] = None
 ):
     """Fine-tune foundation model for specific task"""
     try:
@@ -156,8 +140,12 @@ async def finetune_model(
         train_data = processor.create_finetuning_data(data[:800], task)
         val_data = processor.create_finetuning_data(data[800:], task)
         
-        # Train on the request-scoped trainer (no global config mutation)
-        results = trainer.train(train_data, val_data, epochs=epochs)
+        # Update config
+        config.epochs = epochs
+        trainer.config = config
+        
+        # Train
+        results = trainer.train(train_data, val_data)
         
         return {
             'success': True,
@@ -175,32 +163,25 @@ async def finetune_model(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/predict")
-async def predict(
-    text: str,
-    task: str = 'classification',
-    model: LogisticsFoundationModel = Depends(get_model),
-    processor: LogisticsDataProcessor = Depends(get_processor),
-):
+async def predict(text: str, task: str = 'classification'):
     """Make prediction using foundation model"""
     try:
-        max_len = model.position_encoding.pe.size(0)
-
         # Tokenize input
         tokens = processor.prepare_sequence(text)
         
         # Pad to max length
-        if len(tokens) < max_len:
-            tokens = tokens + [0] * (max_len - len(tokens))
+        if len(tokens) < config.max_len:
+            tokens = tokens + [0] * (config.max_len - len(tokens))
         else:
-            tokens = tokens[:max_len]
+            tokens = tokens[:config.max_len]
         
         # Convert to tensor
         input_ids = torch.tensor([tokens], dtype=torch.long)
         
         # Predict
-        model.eval()
+        trainer.model.eval()
         with torch.no_grad():
-            outputs = model(input_ids, task=task)
+            outputs = trainer.model(input_ids, task=task)
             logits = outputs['output']
             
             if task == 'classification':
@@ -228,11 +209,9 @@ async def predict(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/model-info")
-async def get_model_info(trainer: FoundationModelTrainer = Depends(get_trainer)):
+async def get_model_info():
     """Get model information"""
     try:
-        config = trainer.config
-        model = trainer.model
         return {
             'success': True,
             'data': {
@@ -255,11 +234,7 @@ async def get_model_info(trainer: FoundationModelTrainer = Depends(get_trainer))
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/save")
-async def save_model(
-    path: str = "models/foundation_model.pth",
-    trainer: FoundationModelTrainer = Depends(get_trainer),
-    processor: LogisticsDataProcessor = Depends(get_processor),
-):
+async def save_model(path: str = "models/foundation_model.pth"):
     path = os.path.join("models", os.path.basename(path))
     """Save foundation model"""
     try:
@@ -277,11 +252,7 @@ async def save_model(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/load")
-async def load_model(
-    path: str = "models/foundation_model.pth",
-    trainer: FoundationModelTrainer = Depends(get_trainer),
-    processor: LogisticsDataProcessor = Depends(get_processor),
-):
+async def load_model(path: str = "models/foundation_model.pth"):
     path = os.path.join("models", os.path.basename(path))
     """Load foundation model"""
     try:

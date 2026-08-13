@@ -27,15 +27,7 @@ export const ORDER_DISPLAY_ID_MAX_RETRIES = 5;
  */
 export function generateOrderDisplayId() {
   const now = new Date();
-  let dateStr;
-  try {
-    dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
-  } catch (err) {
-    // An invalid Date (e.g. a system clock that produced an out-of-range
-    // value) makes toISOString throw; fall back to the Unix epoch day so the
-    // id format stays stable and unique per day.
-    dateStr = '19700101';
-  }
+  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
   const random = Array.from(
     { length: DISPLAY_ID_RANDOM_LENGTH },
     () => DISPLAY_ID_RANDOM_ALPHABET[crypto.randomInt(DISPLAY_ID_RANDOM_ALPHABET.length)],
@@ -46,17 +38,4 @@ export function generateOrderDisplayId() {
 export function isValidOrderDisplayId(displayId) {
   if (typeof displayId !== 'string') return false;
   return /^#FF\d{8}[A-Z0-9]{12}$/.test(displayId);
-}
-
-/**
- * Generate a client-supplied-style idempotency key (RFC 4122 v4 UUID) used to
- * make create_order_tx durable-idempotent. The key is stable for the lifetime
- * of a createOrder request (and its internal display-id retry loop) so that a
- * retried transaction returns the originally created order instead of
- * duplicating it (issue #11411).
- *
- * @returns {string} an RFC 4122 v4 UUID
- */
-export function generateIdempotencyKey() {
-  return crypto.randomUUID();
 }

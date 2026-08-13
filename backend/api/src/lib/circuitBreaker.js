@@ -13,12 +13,10 @@ export class CircuitBreaker {
     this.resetTimeoutMs = options.resetTimeoutMs || 30000;
     this.requestTimeoutMs = options.requestTimeoutMs || 5000;
     this.fallback = options.fallback || null;
-    this.countTimeoutAsFailure = options.countTimeoutAsFailure !== false;
 
     this.state = CircuitState.CLOSED;
     this.failureCount = 0;
     this.successCount = 0;
-    this.timeoutCount = 0;
     this.nextAttempt = Date.now();
     this._halfOpenTimer = null;
   }
@@ -34,7 +32,6 @@ export class CircuitBreaker {
       }
       this._halfOpenTimer = null;
     }, this.resetTimeoutMs);
-    this._halfOpenTimer.unref?.();
   }
 
   getState() {
@@ -53,7 +50,6 @@ export class CircuitBreaker {
     this.state = CircuitState.CLOSED;
     this.failureCount = 0;
     this.successCount = 0;
-    this.timeoutCount = 0;
     this.nextAttempt = Date.now();
   }
 
@@ -72,34 +68,19 @@ export class CircuitBreaker {
       throw new Error(`CircuitBreaker:${this.name} is OPEN`);
     }
 
-    const controller = new AbortController();
-    const signal = controller.signal;
-
     let timer;
-    let timedOut = false;
-
     try {
       const timeoutPromise = new Promise((_, reject) => {
         timer = setTimeout(() => {
-          timedOut = true;
-          controller.abort();
           reject(new Error(`[CircuitBreaker:${this.name}] Request timed out after ${this.requestTimeoutMs}ms`));
         }, this.requestTimeoutMs);
         timer.unref?.();
       });
 
-      const result = await Promise.race([fn(...args, { signal }), timeoutPromise]);
+      const result = await Promise.race([fn(...args), timeoutPromise]);
       this.onSuccess();
       return result;
     } catch (err) {
-      if (timedOut) {
-        this.timeoutCount += 1;
-        logger.warn({ timeouts: this.timeoutCount }, `[CircuitBreaker:${this.name}] Request timed out`);
-        if (this.countTimeoutAsFailure) {
-          return this.onFailure(err, args);
-        }
-        throw err;
-      }
       return this.onFailure(err, args);
     } finally {
       if (timer) {
@@ -109,7 +90,6 @@ export class CircuitBreaker {
   }
 
   onSuccess() {
-    this.successCount += 1;
     if (this.state === CircuitState.HALF_OPEN) {
       this.reset();
       logger.info(`[CircuitBreaker:${this.name}] Service recovered. State reset to CLOSED`);
@@ -134,14 +114,5 @@ export class CircuitBreaker {
       return this.fallback(...args);
     }
     throw err;
-  }
-
-  getMetrics() {
-    return {
-      state: this.state,
-      failureCount: this.failureCount,
-      timeoutCount: this.timeoutCount,
-      successCount: this.successCount,
-    };
   }
 }

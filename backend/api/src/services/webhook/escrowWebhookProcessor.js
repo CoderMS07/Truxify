@@ -7,7 +7,7 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 // Escrow statuses a release/withdrawal webhook may legitimately reconcile.
 const RELEASE_RECONCILABLE_STATUSES = ['funded', 'release_failed'];
 // Escrow statuses a cancellation/refund webhook may legitimately reconcile.
-const REFUND_RECONCILABLE_STATUSES = ['funded', 'refund_pending', 'refund_failed', 'refunded'];
+const REFUND_RECONCILABLE_STATUSES = ['funded', 'refund_pending', 'refund_failed'];
 
 function requireDb() {
   if (!supabaseAdmin) {
@@ -76,23 +76,6 @@ async function reconcileWalletLedger(order, txHash) {
   }
 }
 
-// Idempotent duplicate-delivery path: the order-level escrow_status effect
-// already happened on the first delivery, so a missing/errored wallet-ledger
-// reconcile must not throw here — otherwise the DLQ redelivers forever,
-// re-entering this same branch and failing identically each time (permanent
-// poison message). Log and swallow so the webhook can be acknowledged; a later
-// redelivery retries the (idempotent) reconcile again.
-async function tryReconcileWalletLedger(order, txHash) {
-  try {
-    await reconcileWalletLedger(order, txHash);
-  } catch (err) {
-    logger.warn(
-      { err: err.message, orderDisplayId: order.order_display_id, driverId: order.driver_id },
-      '[Webhook] Duplicate delivery: wallet ledger reconcile failed (best-effort) — order-level effect already applied, acknowledging delivery.'
-    );
-  }
-}
-
 async function getPolygonProvider() {
   const rpcUrl = process.env.POLYGON_RPC_URL;
   if (!rpcUrl) {
@@ -143,7 +126,7 @@ async function handlePaymentReleased(payload) {
   // the (idempotent) wallet ledger so a crash between the order update and the
   // wallet update is healed, then short-circuit without re-applying effects.
   if (order.escrow_status === 'released') {
-    await tryReconcileWalletLedger(order, payload.txHash || order.release_tx_hash);
+    await reconcileWalletLedger(order, payload.txHash || order.release_tx_hash);
     logger.info(`[Webhook] Order ${order.order_display_id} already released — duplicate delivery ignored.`);
     return;
   }
@@ -221,7 +204,7 @@ async function handleWithdrawalSettled(payload) {
   const now = new Date().toISOString();
   const txHash = payload.txHash || null;
 
-  const isRefund = ['refunded', 'refund_pending', 'refund_failed'].includes(order.escrow_status);
+  const isRefund = ['refund_pending', 'refund_failed'].includes(order.escrow_status);
 
   // Idempotency: the same withdrawal webhook may be delivered more than once.
   // If the order already reflects the intended terminal state, short-circuit.
@@ -235,7 +218,7 @@ async function handleWithdrawalSettled(payload) {
       }
     }
     if (!isRefund) {
-      await tryReconcileWalletLedger(order, txHash);
+      await reconcileWalletLedger(order, txHash);
     }
     logger.info(`[Webhook] Order ${order.order_display_id} already ${targetStatus} — duplicate delivery ignored.`);
     return;

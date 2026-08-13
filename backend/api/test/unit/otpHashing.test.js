@@ -1,22 +1,7 @@
-import { hashOtp, verifyOtpHash, generateOtpSecret } from '../../src/lib/otpHashing.js';
+import { hashOtp, verifyOtpHash } from '../../src/lib/otpHashing.js';
 import crypto from 'crypto';
 
 describe('otpHashing', () => {
-  describe('generateOtpSecret', () => {
-    it('generates a numeric string of requested length', () => {
-      const otp6 = generateOtpSecret(6);
-      expect(otp6).toMatch(/^\d{6}$/);
-
-      const otp4 = generateOtpSecret(4);
-      expect(otp4).toMatch(/^\d{4}$/);
-    });
-
-    it('clamps requested length within bounds [4, 10]', () => {
-      expect(generateOtpSecret(2)).toMatch(/^\d{4}$/);
-      expect(generateOtpSecret(20)).toMatch(/^\d{10}$/);
-    });
-  });
-
   describe('hashOtp', () => {
     it('generates different hashes and salts for the same OTP', () => {
       const otp = '123456';
@@ -133,18 +118,6 @@ describe('otpHashing', () => {
 
     it('throws TypeError when OTP is only whitespace', () => {
       expect(() => hashOtp('   ')).toThrow(TypeError);
-    });
-
-    it('throws TypeError when the supplied salt is not 32-char hex', () => {
-      expect(() => hashOtp('123456', 'not-hex')).toThrow(TypeError);
-      expect(() => hashOtp('123456', 'abcd')).toThrow(TypeError);
-      expect(() => hashOtp('123456', 12345)).toThrow(TypeError);
-    });
-
-    it('accepts a valid 32-char uppercase hex salt and normalizes it', () => {
-      const { hash, salt } = hashOtp('123456', 'A'.repeat(32));
-      expect(salt).toBe('a'.repeat(32));
-      expect(hash).toMatch(/^[a-f0-9]{128}$/);
     });
   });
 

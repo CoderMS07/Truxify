@@ -110,6 +110,25 @@ class SMPCProtocol:
         logger.info(f"Session {self.session_id} initiated with {len(parties)} parties")
         return self.session_id
 
+<<<<<<< HEAD
+    def share_data(self, data: Any, parties: List[str]) -> Dict[str, bytes]:
+        try:
+            data_bytes = json.dumps(data).encode()
+            data_int = int.from_bytes(data_bytes, 'big') % self.secret_sharing.prime
+
+            shares = self.secret_sharing.generate_shares(
+                data_int,
+                len(parties),
+                self.threshold
+            )
+
+            shares_dict = {}
+            for i, party in enumerate(parties):
+                share_bytes = json.dumps(shares[i]).encode()
+                encrypted = self.cipher.encrypt(share_bytes)
+                shares_dict[party] = encrypted
+
+=======
     def _encode_value(self, value: Any) -> int:
         """Encode a value once into a single integer field element."""
         if isinstance(value, bool):
@@ -136,18 +155,24 @@ class SMPCProtocol:
             shares_dict[party] = encrypted
 
             if self.session_id:
+>>>>>>> upstream/main
                 self.redis.setex(
                     f"mpc:share:{self.session_id}:{party}",
                     3600,
                     encrypted
                 )
 
+<<<<<<< HEAD
+            logger.info(f"Data shared among {len(parties)} parties")
+            return shares_dict
+=======
         logger.info(f"Data shared among {len(parties)} parties")
         return shares_dict
 
     def share_data(self, data: Any, parties: List[str]) -> Dict[str, bytes]:
         try:
             return self._share_secret(self._encode_value(data), parties)
+>>>>>>> upstream/main
 
         except Exception as e:
             logger.error(f"Data sharing failed: {e}")
@@ -210,6 +235,39 @@ class SMPCProtocol:
     def _sum_shares(self, shares: List[Tuple[int, int]]) -> int:
         return self.secret_sharing.reconstruct_secret(shares)
 
+<<<<<<< HEAD
+    def secure_aggregate(self, data_list: List[Any], operation: str = 'sum') -> Any:
+        try:
+            data_ints = []
+            for data in data_list:
+                data_bytes = json.dumps(data).encode()
+                data_int = int.from_bytes(data_bytes, 'big') % self.secret_sharing.prime
+                data_ints.append(data_int)
+
+            parties = list(self.parties.keys())
+
+            shares_list = []
+            for data_int in data_ints:
+                shares = self.share_data(data_int, parties)
+                shares_list.append(shares)
+
+            if operation == 'sum':
+                result_shares = self._aggregate_sum(shares_list)
+            elif operation == 'average':
+                result_shares = self._aggregate_average(shares_list)
+            elif operation == 'max':
+                result_shares = self._aggregate_max(shares_list)
+            else:
+                raise ValueError(f"Unknown operation: {operation}")
+
+            result = self.secret_sharing.reconstruct_secret(result_shares)
+
+            result_bytes = result.to_bytes((result.bit_length() + 7) // 8, 'big')
+            result_data = self._deserialize_result(result_bytes)
+
+            return result_data
+
+=======
     def _decode_value(self, value: int) -> Any:
         """Decode an aggregated integer back to its original value."""
         return value
@@ -246,6 +304,7 @@ class SMPCProtocol:
             else:
                 raise ValueError(f"Unknown operation: {operation}")
 
+>>>>>>> upstream/main
         except Exception as e:
             logger.error(f"Secure aggregation failed: {e}")
             raise
@@ -253,6 +312,42 @@ class SMPCProtocol:
     def _aggregate_sum(self, shares_list: List[Dict[str, bytes]]) -> List[Tuple[int, int]]:
         aggregated = {}
         for shares in shares_list:
+<<<<<<< HEAD
+            for party, encrypted_share in shares.items():
+                decrypted = self.cipher.decrypt(encrypted_share)
+                share = self._deserialize_result(decrypted)
+                if party not in aggregated:
+                    aggregated[party] = share
+                else:
+                    x, y = aggregated[party]
+                    _, y2 = share
+                    aggregated[party] = (x, (y + y2) % self.secret_sharing.prime)
+
+        return list(aggregated.values())
+
+    def _aggregate_average(self, shares_list: List[Dict[str, bytes]]) -> List[Tuple[int, int]]:
+        sum_shares = self._aggregate_sum(shares_list)
+        count = len(shares_list)
+        result = []
+        for x, y in sum_shares:
+            avg = (y * pow(count, -1, self.secret_sharing.prime)) % self.secret_sharing.prime
+            result.append((x, avg))
+        return result
+
+    def _aggregate_max(self, shares_list: List[Dict[str, bytes]]) -> List[Tuple[int, int]]:
+        max_share = shares_list[0]
+        for shares in shares_list[1:]:
+            max_share = self._secure_compare(shares, max_share)
+        return list(max_share.values())
+
+    def _secure_compare(self, shares1: Dict[str, bytes], shares2: Dict[str, bytes]) -> Dict[str, bytes]:
+        """Secure comparison of two shared values via Lagrange reconstruction"""
+        shares1_points = [self._deserialize_result(self.cipher.decrypt(v)) for v in shares1.values()]
+        shares2_points = [self._deserialize_result(self.cipher.decrypt(v)) for v in shares2.values()]
+        val1 = self.secret_sharing.reconstruct_secret(shares1_points)
+        val2 = self.secret_sharing.reconstruct_secret(shares2_points)
+        return shares1 if val1 > val2 else shares2
+=======
             for party, (x, y) in zip(shares.keys(), self._decrypt_shares(shares)):
                 if party not in aggregated:
                     aggregated[party] = [x, y]
@@ -260,6 +355,7 @@ class SMPCProtocol:
                     aggregated[party][1] = (aggregated[party][1] + y) % self.secret_sharing.prime
 
         return [(x, y) for x, y in aggregated.values()]
+>>>>>>> upstream/main
 
     def get_party_stats(self) -> Dict:
         return {

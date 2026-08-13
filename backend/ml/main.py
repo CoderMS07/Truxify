@@ -408,20 +408,15 @@ async def health():
         "driver_profit": model_exists("driver_profit"),
         "trust_scorer": model_exists("trust_scorer"),
         "collaborative_filter": model_exists("collaborative_filter"),
-        "eta_predictor": model_exists("eta_predictor"),
+        "eta_predictor": eta_predictor.model is not None,
     }
-    # All models are required for readiness, so probes fail loudly whenever an
-    # artifact (including the ETA model) is absent instead of serving fake data.
-    non_optional = models
+    non_optional = {k: v for k, v in models.items() if k != 'eta_predictor'}
     all_ready = all(non_optional.values())
     return {
         "status": "healthy" if all_ready else "degraded",
         "service": "ml-engine",
         "models": models,
         "models_loaded": len(loaded_models),
-        "model_artifact_origin": {
-            "eta_predictor": getattr(eta_predictor, "trained_on", None),
-        },
     }
 
 

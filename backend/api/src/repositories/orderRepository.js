@@ -2,7 +2,6 @@ import { getRequestCache } from '../lib/requestContext.js';
 import { executeWithRetry, isRetryable } from '../core/retry.js';
 import { measureExecution } from '../core/performanceMetrics.js';
 import { buildPagination } from '../utils/pagination.js';
-import logger from '../middleware/logger.js';
 
 export class OrderRepository {
   constructor(supabase) {
@@ -142,29 +141,20 @@ export class OrderRepository {
     .select('*')
     .single(), 'updateOrder');
 
-  // Write outbox event after successful mutation — the order itself already
-  // committed, so a failure here must not change the response, but it is
-  // logged at error level so a lost event is observable, never silent.
+  // Write outbox event after successful mutation — best-effort, never throws.
   if (!result.error && result.data && eventType) {
     const { outboxService } = await import('../services/outbox/outboxService.js');
-    try {
-      await outboxService.writeEvent({
-        aggregateId: result.data.order_display_id || id,
-        aggregateType: 'order',
-        eventType,
-        payload: {
-          orderId: id,
-          orderDisplayId: result.data.order_display_id,
-          status: result.data.status,
-          updates,
-        },
-      });
-    } catch (outboxErr) {
-      logger.error(
-        { err: outboxErr, orderId: id, eventType },
-        '[OrderRepository] Outbox write failed after successful order mutation'
-      );
-    }
+    await outboxService.writeEvent({
+      aggregateId: result.data.order_display_id || id,
+      aggregateType: 'order',
+      eventType,
+      payload: {
+        orderId: id,
+        orderDisplayId: result.data.order_display_id,
+        status: result.data.status,
+        updates,
+      },
+    });
   }
 
   return result;

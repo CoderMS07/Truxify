@@ -13,16 +13,14 @@ struct Point2D {
 
 class AVXMatrixCalculator {
 public:
-    // Computes N x M great-circle (haversine) distance matrix in km using
-    // AVX-512 SIMD vectorization. Point2D.x is latitude, Point2D.y is longitude.
+    // Computes N x M Euclidean distance matrix using AVX-512 SIMD vectorization
     static void computeDistanceMatrixAVX512(
         const std::vector<Point2D>& origins,
         const std::vector<Point2D>& destinations,
         std::vector<float>& outputMatrix
     );
 
-    // Fallback scalar great-circle (haversine) computation for comparison &
-    // non-AVX systems. Point2D.x is latitude, Point2D.y is longitude.
+    // Fallback scalar computation for comparison & non-AVX systems
     static void computeDistanceMatrixScalar(
         const std::vector<Point2D>& origins,
         const std::vector<Point2D>& destinations,

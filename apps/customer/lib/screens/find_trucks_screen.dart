@@ -62,8 +62,8 @@ class _FindTrucksScreenState extends State<FindTrucksScreen> {
   // Estimated price state
   bool _estimateLoading = false;
   String? _estimateError;
-  num? _estimateMinPrice;
-  num? _estimateMaxPrice;
+  int? _estimateMinPrice;
+  int? _estimateMaxPrice;
 
   // Saved addresses state
   late final AddressRepository _addressRepo;
@@ -868,8 +868,8 @@ class _FindTrucksScreenState extends State<FindTrucksScreen> {
         setState(() {
           _estimateLoading = false;
           if (result != null) {
-            _estimateMinPrice = result['minPrice'] as num?;
-            _estimateMaxPrice = result['maxPrice'] as num?;
+            _estimateMinPrice = result['minPrice'] as int?;
+            _estimateMaxPrice = result['maxPrice'] as int?;
             _estimateError = null;
           } else {
             _estimateError = 'Estimate unavailable';
@@ -892,9 +892,8 @@ class _FindTrucksScreenState extends State<FindTrucksScreen> {
     }
   }
 
-  String _formatPrice(num paise) {
-    final rupees = (paise / 100).toStringAsFixed(2);
-    return '₹${rupees.replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (m) => ',')}';
+  String _formatPrice(int paise) {
+    return '₹${(paise / 100).round().toString().replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (m) => ',')}';
   }
 
   @override

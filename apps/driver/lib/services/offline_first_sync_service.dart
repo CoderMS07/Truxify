@@ -13,29 +13,13 @@ import '../models/offline_sync_event_model.dart';
 class OfflineFirstSyncService {
   Database? _db;
   bool _isConnected = false;
-  bool _processing = false;
-  bool _syncFailed = false;
   int _idCounter = 0;
   final Random _random = Random();
   final StreamController<bool> _connectionController = StreamController<bool>.broadcast();
   final StreamController<List<OfflineSyncEvent>> _dbController = StreamController<List<OfflineSyncEvent>>.broadcast();
-  final StreamController<bool> _syncFailedController = StreamController<bool>.broadcast();
 
   Stream<bool> get connectionStream => _connectionController.stream;
   Stream<List<OfflineSyncEvent>> get databaseStream => _dbController.stream;
-
-  /// Emits `true` when a sync pass permanently failed (an event exhausted its
-  /// retry budget and was dead-lettered), so the UI can surface a user-visible
-  /// "sync failed" state.
-  Stream<bool> get syncFailedStream => _syncFailedController.stream;
-
-  void _setSyncFailed(bool value) {
-    if (_syncFailed == value) return;
-    _syncFailed = value;
-    if (!_syncFailedController.isClosed) {
-      _syncFailedController.add(value);
-    }
-  }
 
   /// Backend base URL, injected at build time via --dart-define.
   /// Mirrors SyncEngine.apiBaseUrl so this service targets the same API host.
@@ -186,102 +170,60 @@ class OfflineFirstSyncService {
   }
 
   Future<void> _processSyncQueue() async {
-    // Re-entrancy guard: queueEvent() and toggleNetwork() can both trigger a
-    // pass. Without this lock two concurrent passes would load the same rows
-    // and deliver every event twice.
-    if (_processing) return;
-    _processing = true;
-    _setSyncFailed(false);
-    try {
-      final db = _db;
-      if (db == null) return;
+    final db = _db;
+    if (db == null) return;
 
-      final maxAttempts = 3;
-      final batchSize = 10;
-      var attempt = 0;
+    final unsynced = await db.query(
+      'sync_events',
+      where: 'is_synced = 0',
+      orderBy: 'queued_at ASC',
+    );
 
-      // Loop until nothing is left pending. Re-querying every pass reads a fresh
-      // retry_count from the DB (never a stale snapshot) and automatically
-      // excludes dead-lettered rows (is_synced = -1) via the WHERE clause.
-      while (true) {
-        final unsynced = await db.query(
-          'sync_events',
-          where: 'is_synced = 0',
-          orderBy: 'queued_at ASC',
-        );
+    if (unsynced.isEmpty) return;
 
-        if (unsynced.isEmpty) break;
+    final batchSize = 10;
+    for (int i = 0; i < unsynced.length; i += batchSize) {
+      final batch = unsynced.skip(i).take(batchSize).toList();
+      final results = await Future.wait(
+        batch.map((row) => _syncSingleEvent(OfflineSyncEvent(
+          eventId: row['event_id'] as String,
+          eventType: row['event_type'] as String,
+          payload: jsonDecode(row['payload'] as String) as Map<String, dynamic>,
+          queuedAt: DateTime.fromMillisecondsSinceEpoch(row['queued_at'] as int),
+        ))),
+      );
 
-        for (int i = 0; i < unsynced.length; i += batchSize) {
-          final batch = unsynced.skip(i).take(batchSize).toList();
-          final results = await Future.wait(
-            batch.map((row) => _syncSingleEvent(OfflineSyncEvent(
-              eventId: row['event_id'] as String,
-              eventType: row['event_type'] as String,
-              payload: jsonDecode(row['payload'] as String) as Map<String, dynamic>,
-              queuedAt: DateTime.fromMillisecondsSinceEpoch(row['queued_at'] as int),
-            ))),
+      for (int j = 0; j < batch.length; j++) {
+        if (results[j]) {
+          await db.update(
+            'sync_events',
+            {
+              'is_synced': 1,
+              'synced_at': DateTime.now().millisecondsSinceEpoch,
+            },
+            where: 'event_id = ?',
+            whereArgs: [batch[j]['event_id']],
           );
-
-          var anyFailure = false;
-          for (int j = 0; j < batch.length; j++) {
-            if (results[j]) {
-              await db.update(
-                'sync_events',
-                {
-                  'is_synced': 1,
-                  'synced_at': DateTime.now().millisecondsSinceEpoch,
-                },
-                where: 'event_id = ?',
-                whereArgs: [batch[j]['event_id']],
-              );
-            } else {
-              anyFailure = true;
-              final retries = (batch[j]['retry_count'] as int? ?? 0) + 1;
-              if (retries >= maxAttempts) {
-                // Terminal failure: move to a dead-letter state excluded from the
-                // pending query so it is never retried again and is not silently
-                // redelivered on every future pass.
-                await db.update(
-                  'sync_events',
-                  {'is_synced': -1},
-                  where: 'event_id = ?',
-                  whereArgs: [batch[j]['event_id']],
-                );
-                _setSyncFailed(true);
-              } else {
-                await db.update(
-                  'sync_events',
-                  {'retry_count': retries},
-                  where: 'event_id = ?',
-                  whereArgs: [batch[j]['event_id']],
-                );
-              }
-            }
-          }
-
-          if (anyFailure) {
-            // Exponential backoff between attempts; bound the delay so a down
-            // backend does not busy-loop and drain battery/data.
-            final backoff = Duration(
-              milliseconds: 500 * (1 << (attempt.clamp(0, 4))),
+        } else {
+          final retries = batch[j]['retry_count'] as int? ?? 0;
+          if (retries < 3) {
+            await db.update(
+              'sync_events',
+              {'retry_count': retries + 1},
+              where: 'event_id = ?',
+              whereArgs: [batch[j]['event_id']],
             );
-            await Future.delayed(backoff);
-            attempt++;
           }
         }
       }
-
-      _emitDbSnapshot();
-    } finally {
-      _processing = false;
     }
+
+    _emitDbSnapshot();
   }
 
   Future<void> close() async {
     await _db?.close();
     await _connectionController.close();
     await _dbController.close();
-    await _syncFailedController.close();
   }
 }

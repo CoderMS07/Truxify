@@ -94,7 +94,7 @@ class EventBus extends EventEmitter {
         payload: payload !== undefined ? payload : {},
       };
     } else {
-      throw new Error('EventBus.publish() requires either a BaseEvent instance or (eventType, payload, options)', { cause: null });
+      throw new Error('EventBus.publish() requires either a BaseEvent instance or (eventType, payload, options)');
     }
 
     const eventType = event.metadata?.eventType || event.eventType;

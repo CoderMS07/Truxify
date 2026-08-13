@@ -25,10 +25,7 @@ class PaymentRepository {
         .single();
     final savedMethod = PaymentMethod.fromMap(row);
     if (method.isDefault) {
-      await SupabaseService.client.rpc('set_default_payment_method', params: {
-        'p_user_id': userId,
-        'p_method_id': savedMethod.id,
-      });
+      await _clearDefaults(userId, exceptId: savedMethod.id);
     }
     return savedMethod;
   }
@@ -46,10 +43,12 @@ class PaymentRepository {
       throw StateError('Payment method not found.');
     }
 
-    await SupabaseService.client.rpc('set_default_payment_method', params: {
-      'p_user_id': userId,
-      'p_method_id': methodId,
-    });
+    await _clearDefaults(userId, exceptId: methodId);
+    await SupabaseService.client
+        .from(_table)
+        .update({'is_default': true})
+        .eq('id', methodId)
+        .eq('user_id', userId);
   }
 
   Future<void> delete(String methodId) async {
@@ -89,5 +88,16 @@ class PaymentRepository {
         .update({'is_default': true})
         .eq('id', replacementId)
         .eq('user_id', userId);
+  }
+
+  Future<void> _clearDefaults(String userId, {String? exceptId}) async {
+    var query = SupabaseService.client
+        .from(_table)
+        .update({'is_default': false})
+        .eq('user_id', userId);
+    if (exceptId != null) {
+      query = query.neq('id', exceptId);
+    }
+    await query;
   }
 }

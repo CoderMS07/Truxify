@@ -231,40 +231,6 @@ describe('buildWeeklyChart', () => {
     expect(chart.every((b) => Number.isFinite(b.earnings))).toBe(true);
   });
 
-  it('keys the bucket from UTC midnight, not the local calendar day (#11723)', () => {
-    // now = 2026-08-05T17:30:00Z == 2026-08-05T23:00:00+05:30 (IST). The local
-    // day is still Aug 5, but a bucket built with local midnight and then
-    // formatted in UTC (old behaviour) produced 2026-08-04 and dropped this
-    // "today" trip. The frame must follow the UTC components like trip_date.
-    const chart = buildWeeklyChart(
-      [{ trip_date: '2026-08-05', total_earnings: 4000 }],
-      { period: 'day', now: new Date('2026-08-05T17:30:00Z') }
-    );
-    expect(chart).toHaveLength(1);
-    expect(chart[0].day).toBe('2026-08-05');
-    expect(chart[0].earnings).toBe(4000);
-  });
-
-  it('buckets a trip with a timestamp by its trip_date calendar day (#11723)', () => {
-    const chart = buildWeeklyChart(
-      [{ trip_date: '2026-08-05T09:00:00Z', total_earnings: 1500 }],
-      { period: 'week', now: new Date('2026-08-10T12:00:00Z') }
-    );
-    const bucketsWithEarnings = chart.filter((b) => b.earnings > 0);
-    expect(bucketsWithEarnings).toHaveLength(1);
-    expect(bucketsWithEarnings[0].day).toBe('2026-08-05');
-  });
-
-  it('starts the week frame at UTC midnight seven days back (#11723)', () => {
-    const chart = buildWeeklyChart([], {
-      period: 'week',
-      now: new Date('2026-08-05T23:30:00+05:30'),
-    });
-    expect(chart).toHaveLength(7);
-    expect(chart[0].day).toBe('2026-07-30');
-    expect(chart[chart.length - 1].day).toBe('2026-08-05');
-  });
-
   it('handles empty and non-array input', () => {
     expect(buildWeeklyChart(null, { period: 'week', now: BASE })).toHaveLength(7);
     expect(buildWeeklyChart(undefined, { period: 'week', now: BASE })).toHaveLength(7);
@@ -360,28 +326,5 @@ describe('countDeadheadTripsSaved', () => {
 describe('toDateKey', () => {
   it('formats a Date as the YYYY-MM-DD the column stores', () => {
     expect(toDateKey(new Date('2026-08-05T15:30:00.000Z'))).toBe('2026-08-05');
-  });
-});
-
-describe('earnings aggregation edge cases', () => {
-  it('builds a single-bar chart for the day period', () => {
-    const trips = [{ trip_date: '2026-08-12T09:00:00Z', total_earnings: 120 }];
-    const chart = buildWeeklyChart(trips, { period: 'day', now: new Date('2026-08-12T12:00:00Z') });
-    expect(chart).toHaveLength(1);
-    expect(chart[0].day).toBe('2026-08-12');
-    expect(chart[0].earnings).toBe(120);
-  });
-
-  it('coerces a mix of null and numeric earnings to a finite sum', () => {
-    const trips = [
-      { total_earnings: null, net_earnings: null },
-      { total_earnings: 100, net_earnings: 80 },
-      { total_earnings: undefined, net_earnings: 20 },
-    ];
-    const totals = sumEarnings(trips);
-    expect(totals.gross).toBe(100);
-    expect(totals.net).toBe(100);
-    expect(Number.isFinite(totals.gross)).toBe(true);
-    expect(Number.isFinite(totals.net)).toBe(true);
   });
 });

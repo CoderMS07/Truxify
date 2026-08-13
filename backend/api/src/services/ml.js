@@ -72,22 +72,6 @@ function parseDimensions(dimensions) {
 }
 
 /**
- * Normalize a load_offer's monetary value to paisa (1 INR = 100 paisa).
- * `payment_inr` is stored in INR; `freight_value` is stored in paisa.
- * Both are converted to a single unit (paisa) so arithmetic and the
- * downstream `extra_earnings` field stay consistent.
- */
-function toPaisa(offer) {
-  if (offer.payment_inr != null) {
-    return Math.round(Number(offer.payment_inr) * 100);
-  }
-  if (offer.freight_value != null) {
-    return Math.round(Number(offer.freight_value));
-  }
-  return 0;
-}
-
-/**
  * Utility: build headers with optional API key
  */
 function getHeaders() {
@@ -101,20 +85,20 @@ function getHeaders() {
 /**
  * Utility: handle ML engine responses consistently
  */
-async function handleResponse(response) {
+async function handleResponse(response, url = '', method = 'GET') {
     const text = await response.text();
 
     if (response.status === 401 || response.status === 403) {
-        throw new Error(`[ML] Authentication failed (${response.status}): ${text}`);
+        throw new Error(`[ML] Authentication failed (${response.status}): ${method} ${url} - ${text}`);
     }
     if (!response.ok) {
-        throw new Error(`[ML] Request failed (${response.status}): ${text}`);
+        throw new Error(`[ML] Request failed: ${method} ${url} ${response.status} - ${text}`);
     }
 
     try {
         return JSON.parse(text);
     } catch (err) {
-        logger.error({ status: response ? response.status : undefined, bodyPreview: text.slice(0, 200) }, 'ML service request failed');
+        logger.error({ status: response ? response.status : undefined, url }, `ML service request failed [${method}] ${url}`);
         throw new Error(`[ML] Invalid JSON response from ML engine: ${err.message}`, { cause: err });
     }
 }
@@ -150,7 +134,7 @@ export async function predictDemand(features = {}) {
       signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
   });
 
-  const result = await handleResponse(response);
+  const result = await handleResponse(response, url, 'POST');
   demandCache.set(cacheKey, result);
   return result;
 }
@@ -202,7 +186,7 @@ export async function predictPrice({
       signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
   });
 
-  const raw = await handleResponse(response);
+  const raw = await handleResponse(response, url, 'POST');
 
   const initialValidation = validatePricePrediction(raw);
   if (!initialValidation.ok) {
@@ -282,7 +266,7 @@ export async function predictEta({
     signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
   });
 
-  const result = await handleResponse(response);
+  const result = await handleResponse(response, url, 'POST');
 
   if (
     result == null ||
@@ -363,7 +347,7 @@ export async function predictDriverProfit({
     signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
   });
 
-  const result = await handleResponse(response);
+  const result = await handleResponse(response, url, 'POST');
 
   if (
     result == null ||
@@ -377,28 +361,12 @@ export async function predictDriverProfit({
     throw new Error('[ML] Invalid driver profit prediction: missing confidence_interval');
   }
 
-  const predictedProfit = Math.round(result.predicted_profit * 100) / 100;
-
-  let lowerRaw = result.confidence_interval.lower ?? 0;
-  let upperRaw = result.confidence_interval.upper;
-
-  if (typeof upperRaw !== 'number' || !isFinite(upperRaw)) {
-    // Derive a sane fallback from the prediction magnitude rather than the
-    // undocumented `predicted_profit * 2`, which can go negative for loss
-    // predictions and was not clamped.
-    const margin = Math.abs(result.predicted_profit) * 0.5 || 1;
-    upperRaw = Math.max(result.predicted_profit, 0) + margin;
-  }
-
-  // Round only after enforcing ordering so rounding can never invert the
-  // interval (lower > upper) for tight ranges.
-  let lower = Math.round(Math.max(0, lowerRaw) * 100) / 100;
-  let upper = Math.round(Math.max(upperRaw, lower, predictedProfit) * 100) / 100;
-  lower = Math.min(lower, upper);
-
   return {
-    predicted_profit: predictedProfit,
-    confidence_interval: { lower, upper },
+    predicted_profit: Math.round(result.predicted_profit * 100) / 100,
+    confidence_interval: {
+      lower: Math.max(0, Math.round((result.confidence_interval.lower ?? 0) * 100) / 100),
+      upper: Math.round((result.confidence_interval.upper ?? result.predicted_profit * 2) * 100) / 100,
+    },
     currency: 'INR',
   };
 }
@@ -670,7 +638,7 @@ export async function matchEnRouteLoads({
         width_m: dims.width,
         height_m: dims.height,
         pickup_deadline: o.pickup_deadline ? new Date(o.pickup_deadline).toISOString() : new Date(Date.now() + ML_DEFAULT_PICKUP_LEAD_MS).toISOString(),
-        payment_inr: toPaisa(o),
+        payment_inr: Number(o.payment_inr || (o.freight_value ? o.freight_value / 100 : 0)),
       };
     })
     .filter(l => Number.isFinite(l.weight_kg) && l.weight_kg > 0);
@@ -712,7 +680,7 @@ export async function matchEnRouteLoads({
           detour_km: dtKm,
           distance_to_pickup_km: dtKm,
           match_score: Math.max(0, 1 - dtKm / maxDetourKm),
-          estimated_earnings: toPaisa(o),
+          estimated_earnings: Number(o.payment_inr || (o.freight_value ? o.freight_value / 100 : 0)),
           _fallback: true,
         };
       })
@@ -732,8 +700,8 @@ export async function matchEnRouteLoads({
         ...o,
         detour_km: rec.detour_km ?? rec.distance_to_pickup_km ?? 0,
         extra_earnings: rec.estimated_earnings
-          ? Math.round(rec.estimated_earnings)
-          : (o.freight_value != null ? Math.round(Number(o.freight_value)) : 0),
+          ? Math.round(rec.estimated_earnings * 100) // convert to paisa for consistency
+          : (o.freight_value || 0),
         match_score: rec.match_score ?? 0,
         extra_distance_km: rec.detour_km ?? 0,
         ml_used: mlUsed,
@@ -765,33 +733,27 @@ export const __testing = {
   demandCache,
   priceCache,
   _haversineKm,
-  parseWeightKg,
-  parseWeightKgSafe,
-  parseDimensions,
 };
 
 class MLService {
   async handleResponse(response, url = '', method = 'GET') {
-    if (!response) {
-      throw new Error(`[MLService] Invalid response object for ${method} ${url}`);
-    }
     let data;
     try {
       data = await response.json();
     } catch (e) {
-      throw new Error(`[MLService] Failed to parse JSON response from ${method} ${url} (Status: ${response.status || 'unknown'})`);
+      throw new Error(`[MLService] Failed to parse JSON response from ${method} ${url} (Status: ${response.status})`, { cause: e });
     }
 
     if (response.status === 401) {
-      throw new Error(`[MLService] Unauthorized (401) for ${method} ${url}`);
+      throw new Error(`[MLService] Authentication failed: ${method} ${url} (${response.status})`);
     }
 
     if (response.status === 403) {
-      throw new Error(`[MLService] Forbidden (403) for ${method} ${url}`);
+      throw new Error(`[MLService] Forbidden: ${method} ${url} (${response.status})`);
     }
 
     if (!response.ok) {
-      throw new Error(`[MLService] Request failed with status ${response.status} for ${method} ${url}`);
+      throw new Error(`[MLService] Request failed: ${method} ${url} ${response.status}`);
     }
 
     return data;
