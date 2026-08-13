@@ -62,14 +62,15 @@ class VdfLoadAllocator:
     def evaluate_bid_fairness(self, load_id: str, driver_id: str, bid_timestamp: float):
         seed = f"{load_id}:{driver_id}:{bid_timestamp}"
         output_y, proof = self.vdf.eval(seed)
-        is_valid = self.vdf.verify(seed, output_y, proof)
-        
+        # NOTE: self.vdf.verify(seed, output_y, proof) is self-referential and
+        # always returns True — removed to avoid false fairness guarantee.
+        # A proper implementation accepts externally supplied (output, proof)
+        # from the bidder and verifies it against the seed.
         return {
             "load_id": load_id,
             "driver_id": driver_id,
             "vdf_output": output_y,
             "proof": proof,
-            "is_fairly_allocated": is_valid
         }
 
 vdf_allocator = VdfLoadAllocator()
