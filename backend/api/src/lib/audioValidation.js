@@ -111,6 +111,9 @@ export function detectAudioMimeType(buffer) {
  * @throws {AudioValidationError} When the content is not a supported audio type.
  */
 export function validateAudioBuffer(buffer) {
+  if (buffer == null) {
+    throw new AudioValidationError('Audio buffer is null or undefined.');
+  }
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw new AudioValidationError('Audio file is empty or unreadable.');
   }
