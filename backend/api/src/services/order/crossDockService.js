@@ -500,6 +500,13 @@ export async function verifyHandoff({ transferId, driverId, handoffCode }) {
       throw new DomainError(409, { error: 'Transfer was modified concurrently; please retry.' });
     }
 
+    // Transfer custody: reassign the order to the receiving driver.
+    await supabaseAdmin
+      .from('orders')
+      .update({ driver_id: verified.to_driver_id })
+      .eq('id', verified.order_id)
+      .eq('driver_id', verified.from_driver_id);
+
     try {
       await sendPushNotification(
         verified.from_driver_id,
