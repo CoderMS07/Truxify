@@ -8,7 +8,7 @@ import * as Sentry from '@sentry/node';
  * variable (comma-separated) to allow for zero-downtime key rotation.
  */
 export const requireApiKey = (req, res, next) => {
-  const apiKey = req.headers['x-api-key'] || req.query.api_key;
+  const apiKey = req.headers['x-api-key'];
   
   const validKeysStr = process.env.VALID_API_KEYS || '';
   const validKeys = validKeysStr.split(',').map(k => k.trim()).filter(Boolean);
