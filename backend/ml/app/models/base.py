@@ -32,6 +32,8 @@ MODEL_STORAGE_DIR = os.environ.get(
 #    (an HTTP-triggered retrain racing a lazy auto-train from a prediction)
 #    can otherwise write the same model concurrently.
 # ---------------------------------------------------------------------------
+MODEL_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "models_storage")
+
 _model_locks: dict[str, asyncio.Lock] = {}
 _model_write_locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
