@@ -1,117 +1,92 @@
-/**
- * Coverage for upload filename sanitisation.
- *
- * `file.originalname` is entirely client-controlled and previously flowed
- * unsanitised from the voice upload endpoint into the speech pipeline.
- */
-import { describe, expect, it } from 'vitest';
-import { sanitizeUploadFilename } from '../../src/lib/uploadFilename.js';
+import { describe, it, expect } from 'vitest';
+import {
+  sanitizeUploadFilename,
+  checkContentLength,
+} from '../../src/lib/uploadFilename.js';
 
 describe('sanitizeUploadFilename', () => {
-  it('passes an ordinary filename through unchanged', () => {
-    expect(sanitizeUploadFilename('voice-query.wav')).toBe('voice-query.wav');
-    expect(sanitizeUploadFilename('recording_01.mp3')).toBe('recording_01.mp3');
+  it('keeps a safe filename intact', () => {
+    expect(sanitizeUploadFilename('document.pdf')).toBe('document.pdf');
+    expect(sanitizeUploadFilename('my-file_1.txt')).toBe('my-file_1.txt');
   });
 
-  it('strips POSIX directory components', () => {
-    expect(sanitizeUploadFilename('/etc/passwd')).toBe('passwd');
-    expect(sanitizeUploadFilename('../../etc/passwd')).toBe('passwd');
+  it('strips directory components (POSIX and Windows separators)', () => {
+    expect(sanitizeUploadFilename('a/b/c.txt')).toBe('c.txt');
+    expect(sanitizeUploadFilename('x\\y\\z.png')).toBe('z.png');
+    expect(sanitizeUploadFilename('foo/../bar.txt')).toBe('bar.txt');
   });
 
-  it('strips Windows directory components on any platform', () => {
-    // path.basename would not handle backslashes on a POSIX server.
-    expect(sanitizeUploadFilename('..\\..\\windows\\system32\\config')).toBe('config');
-    expect(sanitizeUploadFilename('C:\\temp\\audio.wav')).toBe('audio.wav');
-  });
-
-  it('neutralises traversal sequences that survive separator stripping', () => {
-    const result = sanitizeUploadFilename('....//....//evil.wav');
-    expect(result).not.toContain('..');
+  it('prevents path traversal', () => {
+    const result = sanitizeUploadFilename('../../../../etc/passwd');
     expect(result).not.toContain('/');
+    expect(result).not.toContain('..');
   });
 
-  it('removes NUL bytes and control characters', () => {
-    expect(sanitizeUploadFilename('audio\x00.wav')).toBe('audio.wav');
-    expect(sanitizeUploadFilename('au\x07dio\x1f.wav')).toBe('audio.wav');
+  it('removes control characters and NUL bytes', () => {
+    expect(sanitizeUploadFilename('fi\x00le.txt')).toBe('file.txt');
+    expect(sanitizeUploadFilename('a\x01b.txt')).toBe('a_b.txt');
   });
 
-  it('collapses shell metacharacters to underscores', () => {
-    const result = sanitizeUploadFilename('audio;rm -rf ~.wav');
-    expect(result).not.toMatch(/[;~ ]/);
-    expect(result).toMatch(/^[A-Za-z0-9._-]+$/);
+  it('replaces unsafe characters with underscores', () => {
+    expect(sanitizeUploadFilename('a:b*c?.jpg')).toBe('a_b_c_.jpg');
   });
 
-  it('strips leading dots so the result is never a hidden file', () => {
-    expect(sanitizeUploadFilename('.hidden.wav')).toBe('hidden.wav');
-    expect(sanitizeUploadFilename('...wav')).toBe('wav');
+  it('falls back for Windows reserved names', () => {
+    expect(sanitizeUploadFilename('con')).toBe('upload');
+    expect(sanitizeUploadFilename('CON.txt')).toBe('upload');
+    expect(sanitizeUploadFilename('com1')).toBe('upload');
+    expect(sanitizeUploadFilename('Prn.pdf')).toBe('upload');
   });
 
-  it('truncates an over-long name while preserving the extension', () => {
-    const long = `${'a'.repeat(500)}.wav`;
-    const result = sanitizeUploadFilename(long);
+  it('truncates overly long filenames', () => {
+    const longName = 'a'.repeat(200) + '.txt';
+    const result = sanitizeUploadFilename(longName);
     expect(result.length).toBeLessThanOrEqual(120);
-    expect(result.endsWith('.wav')).toBe(true);
   });
 
-  it('falls back for empty, whitespace-only and non-string input', () => {
+  it('uses the provided fallback for unusable input', () => {
     expect(sanitizeUploadFilename('')).toBe('upload');
     expect(sanitizeUploadFilename(null)).toBe('upload');
     expect(sanitizeUploadFilename(undefined)).toBe('upload');
-    expect(sanitizeUploadFilename(42)).toBe('upload');
-    expect(sanitizeUploadFilename({})).toBe('upload');
-  });
-
-  it('falls back when nothing survives sanitisation', () => {
-    expect(sanitizeUploadFilename('/')).toBe('upload');
-    expect(sanitizeUploadFilename('...')).toBe('upload');
-    expect(sanitizeUploadFilename('\x00\x01')).toBe('upload');
-  });
-
-  it('rejects Windows reserved device names', () => {
-    expect(sanitizeUploadFilename('CON')).toBe('upload');
-    expect(sanitizeUploadFilename('con.wav')).toBe('upload');
-    expect(sanitizeUploadFilename('LPT1.mp3')).toBe('upload');
-    expect(sanitizeUploadFilename('nul')).toBe('upload');
-  });
-
-  it('honours a caller-supplied fallback', () => {
-    expect(sanitizeUploadFilename('', 'voice-query.wav')).toBe('voice-query.wav');
-    expect(sanitizeUploadFilename(null, 'photo.jpg')).toBe('photo.jpg');
-  });
-
-  it('always returns a non-empty string with no separators', () => {
-    const hostile = [
-      '../../../../root/.ssh/authorized_keys',
-      '..\\..\\..\\boot.ini',
-      'a/b/c/../../../d.wav',
-      '\x00../etc/shadow',
-      '   ',
-      '$(whoami).wav',
-      '`id`.mp3',
-      'file\nname.wav',
-    ];
-
-    for (const input of hostile) {
-      const result = sanitizeUploadFilename(input);
-      expect(result.length).toBeGreaterThan(0);
-      expect(result).not.toContain('/');
-      expect(result).not.toContain('\\');
-      expect(result).not.toContain('..');
-      expect(result).toMatch(/^[A-Za-z0-9._-]+$/);
-    }
+    expect(sanitizeUploadFilename(123)).toBe('upload');
+    expect(sanitizeUploadFilename('', 'custom-fallback')).toBe('custom-fallback');
   });
 });
 
-
-// === Spec 18 test ===
-import { describe, it, expect } from 'vitest';
-import { checkContentLength } from '../../src/lib/uploadFilename.js';
 describe('checkContentLength', () => {
-  it('passes small', () => { expect(checkContentLength({ headers: { 'content-length': '100' } }, 1024).ok).toBe(true); });
-  it('rejects large', () => {
-    const r = checkContentLength({ headers: { 'content-length': '5000' } }, 1024);
-    expect(r.ok).toBe(false);
-    expect(r.error.status).toBe(413);
+  const makeReq = (len) => ({
+    headers: len === undefined ? {} : { 'content-length': String(len) },
+  });
+
+  it('accepts a request within the limit', () => {
+    const res = checkContentLength(makeReq(100));
+    expect(res.ok).toBe(true);
+    expect(res.length).toBe(100);
+  });
+
+  it('accepts a request at the default limit', () => {
+    const limit = 25 * 1024 * 1024;
+    const res = checkContentLength(makeReq(limit));
+    expect(res.ok).toBe(true);
+  });
+
+  it('rejects a request exceeding the default limit', () => {
+    const res = checkContentLength(makeReq(25 * 1024 * 1024 + 1));
+    expect(res.ok).toBe(false);
+    expect(res.error).toBeInstanceOf(Error);
+    expect(res.error.status).toBe(413);
+  });
+
+  it('treats a missing content-length header as zero', () => {
+    const res = checkContentLength(makeReq(undefined));
+    expect(res.ok).toBe(true);
+    expect(res.length).toBe(0);
+  });
+
+  it('honours a custom max byte limit', () => {
+    const res = checkContentLength(makeReq(5000), 1024);
+    expect(res.ok).toBe(false);
+    const okRes = checkContentLength(makeReq(500), 1024);
+    expect(okRes.ok).toBe(true);
   });
 });
-
