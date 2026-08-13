@@ -116,7 +116,8 @@ describe('apiResponse helpers', () => {
 describe('paginated edge cases', () => {
   it('handles page 0 gracefully', () => {
     const result = paginated([{ id: 1 }], 0, 10, 1);
-    expect(result.pagination.page).toBe(0);
+    // page 0 is clamped to 1 since page numbers start at 1
+    expect(result.pagination.page).toBe(1);
     expect(result.pagination.totalPages).toBe(1);
     expect(result.pagination.hasPrevPage).toBe(false);
     expect(result.pagination.hasNextPage).toBe(false);
@@ -134,6 +135,21 @@ describe('paginated edge cases', () => {
     const result = paginated([], 1, 10, 0);
     expect(result.pagination.totalPages).toBe(0);
     expect(result.pagination.hasNextPage).toBe(false);
+    expect(result.pagination.hasPrevPage).toBe(false);
+  });
+
+  it('clamps negative page values to 1', () => {
+    const result = paginated([], -5, 10, 0);
+    expect(result.pagination.page).toBe(1);
+    expect(result.pagination.hasNextPage).toBe(false);
+    expect(result.pagination.hasPrevPage).toBe(false);
+  });
+
+  it('clamps NaN page values to 1', () => {
+    const result = paginated([], NaN, 10, 50);
+    expect(result.pagination.page).toBe(1);
+    expect(result.pagination.totalPages).toBe(5);
+    expect(result.pagination.hasNextPage).toBe(true);
     expect(result.pagination.hasPrevPage).toBe(false);
   });
 });
