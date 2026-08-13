@@ -26,19 +26,20 @@ export function error(message = 'An error occurred', statusCode = 500, errors = 
 }
 
 export function paginated(data = [], page = 1, limit = 10, total = 0, message = 'Success') {
-  const totalPages = Math.ceil(total / limit) || 0;
+  const safePage = Math.max(1, Number(page) || 1);
+  const totalPages = Math.max(0, Math.ceil(Number(total) / Number(limit)) || 0);
   return {
     success: true,
     statusCode: 200,
     message,
     data,
     pagination: {
-      page: Number(page),
+      page: safePage,
       limit: Number(limit),
       total: Number(total),
       totalPages,
-      hasNextPage: Number(page) < totalPages,
-      hasPrevPage: Number(page) > 1,
+      hasNextPage: safePage < totalPages,
+      hasPrevPage: safePage > 1,
     },
   };
 }
