@@ -84,9 +84,26 @@ class ResilientWebSocket {
   bool _closed = false;
   bool _reconnecting = false;
   int _attempt = 0;
+  int _listenerCount = 0;
+  Object? _lastError;
+  StackTrace? _lastStackTrace;
 
-  final StreamController<dynamic> _controller =
-      StreamController<dynamic>.broadcast();
+  final StreamController<dynamic> _controller = StreamController<dynamic>.broadcast(
+    onListen: () {
+      _listenerCount++;
+      // A broadcast controller silently drops errors delivered while it has no
+      // subscribers. Re-emit a buffered terminal error to a (re)subscribed
+      // listener so the failure is never swallowed.
+      if (_lastError != null) {
+        final error = _lastError!;
+        final stackTrace = _lastStackTrace;
+        _emitError(error, stackTrace);
+      }
+    },
+    onCancel: () {
+      if (_listenerCount > 0) _listenerCount--;
+    },
+  );
 
   final StreamController<WsConnectionState> _stateController =
       StreamController<WsConnectionState>.broadcast();
@@ -94,6 +111,13 @@ class ResilientWebSocket {
 
   /// A broadcast stream of incoming messages from the WebSocket.
   Stream<dynamic> get stream => _controller.stream;
+
+  /// The most recent terminal error emitted by the socket, or `null`.
+  ///
+  /// This is buffered so subscribers that subscribe after the error occurred
+  /// can still learn why the socket failed (instead of the error being dropped
+  /// by the broadcast controller).
+  Object? get lastError => _lastError;
 
   /// A broadcast stream of connection state transitions. Emits every time
   /// the wrapper enters a new [WsConnectionState].
@@ -119,11 +143,28 @@ class ResilientWebSocket {
     _closed = false;
     _attempt = 0;
     _reconnecting = false;
+    _lastError = null;
+    _lastStackTrace = null;
     _heartbeatTimer?.cancel();
     _reconnectTimer?.cancel();
     _setConnectionState(WsConnectionState.connecting);
     await _cleanupChannel();
     await _connectOnce();
+  }
+
+  /// Delivers [error] to current listeners, or buffers it when the broadcast
+  /// controller has no subscribers so it can be re-emitted to late listeners.
+  ///
+  /// Never throws, and never calls [StreamController.addError] on a closed
+  /// controller.
+  void _emitError(Object error, [StackTrace? stackTrace]) {
+    if (_controller.isClosed) return;
+    if (_listenerCount > 0) {
+      _controller.addError(error, stackTrace);
+    } else {
+      _lastError = error;
+      _lastStackTrace = stackTrace;
+    }
   }
 
   Future<void> _connectOnce() async {
@@ -152,6 +193,8 @@ class ResilientWebSocket {
       _attempt = 0;
       _startHeartbeat();
       _setConnectionState(WsConnectionState.connected);
+      _lastError = null;
+      _lastStackTrace = null;
       onConnect?.call();
     } catch (_) {
       if (!_reconnecting) {
@@ -212,7 +255,7 @@ class ResilientWebSocket {
       _closed = true;
       _setConnectionState(WsConnectionState.failed);
       await _cleanupChannel();
-      _controller.addError(
+      _emitError(
         Exception('Max reconnect attempts reached ($maxAttempts)'),
       );
       return;
@@ -271,8 +314,21 @@ class ResilientWebSocket {
       _stateController.add(WsConnectionState.disconnected);
     }
     await _cleanupChannel();
-    await _controller.close();
-    await _stateController.close();
+    if (!_controller.isClosed) {
+      await _controller.close();
+    }
+    if (!_stateController.isClosed) {
+      await _stateController.close();
+    }
+  }
+
+  /// Resets a terminal `failed` state (after [maxAttempts] is exhausted) and
+  /// attempts to reconnect.
+  ///
+  /// The UI can call this to recover a socket that gave up reconnecting rather
+  /// than being stuck in a permanently dead state with no recovery path.
+  Future<void> reconnect() async {
+    await connect();
   }
 
   Future<void> _cleanupChannel() async {

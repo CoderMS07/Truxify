@@ -166,5 +166,105 @@ void main() {
       expect(connectCount, 0);
       await ws.close();
     });
+
+    test('emits error to subscribers when reconnect attempts are exhausted',
+        () async {
+      final ws = ResilientWebSocket(
+        'ws://localhost:1/nowhere',
+        maxAttempts: 2,
+        initialDelay: const Duration(milliseconds: 10),
+      );
+
+      final errors = <Object>[];
+      final sub = ws.stream.listen(
+        (_) {},
+        onError: errors.add,
+      );
+
+      await ws.connect();
+
+      // Poll until the terminal error is delivered (or time out).
+      final received = await _waitUntil(
+        () => errors.isNotEmpty,
+        timeout: const Duration(seconds: 5),
+      );
+      expect(received, isTrue,
+          reason: 'The terminal error must be delivered to subscribers.');
+      expect(
+        errors.first.toString(),
+        contains('Max reconnect attempts reached'),
+      );
+      expect(ws.connectionStateValue, WsConnectionState.failed);
+      // The error must also be retrievable via lastError.
+      expect(ws.lastError, isNotNull);
+
+      await sub.cancel();
+      await ws.close();
+    });
+
+    test('buffers terminal error for late subscribers', () async {
+      final ws = ResilientWebSocket(
+        'ws://localhost:1/nowhere',
+        maxAttempts: 1,
+        initialDelay: const Duration(milliseconds: 10),
+      );
+
+      await ws.connect();
+
+      // Wait until the socket has given up and buffered the error with no
+      // active subscribers.
+      final failed = await _waitUntil(
+        () => ws.connectionStateValue == WsConnectionState.failed,
+        timeout: const Duration(seconds: 5),
+      );
+      expect(failed, isTrue);
+
+      // A late subscriber must immediately receive the buffered error.
+      final errors = <Object>[];
+      final sub = ws.stream.listen(
+        (_) {},
+        onError: errors.add,
+      );
+
+      final received = await _waitUntil(
+        () => errors.isNotEmpty,
+        timeout: const Duration(seconds: 5),
+      );
+      expect(received, isTrue,
+          reason: 'Late subscribers must receive the buffered terminal error.');
+
+      await sub.cancel();
+      await ws.close();
+    });
+
+    test('reconnect recovers a failed socket without deadlock', () async {
+      final ws = ResilientWebSocket(
+        'ws://localhost:1/nowhere',
+        maxAttempts: 1,
+        initialDelay: const Duration(milliseconds: 10),
+      );
+
+      await ws.connect();
+      final failed = await _waitUntil(
+        () => ws.connectionStateValue == WsConnectionState.failed,
+        timeout: const Duration(seconds: 5),
+      );
+      expect(failed, isTrue);
+
+      // The recovery path must complete and must not hang the state machine.
+      await expectLater(ws.reconnect(), completes);
+      // The socket can still be torn down cleanly afterwards.
+      await expectLater(ws.close(), completes);
+    });
   });
+}
+
+/// Polls [condition] every 10ms until it returns `true` or [timeout] elapses.
+Future<bool> _waitUntil(bool Function() condition, {Duration timeout = const Duration(seconds: 5)}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (condition()) return true;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  return false;
 }
