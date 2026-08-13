@@ -80,12 +80,22 @@ export class OutboxService {
    * Mark an event as failed and increment retry_count.
    */
   async markFailed(eventId, errorMessage) {
+    // Await the RPC call to get the actual incremented retry_count value,
+    // then pass it as a scalar to the update. Passing the query-builder
+    // Promise directly (as was done previously) means Supabase treats it as
+    // a JSON-serializable scalar and never executes the SQL increment.
+    const { data: newRetryCount, error: rpcErr } = await supabase.rpc('increment', { row_id: eventId });
+    if (rpcErr) {
+      logger.error('[OutboxService] Failed to increment retry count:', rpcErr.message, { eventId });
+      return;
+    }
+
     const { error } = await supabase
       .from('outbox_events')
       .update({
         status: 'failed',
         last_error: String(errorMessage).slice(0, 1000),
-        retry_count: supabase.rpc('increment', { row_id: eventId }),
+        retry_count: newRetryCount,
         last_attempted_at: new Date().toISOString(),
       })
       .eq('id', eventId);
