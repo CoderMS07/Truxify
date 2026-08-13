@@ -88,6 +88,11 @@ export async function reconcileFailedReputationUpdates() {
 
         const { error: deleteError } = await supabaseAdmin.from('reputation_failures').delete().eq('id', row.id);
         if (deleteError) {
+          // Increment retry_count so the row is not re-awarded on the next cycle.
+          await supabaseAdmin.from('reputation_failures').update({
+            retry_count: (row.retry_count ?? 0) + 1,
+            last_error: `delete failed: ${deleteError.message}`,
+          }).eq('id', row.id);
           logger.warn(`[reputation-reconciliation] Award succeeded but failed to remove pending row ${row.id}: ${deleteError.message}`);
         }
       } catch (err) {
