@@ -281,6 +281,8 @@ let telemetryFlushTimeout = null;
 let wsServer = null;
 let wsHeartbeatInterval = null;
 let telemetryMonitorInterval = null;
+let messageRateTrackerCleanupInterval = null;
+let wsUpgradeLimitsCleanupInterval = null;
 const HEARTBEAT_INTERVAL_MS = parseInt(process.env.WS_HEARTBEAT_INTERVAL_MS, 10) || 180000; // 3 minutes
 
 // Observability counters
@@ -293,7 +295,7 @@ const WS_UPGRADE_RATE_LIMIT = 5;
 const WS_UPGRADE_RATE_WINDOW_SECONDS = 60;
 const MAX_MSG_PER_SECOND = 10;
 const WS_MAX_PAYLOAD_BYTES = 4096;
-const messageRateTracker = new WeakMap();
+const messageRateTracker = new Map(); // socketId -> { count, windowStart }
 
 // Max time a socket may stay unauthenticated while awaiting a first-frame
 // `auth` message before it is closed (issue #5739).
@@ -816,6 +818,12 @@ export function initWebSocketServer(server, orderRepository) {
     sweepWsUpgradeMemoryLimits();
   }, WS_UPGRADE_LIMITS_SWEEP_INTERVAL_MS);
 
+  // Periodically purge stale message rate-limit state so the in-memory Map
+  // (replacing the old WeakMap) does not grow unbounded.
+  messageRateTrackerCleanupInterval = setInterval(() => {
+    sweepMessageRateTracker();
+  }, MESSAGE_RATE_TRACKER_SWEEP_INTERVAL_MS);
+
   if (!isSchedulerActive) {
     initTelemetryScheduler();
   }
@@ -825,13 +833,27 @@ export function initWebSocketServer(server, orderRepository) {
 
 function isMessageRateLimitedInMemory(ws) {
   const now = Date.now();
-  let state = messageRateTracker.get(ws);
+  const id = ws.socketId || ws;
+  let state = messageRateTracker.get(id);
   if (!state || now - state.windowStart >= 1000) {
     state = { count: 0, windowStart: now };
-    messageRateTracker.set(ws, state);
+    messageRateTracker.set(id, state);
   }
   state.count++;
   return state.count > MAX_MSG_PER_SECOND;
+}
+
+const MESSAGE_RATE_TRACKER_SWEEP_INTERVAL_MS = 30000;
+
+// Periodically drop rate-limit state for sockets whose window has long since
+// expired, bounding the in-memory map now that it is a regular Map.
+function sweepMessageRateTracker() {
+  const now = Date.now();
+  for (const [id, state] of messageRateTracker) {
+    if (now - state.windowStart > 1000) {
+      messageRateTracker.delete(id);
+    }
+  }
 }
 
 /**
@@ -1480,6 +1502,11 @@ export async function closeWebSocketServer() {
     wsUpgradeLimitsCleanupInterval = null;
   }
 
+  if (messageRateTrackerCleanupInterval) {
+    clearInterval(messageRateTrackerCleanupInterval);
+    messageRateTrackerCleanupInterval = null;
+  }
+
   // Wait for MongoDB to be available before final flush
   const parsedWait = parseInt(process.env.MONGODB_SHUTDOWN_WAIT_MS, 10);
   const mongoMaxWaitMs = Number.isNaN(parsedWait) ? 10000 : parsedWait;
@@ -1726,6 +1753,12 @@ async function removeClientFromAllSubscriptions(ws) {
   // of Redis availability since consecutiveDropCount is always in-memory.
   if (ws.driverId) {
     consecutiveDropCount.delete(ws.driverId);
+  }
+
+  // Drop this socket's message rate-limit state on disconnect instead of
+  // relying on GC (the previous WeakMap approach), so memory stays bounded.
+  if (ws.socketId) {
+    messageRateTracker.delete(ws.socketId);
   }
 
   if (redisClient) {
