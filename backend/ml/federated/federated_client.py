@@ -117,8 +117,15 @@ class FederatedClient:
             # Get local model weights
             weights = self.model.get_weights()
             weights_serialized = [w.tolist() for w in weights]
-            weights_json = json.dumps(weights_serialized)
-            
+
+            # Envelope carries the round this update was computed against so the
+            # server can reject stale cross-round / replayed updates.
+            payload = {
+                'round': self.training_round,
+                'weights': weights_serialized,
+            }
+            weights_json = json.dumps(payload)
+
             # Encrypt
             encrypted = self.cipher.encrypt(weights_json.encode())
             
