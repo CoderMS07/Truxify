@@ -17,6 +17,8 @@ class LSTMAutoencoder:
         self.encoder = None
         self.decoder = None
         self.threshold = None
+        # Per-entity ring buffer: entity_id -> deque of recent observations
+        self._observation_buffer = {}
         
     def build_model(self):
         """Build LSTM Autoencoder architecture"""
@@ -107,19 +109,48 @@ class LSTMAutoencoder:
             'threshold': self.threshold
         }
     
-    def get_anomaly_score(self, sequence):
-        """Get anomaly score for a single sequence"""
+    def get_anomaly_score(self, sequence, entity_id: str = None):
+        """Get anomaly score for a sequence.
+
+        When a single timestep is provided and entity_id is given, uses a per-entity
+        ring buffer of recent observations to build a genuine temporal window
+        instead of tiling a single value. When no entity_id is provided, a single
+        timestep is still tiled (legacy behavior) but with a warning logged.
+        """
         if self.model is None:
             raise ValueError("Model not trained yet")
-        
+
         sequence = np.array(sequence)
+
         if sequence.size == self.input_dim:
-            sequence = np.tile(sequence.reshape(1, self.input_dim), (self.sequence_length, 1))
+            # Single timestep received.
+            if entity_id is not None:
+                # Maintain a rolling window of real observations per entity.
+                if entity_id not in self._observation_buffer:
+                    self._observation_buffer[entity_id] = []
+                buf = self._observation_buffer[entity_id]
+                buf.append(sequence.flatten())
+                if len(buf) > self.sequence_length:
+                    buf.pop(0)
+                if len(buf) == self.sequence_length:
+                    sequence = np.array(buf)
+                else:
+                    # Not enough history yet; pad with the current observation.
+                    padding = [sequence.flatten()] * (self.sequence_length - len(buf))
+                    sequence = np.array(padding + buf)
+            else:
+                # No entity_id: tile single observation (legacy, but log a warning).
+                logger.warning(
+                    "get_anomaly_score called with single timestep but no entity_id; "
+                    "tiling to sequence_length. Provide entity_id for accurate detection."
+                )
+                sequence = np.tile(sequence.reshape(1, self.input_dim), (self.sequence_length, 1))
+
         sequence = sequence.reshape(1, self.sequence_length, self.input_dim)
         reconstruction = self.model.predict(sequence, verbose=0)
         error = np.mean(np.square(reconstruction - sequence))
         score = error / self.threshold if self.threshold else error
-        
+
         return {
             'reconstruction_error': float(error),
             'anomaly_score': float(score),
