@@ -123,6 +123,11 @@ abstract class LocationQueueStore {
   /// Deletes the [count] oldest rows of any kind (last-resort trim).
   Future<int> deleteOldestRows(int count);
 
+  /// Deletes the [count] oldest milestone rows specifically. Used only when the
+  /// queue holds no droppable location rows, where evicting a milestone is
+  /// unavoidable to honor capacity.
+  Future<int> deleteOldestMilestones(int count);
+
   /// Looks up a row by its unique idempotency key (or null).
   Future<Map<String, dynamic>?> findByIdempotencyKey(String key);
 }
@@ -215,6 +220,24 @@ class SqfliteLocationQueueStore implements LocationQueueStore {
   }
 
   @override
+  Future<int> deleteOldestMilestones(int count) async {
+    final db = await _db;
+    final rows = await db.rawQuery(
+      'SELECT id FROM $table '
+      'WHERE kind = "milestone" '
+      'ORDER BY created_at ASC, id ASC LIMIT ?',
+      [count],
+    );
+    if (rows.isEmpty) return 0;
+    final ids = rows.map((r) => r['id']).toList();
+    return db.delete(
+      table,
+      where: 'id IN (${List.filled(ids.length, '?').join(',')})',
+      whereArgs: ids,
+    );
+  }
+
+  @override
   Future<Map<String, dynamic>?> findByIdempotencyKey(String key) async {
     final db = await _db;
     final rows = await db.query(
@@ -243,10 +266,13 @@ class SqfliteLocationQueueStore implements LocationQueueStore {
 /// * Consecutive fixes within [coalesceWindow]/[coalesceDistanceMeters] are
 ///   coalesced into a single row (the newest fix wins) so long offline
 ///   stretches collapse into representative points.
-/// * When capacity is exceeded, the OLDEST location rows are dropped while the
-///   newest location fix (the truck's actual position) is always retained.
-/// * Milestone rows are never dropped by the capacity policy — a geofence
-///   event outranks ordinary telemetry.
+  /// * When capacity is exceeded and locations overflow, the OLDEST location
+  ///   rows are dropped while the newest location fix (the truck's actual
+  ///   position) is always retained.
+  /// * Milestone rows are only dropped by the capacity policy as a last resort —
+  ///   when locations already fit within [maxEntries] and the overall queue
+  ///   would otherwise exceed capacity. A geofence event still outranks
+  ///   ordinary telemetry whenever a location can be dropped instead.
 ///
 /// Corruption safety
 /// -----------------
@@ -483,25 +509,52 @@ class OfflineLocationQueue {
 
   double _rad(double deg) => deg * math.pi / 180.0;
 
-  /// Drops the oldest location rows until the queue is within capacity.
-  /// The newest location fix and all milestone rows survive.
+  /// Drops the oldest rows until the queue is within capacity.
+  ///
+  /// Two complementary policies keep the documented priorities intact:
+  ///
+  /// * When there are more location pings than [maxEntries], the oldest
+  ///   locations are dropped first (the newest location fix — the truck's
+  ///   actual position — is always retained) and milestones are spared.
+  /// * When locations already fit within [maxEntries], the oldest milestones
+  ///   are dropped to bring the overall queue back under [maxEntries]. This
+  ///   only happens when there are no droppable locations, so evicting a
+  ///   milestone is unavoidable to honor capacity rather than overflowing by
+  ///   one row.
   Future<void> _trimToCapacity() async {
     var guard = 0;
-    while (guard++ < 10) {
+    while (guard++ < 20) {
       final total = await _store.count();
       if (total <= maxEntries) return;
-      final newest = await _newestLocation();
-      final before = total;
-      if (newest != null) {
-        await _store.deleteOldestLocations(
-          count: total - maxEntries,
-          keepNewestId: newest.id,
+
+      // Decide what to evict by counting kinds: locations first (keeping the
+      // newest), otherwise milestones. Counting avoids an off-by-one and keeps
+      // capacity always honored.
+      final rows = await _store.query();
+      final locationCount = rows
+          .where(
+            (r) => r['kind'] == QueueItemKind.kindTo(QueueItemKind.location),
+          )
+          .length;
+
+      int deleted;
+      if (locationCount > maxEntries) {
+        // Too many location pings: trim the oldest locations down to capacity,
+        // always retaining the newest fix.
+        final newest = await _newestLocation();
+        deleted = await _store.deleteOldestLocations(
+          count: locationCount - maxEntries,
+          keepNewestId: newest!.id,
         );
+      } else if (locationCount < maxEntries) {
+        // Locations fit: trim the oldest milestones to reach capacity.
+        deleted = await _store.deleteOldestMilestones(total - maxEntries);
       } else {
-        await _store.deleteOldestRows(total - maxEntries);
+        // Locations fill capacity exactly; milestones outrank telemetry, so
+        // stop rather than evicting milestones.
+        return;
       }
-      final after = await _store.count();
-      if (after >= before) return; // nothing deleted — stop to avoid a loop
+      if (deleted == 0) return; // nothing deletable — avoid an infinite loop
     }
   }
 
