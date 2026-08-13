@@ -151,6 +151,14 @@ export async function authenticate(req, res, next) {
 
   // Support local development bypass mode
   if (bypassAuth) {
+    // Default development identity used by the DEV_ACCESS_TOKEN bypass path.
+    // Overridable via env so local dev can impersonate a specific user.
+    const devIdentity = {
+      id: process.env.DEV_USER_ID || "00000000-0000-0000-0000-000000000000",
+      role: process.env.DEV_USER_ROLE || "admin",
+      name: process.env.DEV_USER_NAME || "Dev User",
+    };
+
     if (process.env.NODE_ENV === "production") {
       return res.status(503).json({
         error:
