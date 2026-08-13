@@ -102,6 +102,27 @@ async function findDriverPolygonWallet(driverId) {
   } catch (err) {
     logger.warn(`[Webhook] Failed to load driver polygon wallet for ${driverId}: ${err?.message}`);
     return null;
+// Idempotent duplicate-delivery path: the order-level escrow_status effect
+// already happened on the first delivery, so a missing/errored wallet-ledger
+// reconcile must not throw here — otherwise the DLQ redelivers forever,
+// re-entering this same branch and failing identically each time (permanent
+// poison message). Log and swallow so the webhook can be acknowledged; a later
+// redelivery retries the (idempotent) reconcile again.
+async function tryReconcileWalletLedger(order, txHash) {
+  try {
+    await reconcileWalletLedger(order, txHash);
+  } catch (err) {
+    logger.warn(
+      { err: err.message, orderDisplayId: order.order_display_id, driverId: order.driver_id },
+      '[Webhook] Duplicate delivery: wallet ledger reconcile failed (best-effort) — order-level effect already applied, acknowledging delivery.'
+    );
+  }
+}
+
+async function getPolygonProvider() {
+  const rpcUrl = process.env.POLYGON_RPC_URL;
+  if (!rpcUrl) {
+    throw new Error('POLYGON_RPC_URL is not configured for Polygon receipt validation');
   }
 }
 
@@ -232,6 +253,8 @@ async function handlePaymentReleased(payload) {
     }
     await reconcileWalletLedger(order, verification.txHash);
     logger.info(`[Webhook] Order ${order.order_display_id} release_tx_hash healed after on-chain verification (tx: ${verification.txHash})`);
+    await tryReconcileWalletLedger(order, payload.txHash || order.release_tx_hash);
+    logger.info(`[Webhook] Order ${order.order_display_id} already released — duplicate delivery ignored.`);
     return;
   }
 
@@ -363,6 +386,7 @@ async function handleWithdrawalSettled(payload) {
     }
     if (!isRefund) {
       await reconcileWalletLedger(order, txHash || order.release_tx_hash);
+      await tryReconcileWalletLedger(order, txHash);
     }
     logger.info(`[Webhook] Order ${order.order_display_id} already ${targetStatus} — duplicate delivery ignored.`);
     return;
