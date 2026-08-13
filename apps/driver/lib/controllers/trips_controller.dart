@@ -45,7 +45,7 @@ class TripsController extends ChangeNotifier {
 
   int totalEarningsPaise() => trips.fold(
         0,
-        (sum, row) => sum + ((row['net_earnings'] ?? 0) as num).toInt(),
+        (sum, row) => sum + (num.tryParse(row['net_earnings']?.toString() ?? '') ?? 0).toInt(),
       );
 
   int completedCount() =>
