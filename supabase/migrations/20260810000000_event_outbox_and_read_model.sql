@@ -251,20 +251,26 @@ as $$
 declare
   v_applied boolean;
 begin
+  -- Idempotency: always record the processed event so genuine duplicates
+  -- (same topic + event_id) are de-duplicated regardless of the write path.
   insert into kafka_processed_events (topic, event_id, order_id)
   values (p_topic, p_event_id, nullif(p_order_id, '')::uuid)
   on conflict (topic, event_id) do nothing
   returning true into v_applied;
 
-  if v_applied then
-    insert into orders_read_model (order_id, payload, event_type, version, updated_at)
-    values (p_order_id, p_payload, p_event_type, p_version, now())
-    on conflict (order_id) do update
-    set payload     = excluded.payload,
-        event_type  = excluded.event_type,
-        version     = coalesce(excluded.version, orders_read_model.version),
-        updated_at  = now();
-  end if;
+  -- Apply only when the incoming event is strictly newer than the stored
+  -- version. This keeps the read model monotonic: a stale/out-of-order
+  -- delivery must never overwrite a newer one (regression for #11396).
+  insert into orders_read_model (order_id, payload, event_type, version, updated_at)
+  values (p_order_id, p_payload, p_event_type, p_version, now())
+  on conflict (order_id) do update
+  set payload     = excluded.payload,
+      event_type  = excluded.event_type,
+      version     = excluded.version,
+      updated_at  = now()
+  where orders_read_model.version is null
+     or excluded.version > orders_read_model.version
+  returning true into v_applied;
 
   return jsonb_build_object('applied', coalesce(v_applied, false));
 end;
