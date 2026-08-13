@@ -155,6 +155,9 @@ type RaftNode struct {
 	matchIndex         map[string]uint64
 	peerLive           map[string]bool
 	httpClient         *http.Client
+
+	walPath        string
+	persistedIndex uint64
 }
 
 // rng is a source of randomness for election timeouts.
@@ -185,6 +188,7 @@ func NewRaftNode(id string, peers []string, peerURLs []string) *RaftNode {
 		matchIndex:         make(map[string]uint64),
 		peerLive:           make(map[string]bool),
 		httpClient:         &http.Client{Timeout: 500 * time.Millisecond},
+		walPath:            defaultWALPath(),
 	}
 }
 
@@ -240,10 +244,11 @@ func (rn *RaftNode) startElection() {
 		CandidateID:  rn.NodeID,
 		LastLogIndex: rn.lastLogIndex(),
 		LastLogTerm:  rn.lastLogTerm(),
-	}
-	rn.mu.Unlock()
+		}
+		rn.persistMeta()
+		rn.mu.Unlock()
 
-	// Perform outbound HTTP RPC requests without holding rn.mu to avoid deadlocks
+		// Perform outbound HTTP RPC requests without holding rn.mu to avoid deadlocks
 	responses := rn.requestVotes(req)
 
 	rn.mu.Lock()
@@ -594,6 +599,7 @@ func (rn *RaftNode) HandleVote(w http.ResponseWriter, r *http.Request) {
 
 	if req.Term > rn.CurrentTerm {
 		rn.stepDownLocked(req.Term)
+		rn.persistMeta()
 	}
 
 	if req.Term == rn.CurrentTerm &&
@@ -602,6 +608,7 @@ func (rn *RaftNode) HandleVote(w http.ResponseWriter, r *http.Request) {
 		rn.VotedFor = req.CandidateID
 		rn.lastLeaderSeen = time.Now()
 		resp.VoteGranted = true
+		rn.persistMeta()
 	}
 
 	resp.Term = rn.CurrentTerm
@@ -638,6 +645,7 @@ func (rn *RaftNode) HandleAppend(w http.ResponseWriter, r *http.Request) {
 
 	if req.Term > rn.CurrentTerm {
 		rn.stepDownLocked(req.Term)
+		rn.persistMeta()
 	}
 
 	if req.Term == rn.CurrentTerm {
@@ -649,6 +657,7 @@ func (rn *RaftNode) HandleAppend(w http.ResponseWriter, r *http.Request) {
 		// cannot obtain a second vote.
 		if rn.VotedFor == "" || rn.VotedFor == req.LeaderID {
 			rn.VotedFor = req.LeaderID
+			rn.persistMeta()
 		}
 		rn.lastLeaderSeen = time.Now()
 
@@ -941,6 +950,10 @@ func main() {
 	}
 
 	node := NewRaftNode(nodeID, peers, peerURLs)
+
+	// Replay the durable WAL (committed entries, term, votedFor) before the
+	// node joins the cluster so state survives a restart.
+	node.loadState()
 
 	http.HandleFunc("/api/v1/raft/status", node.HandleStatus)
 	http.HandleFunc("/api/v1/raft/commit", node.HandleCommitOrder)
