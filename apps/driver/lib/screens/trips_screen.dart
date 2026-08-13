@@ -383,7 +383,7 @@ class _TripsScreenState extends State<TripsScreen> {
 
   int _totalEarningsPaise() => _trips.fold(
         0,
-        (sum, row) => sum + ((row['net_earnings'] ?? 0) as num).toInt(),
+        (sum, row) => sum + (num.tryParse(row['net_earnings']?.toString() ?? '') ?? 0).toInt(),
       );
 
   int _completedCount() =>
@@ -1622,11 +1622,11 @@ class _TripsScreenState extends State<TripsScreen> {
     }
 
     final points = routePoints.map((point) {
-      return ll.LatLng(
-        (point['latitude'] as num).toDouble(),
-        (point['longitude'] as num).toDouble(),
-      );
-    }).toList();
+      final lat = (point['latitude'] as num?)?.toDouble() ?? 0.0;
+      final lng = (point['longitude'] as num?)?.toDouble() ?? 0.0;
+      if (lat == 0.0 && lng == 0.0) return null;
+      return ll.LatLng(lat, lng);
+    }).whereType<ll.LatLng>().toList();
 
     return RepaintBoundary(
       child: ClipRRect(
