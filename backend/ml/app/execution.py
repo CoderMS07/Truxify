@@ -29,6 +29,7 @@ uvicorn runs exactly one loop, so capacity is still shared globally.
 import asyncio
 import logging
 import os
+import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict
@@ -43,6 +44,10 @@ ML_MAX_CONCURRENT_INFERENCE = int(
 ML_INFERENCE_MAX_WORKERS = int(os.environ.get("ML_INFERENCE_MAX_WORKERS", "4"))
 ML_INFERENCE_QUEUE_TIMEOUT_SECONDS = float(
     os.environ.get("ML_INFERENCE_QUEUE_TIMEOUT_SECONDS", "5.0")
+)
+ML_TRAINING_MAX_WORKERS = int(os.environ.get("ML_TRAINING_MAX_WORKERS", "2"))
+ML_TRAINING_TIMEOUT_SECONDS = float(
+    os.environ.get("ML_TRAINING_TIMEOUT_SECONDS", "300")
 )
 
 # The executor worker count must never be smaller than the semaphore limit:
@@ -65,6 +70,107 @@ _inference_executor: ThreadPoolExecutor = ThreadPoolExecutor(
 _inference_semaphores: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = (
     weakref.WeakKeyDictionary()
 )
+
+# Dedicated bounded executor for training jobs so a long-running training can
+# never starve the (smaller, latency-sensitive) inference pool.
+_training_executor: ThreadPoolExecutor = ThreadPoolExecutor(
+    max_workers=ML_TRAINING_MAX_WORKERS,
+    thread_name_prefix="ml-training",
+)
+
+# Cancellation token for the training job currently running on this worker
+# thread. It is thread-local because many worker threads may be training
+# different models at the same time, and one job's timeout must not cancel
+# another job's training.
+_training_cancel = threading.local()
+
+
+class TrainingCancelled(Exception):
+    """Raised inside a training worker whose HTTP request timed out.
+
+    The worker thread cannot be killed, but once cancelled it must abort
+    before publishing anything so a timed-out request never deploys a model.
+    """
+
+
+def is_training_cancelled() -> bool:
+    """Return True when the calling training worker was cancelled (timeout)."""
+    event = getattr(_training_cancel, "event", None)
+    return event is not None and event.is_set()
+
+
+def _run_train_with_cancel(train_fn: Callable[..., Any], cancel_event: threading.Event, args, kwargs) -> Any:
+    prev = getattr(_training_cancel, "event", None)
+    _training_cancel.event = cancel_event
+    try:
+        return train_fn(*args, **kwargs)
+    except TrainingCancelled:
+        # The request already timed out and nobody will read this worker's
+        # result; swallow the cancellation so the executor has no unobserved
+        # exception to report.
+        logger.warning("Training worker cancelled; aborting before publication")
+        return None
+    finally:
+        _training_cancel.event = prev
+
+
+def _consume_training_result(fut: "asyncio.Future") -> None:
+    """Retrieve (and thereby suppress) a timed-out worker's eventual result or
+    exception so the executor never logs 'exception was never retrieved'."""
+    if fut.cancelled():
+        return
+    try:
+        fut.exception()
+    except Exception:
+        pass
+
+
+async def run_training_job(
+    model_name: str,
+    train_fn: Callable[..., Any],
+    *args: Any,
+    timeout: float = ML_TRAINING_TIMEOUT_SECONDS,
+    **kwargs: Any,
+) -> Any:
+    """Run a CPU-bound training job off the event loop with a wall-clock timeout.
+
+    Critical semantics: an ``asyncio`` timeout does NOT terminate a Python
+    worker thread. When *timeout* elapses this helper returns/raises
+    ``asyncio.TimeoutError`` immediately AND signals the worker thread through
+    a cancellation token. The worker keeps running in the background but its
+    publish step checks ``is_training_cancelled()`` and aborts, so a
+    timed-out request can never deploy an untracked/invalid model.
+
+    Concurrent trainings of the SAME model are serialized by the caller via
+    ``get_model_lock(model_name)``; different models run independently.
+    """
+    loop = asyncio.get_running_loop()
+    cancel_event = threading.Event()
+    future = loop.run_in_executor(
+        _training_executor,
+        _run_train_with_cancel,
+        train_fn,
+        cancel_event,
+        args,
+        kwargs,
+    )
+    future.add_done_callback(_consume_training_result)
+    try:
+        return await asyncio.wait_for(future, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Training job '%s' timed out after %.1fs; signalling cancellation",
+            model_name,
+            timeout,
+        )
+        cancel_event.set()
+        raise
+
+
+def close_training_executor() -> None:
+    """Gracefully stop the shared training executor (app shutdown)."""
+    _training_executor.shutdown(wait=False, cancel_futures=False)
+    logger.info("ML training executor shut down")
 
 
 def _get_semaphore() -> asyncio.Semaphore:
