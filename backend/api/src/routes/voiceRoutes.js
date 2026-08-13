@@ -62,11 +62,20 @@ router.post('/query', authenticate, userLimiter, upload.single('file'), async (r
 
     const result = await processVoiceQuery(req.user.id, bookingId, file.buffer, safeFilename);
     
-    // Prefix the audio_url with host if relative path
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-    const host = req.headers.host;
+    // Prefix the audio_url with the configured public base URL. We never
+    // derive the base URL from attacker-controlled headers (Host /
+    // X-Forwarded-Proto) because that enables open-redirect / phishing URLs
+    // that are returned to and opened by the mobile client.
     if (result.audio_url && result.audio_url.startsWith('/')) {
-      const baseUrl = process.env.PUBLIC_BASE_URL || `${protocol}://${host}`;
+      const baseUrl = process.env.PUBLIC_BASE_URL;
+      if (!baseUrl) {
+        logger.error(
+          'PUBLIC_BASE_URL is not configured — refusing to build audio_url from request headers.',
+        );
+        return res.status(500).json({
+          error: 'Server misconfiguration: PUBLIC_BASE_URL is not set.',
+        });
+      }
       result.audio_url = `${baseUrl}${result.audio_url}`;
     }
     
