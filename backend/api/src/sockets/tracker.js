@@ -281,6 +281,7 @@ let telemetryFlushTimeout = null;
 let wsServer = null;
 let wsHeartbeatInterval = null;
 let telemetryMonitorInterval = null;
+let gpsLogDlqReconcileInterval = null;
 const HEARTBEAT_INTERVAL_MS = parseInt(process.env.WS_HEARTBEAT_INTERVAL_MS, 10) || 180000; // 3 minutes
 
 // Observability counters
@@ -298,6 +299,15 @@ const messageRateTracker = new WeakMap();
 // Max time a socket may stay unauthenticated while awaiting a first-frame
 // `auth` message before it is closed (issue #5739).
 const WS_AUTH_TIMEOUT_MS = 10000;
+
+// =====================================================================
+// GPS LOG PERSISTENCE RETRY + DEAD-LETTER QUEUE (#11373)
+// =====================================================================
+// Exponential backoff between GpsLog.create attempts (max 3 attempts).
+const GPS_LOG_RETRY_DELAYS_MS = [100, 200, 400];
+// Max times a DLQ entry is re-enqueued for replay before being dropped.
+const GPS_LOG_MAX_RETRIES = 5;
+const GPS_LOG_DLQ_KEY = 'gps_log_dlq';
 
 // =====================================================================
 // DRIVER → ORDER CACHE (performance: avoid repeated Supabase lookups)
@@ -911,6 +921,118 @@ export async function handleTrackingMessage(ws, message, req) {
   } catch (err) {
     logger.error('WS Message parsing error:', err.message);
     ws.send(JSON.stringify({ error: 'Invalid JSON payload structure.' }));
+  }
+}
+
+/**
+ * Persist a GPS log document to MongoDB with bounded exponential backoff.
+ *
+ * Retries `GpsLog.create` up to 3 times (delays 100ms, 200ms, 400ms). On
+ * permanent failure the document is routed to the Redis dead-letter queue so
+ * it can be replayed later instead of being silently lost (issue #11373).
+ *
+ * @param {object} doc - the GpsLog document to persist.
+ * @returns {Promise<boolean>} true when the document was persisted or DLQ-enqueued.
+ */
+async function persistGpsLogWithRetry(doc) {
+  for (let attempt = 0; attempt < GPS_LOG_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      await GpsLog.create(doc);
+      return true;
+    } catch (err) {
+      logger.warn(
+        { err, attempt: attempt + 1 },
+        `[GpsLog] Write attempt ${attempt + 1} failed; backing off ${GPS_LOG_RETRY_DELAYS_MS[attempt]}ms`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, GPS_LOG_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+
+  logger.error('[GpsLog] All write attempts failed; routing document to dead-letter queue');
+  await enqueueGpsLogDlq(doc);
+  return false;
+}
+
+/**
+ * Push a permanently-failed GPS log document onto the Redis dead-letter list.
+ * If Redis is unavailable (or the push fails) the document is logged as
+ * permanently lost because there is no store in which to retain it.
+ */
+async function enqueueGpsLogDlq(doc) {
+  if (redisClient && redisClient.status === 'ready') {
+    try {
+      await redisClient.rpush(GPS_LOG_DLQ_KEY, JSON.stringify({ doc, retries: 0 }));
+      return;
+    } catch (err) {
+      logger.error('[GpsLog] Failed to enqueue GPS log to Redis DLQ:', err.message);
+    }
+  }
+  logger.error('[GpsLog] Redis unavailable — GPS log permanently lost (could not enqueue to DLQ):', JSON.stringify(doc));
+}
+
+/**
+ * Re-attempt a single DLQ entry. Returns true when the entry should be removed
+ * from the DLQ (successfully written, malformed, or exhausted retries) and
+ * false when it must stay (Redis unavailable at replay time / re-enqueue failed).
+ */
+async function reconcileGpsLogDlqEntry(raw) {
+  let entry;
+  try {
+    entry = JSON.parse(raw);
+  } catch (err) {
+    logger.error('[GpsLog] Dropping malformed DLQ entry:', err.message);
+    return true;
+  }
+
+  const { doc, retries = 0 } = entry;
+
+  try {
+    await GpsLog.create(doc);
+    return true;
+  } catch (err) {
+    logger.warn({ err }, '[GpsLog] DLQ re-attempt failed');
+
+    if (retries >= GPS_LOG_MAX_RETRIES) {
+      logger.error('[GpsLog] DLQ entry exceeded max retries; dropping permanently:', JSON.stringify(doc));
+      return true;
+    }
+
+    // Re-enqueue with an incremented retry counter for the next reconcile pass.
+    if (redisClient && redisClient.status === 'ready') {
+      try {
+        await redisClient.rpush(GPS_LOG_DLQ_KEY, JSON.stringify({ doc, retries: retries + 1 }));
+        return true;
+      } catch (redisErr) {
+        logger.error('[GpsLog] Failed to re-enqueue DLQ entry:', redisErr.message);
+        return false;
+      }
+    }
+
+    // Redis unavailable — leave the entry in place for a later reconcile.
+    return false;
+  }
+}
+
+/**
+ * Drain the GPS log dead-letter list, re-attempting each write. Entries that
+ * fail to replay are re-enqueued (up to GPS_LOG_MAX_RETRIES times) or left in
+ * the list when Redis is unavailable.
+ */
+async function reconcileGpsLogDlq() {
+  if (!redisClient || redisClient.status !== 'ready') return;
+  try {
+    while (true) {
+      const raw = await redisClient.lpop(GPS_LOG_DLQ_KEY);
+      if (!raw) break;
+      const shouldRemove = await reconcileGpsLogDlqEntry(raw);
+      if (!shouldRemove) {
+        // Could not process now (e.g. Redis down) — put it back and stop.
+        await redisClient.rpush(GPS_LOG_DLQ_KEY, raw);
+        break;
+      }
+    }
+  } catch (err) {
+    logger.error('[GpsLog] DLQ reconciliation error:', err.message);
   }
 }
 
