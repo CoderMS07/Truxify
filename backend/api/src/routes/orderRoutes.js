@@ -204,16 +204,15 @@ const getOrderResource = async (req) => {
 router.post('/:id/geofence-confirm', authenticate, requireRole(['driver']), async (req, res) => {
   const { id } = req.params;
   const { driver_lat, driver_lng, geofence_radius_m } = req.body;
+  if (!id || !id.trim()) {
+    return res.status(400).json({ error: 'Invalid order id' });
+  }
 
   const lat = parseFloat(driver_lat);
   const lng = parseFloat(driver_lng);
 
   if (!Number.isFinite(lat) || !Number.isFinite(lng) || isNaN(lat) || isNaN(lng)) {
     return res.status(400).json({ error: 'Invalid driver_lat or driver_lng' });
-  }
-
-  if (!req.params.id || !req.params.id.trim()) {
-    return res.status(400).json({ error: 'Invalid order id' });
   }
   let geofenceRadiusM;
   if (geofence_radius_m !== undefined) {
