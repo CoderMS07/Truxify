@@ -20,9 +20,12 @@ contract DAO is Ownable {
     IERC20 public governanceToken;
     Proposal[] public proposals;
     mapping(uint256 => mapping(address => uint256)) public votesCast;
+    // Track deposited token amounts per (proposalId, voter) for withdrawal.
+    mapping(uint256 => mapping(address => uint256)) public depositedAmount;
 
     event ProposalCreated(uint256 indexed proposalId, string description, uint256 deadline);
     event VotedQuadratic(uint256 indexed proposalId, address indexed voter, uint256 votes, uint256 tokenCost);
+    event VotesReleased(uint256 indexed proposalId, address indexed voter, uint256 tokenAmount);
 
     constructor(address _tokenAddress) Ownable(msg.sender) {
         governanceToken = IERC20(_tokenAddress);
@@ -52,8 +55,27 @@ contract DAO is Ownable {
         require(governanceToken.transferFrom(msg.sender, address(this), tokenCost), "Token transfer failed");
 
         votesCast[_proposalId][msg.sender] += _votes;
+        depositedAmount[_proposalId][msg.sender] += tokenCost;
         proposal.voteCount += _votes;
 
         emit VotedQuadratic(_proposalId, msg.sender, _votes, tokenCost);
+    }
+
+    /**
+     * @dev Release deposited governance tokens for a proposal after the voting deadline.
+     * Voters must call this after voting deadline to reclaim their tokens.
+     */
+    function releaseVotes(uint256 _proposalId) external {
+        Proposal storage proposal = proposals[_proposalId];
+        require(block.timestamp >= proposal.votingDeadline, "Voting period not yet ended");
+        require(proposal.executed || block.timestamp > proposal.votingDeadline, "Cannot release before deadline");
+
+        uint256 amount = depositedAmount[_proposalId][msg.sender];
+        require(amount > 0, "No tokens deposited for this proposal");
+
+        depositedAmount[_proposalId][msg.sender] = 0;
+        require(governanceToken.transfer(msg.sender, amount), "Token transfer failed");
+
+        emit VotesReleased(_proposalId, msg.sender, amount);
     }
 }
