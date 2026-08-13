@@ -253,16 +253,38 @@ class MultiTaskTrainer:
         # Compute weighted loss
         total_loss = self.loss.compute_weighted_loss(losses, self.task_weights)
         
-        # Backward pass
-        total_loss.backward()
-        
         # Gradient surgery
         if self.gradient_method == 'pcgrad':
-            grads = [p.grad for p in self.model.parameters() if p.grad is not None]
-            processed_grads = self.gradient_surgery.pcgrad(grads)
-            for p, g in zip([p for p in self.model.parameters() if p.grad is not None], processed_grads):
-                p.grad = g
-        
+            # Each task's gradient must be materialized independently so that
+            # PCGrad projects *task* gradients. A single combined backward()
+            # sums all tasks into every .grad buffer, so running PCGrad on the
+            # per-parameter grads afterward operates on already-mixed gradients
+            # (a no-op / incorrect). We instead compute per-task grads via
+            # autograd.grad(..., retain_graph=True), run the existing PCGrad
+            # projection per parameter across tasks, zero grads between passes,
+            # and apply the projected gradient exactly once.
+            params = [p for p in self.model.parameters() if p.requires_grad]
+            task_grads = []
+            for loss in losses.values():
+                self.model.zero_grad(set_to_none=True)
+                per_task = torch.autograd.grad(
+                    loss, params, retain_graph=True, allow_unused=True
+                )
+                task_grads.append([
+                    g if g is not None else torch.zeros_like(p)
+                    for g, p in zip(per_task, params)
+                ])
+
+            # Project conflicts per-parameter across tasks, then combine.
+            self.optimizer.zero_grad()
+            for p_idx, p in enumerate(params):
+                per_param_task_grads = [task_grads[t][p_idx] for t in range(len(task_grads))]
+                projected = self.gradient_surgery.pcgrad(per_param_task_grads)
+                p.grad = torch.stack(projected, dim=0).sum(dim=0)
+        else:
+            # Standard combined backward for non-PCGrad methods.
+            total_loss.backward()
+
         self.optimizer.step()
         
         return {
