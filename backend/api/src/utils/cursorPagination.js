@@ -26,7 +26,7 @@ export function decodeCursor(cursor) {
   try {
     const json = Buffer.from(cursor, 'base64url').toString('utf8');
     return JSON.parse(json);
-  } catch {
+  } catch (err) {
     return null;
   }
 }
