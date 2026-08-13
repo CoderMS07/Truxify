@@ -21,7 +21,16 @@ class WeightDistributionService {
   }
 
   void updatePalletPosition(String id, double newX) {
-    final pallet = _pallets.firstWhere((p) => p.id == id);
+    final pallet = _pallets.firstWhere(
+      (p) => p.id == id,
+      orElse: () => Pallet(id: id, weightLbs: 0, positionX: 0),
+    );
+    // firstWhere returns a transient dummy when the id is unknown (stale /
+    // out-of-sync UI); only mutate and recompute when it is a real pallet.
+    if (!_pallets.contains(pallet)) {
+      debugPrint('updatePalletPosition: unknown pallet id "$id" — ignoring');
+      return;
+    }
     pallet.positionX = newX.clamp(0.0, 1.0);
     _calculatePhysics();
   }
