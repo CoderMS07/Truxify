@@ -375,7 +375,7 @@ router.get('/load-offers/en-route', authenticate, userLimiter, requirePolicy('lo
       });
     }
 
-    return res.json({ loads });
+    return res.json(loads);
   } catch (err) {
     logger.error('Internal Server Error in GET /api/orders/load-offers/en-route:', err.message);
     return res.status(500).json({ error: 'Internal Server Error' });
@@ -1438,35 +1438,5 @@ router.post('/:id/bids', authenticate, requireRole(['driver']), bidLimiter, vali
   }
 });
 
-// GET /api/orders/load-offers/en-route - find en-route load opportunities for active driver
-router.get('/load-offers/en-route', authenticate, requireRole(['driver']), async (req, res) => {
-  try {
-    const { currentLat, currentLng, maxDetourKm } = req.query;
-    if (!currentLat || !currentLng) {
-      return res.status(400).json({ error: 'currentLat and currentLng query parameters are required.' });
-    }
-
-    const { data: offers } = await supabase
-      .from('load_offers')
-      .select('id, pickup_lat, pickup_lng, drop_lat, drop_lng, weight, dimensions, pickup_deadline, payment_inr, freight_value, status')
-      .eq('status', 'available');
-
-    if (!offers || offers.length === 0) {
-      return res.json({ recommendations: [], mlUsed: false });
-    }
-
-    const result = await matchEnRouteLoads({
-      currentLat: Number(currentLat),
-      currentLng: Number(currentLng),
-      offers,
-      maxDetourKm: maxDetourKm ? Number(maxDetourKm) : 50,
-    });
-
-    return res.json(result);
-  } catch (err) {
-    logger.error('En-route loads error:', err);
-    return res.status(500).json({ error: 'Failed to fetch en-route load offers.' });
-  }
-});
 
 export default router;
