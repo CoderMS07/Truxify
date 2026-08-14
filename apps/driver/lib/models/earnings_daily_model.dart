@@ -41,7 +41,8 @@ class EarningsDailyModel {
     if (rawDeduction is num) {
       deduction = (rawDeduction / 100.0).toDouble();
     } else if (rawDeduction is String) {
-      deduction = (num.tryParse(rawDeduction)?.toDouble() ?? gross * 0.15) / 100.0;
+      final parsedDeduction = num.tryParse(rawDeduction);
+      deduction = parsedDeduction != null ? parsedDeduction.toDouble() / 100.0 : gross * 0.15;
     } else {
       deduction = gross * 0.15;
     }
