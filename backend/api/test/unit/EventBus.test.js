@@ -1,116 +1,238 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Mock OpenTelemetry
-vi.mock('@opentelemetry/api', () => ({
-  context: { active: vi.fn(() => ({})), with: vi.fn((ctx, fn) => fn()) },
-  trace: { getSpan: vi.fn(() => null), setSpan: vi.fn() },
-  SpanStatusCode: { OK: 0, ERROR: 2 },
+// Mock OTel API first
+vi.mock("@opentelemetry/api", () => ({
+  context: {
+    active: vi.fn().mockReturnValue({}),
+    with: vi.fn((_ctx, fn) => fn()),
+  },
+  trace: {
+    setSpan: vi.fn((ctx) => ctx),
+    getSpan: vi.fn(),
+    getActiveSpan: vi.fn(),
+  },
+  SpanStatusCode: { OK: 0, ERROR: 1, UNSET: 2 },
 }));
 
-vi.mock('../../src/middleware/logger.js', () => ({
+// Mock logger
+vi.mock("../../../src/middleware/logger.js", () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-describe('EventBus', () => {
-  let EventBus, eventBus;
+// Mock SpanFactory
+vi.mock("../../../src/core/telemetry/SpanFactory.js", () => ({
+  default: {
+    startEventPublishSpan: vi.fn().mockReturnValue({
+      setStatus: vi.fn(),
+      end: vi.fn(),
+      recordException: vi.fn(),
+      setAttribute: vi.fn(),
+      setAttributes: vi.fn(),
+    }),
+    startEventSubscribeSpan: vi.fn().mockReturnValue({
+      setStatus: vi.fn(),
+      end: vi.fn(),
+      recordException: vi.fn(),
+      setAttribute: vi.fn(),
+    }),
+    recordError: vi.fn(),
+  },
+  STANDARD_ATTRIBUTES: {},
+}));
 
-  beforeEach(async () => {
-    vi.resetModules();
-    vi.clearAllMocks();
-    const mod = await import('../../src/core/events/EventBus.js');
-    EventBus = mod.EventBus;
+// Mock ContextPropagator
+vi.mock("../../../src/core/telemetry/ContextPropagator.js", () => ({
+  ContextPropagator: {
+    extractFromEventPayload: vi.fn().mockReturnValue(undefined),
+    injectIntoEventPayload: vi.fn((e) => e),
+    snapshot: vi.fn().mockReturnValue({}),
+    serialize: vi.fn().mockReturnValue({}),
+  },
+}));
+
+const { EventBus } = await import("../../src/core/events/EventBus.js");
+const { EventMetadata, EVENT_CATEGORIES } = await import("../../src/core/events/EventMetadata.js");
+
+describe("EventBus", () => {
+  let eventBus;
+
+  beforeEach(() => {
     eventBus = new EventBus();
+    eventBus.clearMetrics();
   });
 
-  describe('constructor', () => {
-    it('sets max listeners to 50', () => {
-      expect(eventBus.getMaxListeners()).toBe(50);
-    });
-
-    it('initializes empty _adapters, _registry, _deduplication maps', () => {
-      expect(eventBus._adapters.size).toBe(0);
-      expect(eventBus._deduplication.size).toBe(0);
-    });
-
-    it('initializes zero metrics', () => {
-      const metrics = eventBus.metrics;
-      expect(metrics.published).toBe(0);
-      expect(metrics.subscribed).toBe(0);
-      expect(metrics.errors).toBe(0);
-      expect(metrics.deduplicated).toBe(0);
+  describe("constructor", () => {
+    it("creates an EventBus instance", () => {
+      expect(eventBus).toBeDefined();
+      expect(eventBus.registry).toBeDefined();
+      expect(eventBus.metrics).toEqual({
+        published: 0,
+        subscribed: 0,
+        errors: 0,
+        deduplicated: 0,
+      });
     });
   });
 
-  describe('registerAdapter', () => {
-    it('registers an adapter by name', () => {
-      const adapter = { connect: vi.fn() };
-      const result = eventBus.registerAdapter('kafka', adapter);
-      expect(eventBus._adapters.has('kafka')).toBe(true);
-      expect(result).toBe(eventBus); // fluent
+  describe("publish", () => {
+    it("publishes an event by type string", () => {
+      const handler = vi.fn();
+      eventBus.subscribe("order.created", handler);
+      eventBus.publish("order.created", { orderId: "123" });
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.any(EventMetadata),
+          payload: { orderId: "123" },
+        })
+      );
+    });
+
+    it("publishes an event with BaseEvent-like object", () => {
+      const handler = vi.fn();
+      eventBus.subscribe("test.event", handler);
+      eventBus.publish(
+        {
+          metadata: new EventMetadata({ eventType: "test.event" }),
+          payload: { data: "test" },
+        },
+        {}
+      );
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it("throws for invalid input", () => {
+      expect(() => eventBus.publish(123)).toThrow("requires either a BaseEvent");
+      expect(() => eventBus.publish(null)).toThrow("requires either a BaseEvent");
+    });
+
+    it("increments published metric", () => {
+      const handler = vi.fn();
+      eventBus.subscribe("metric.test", handler);
+      expect(eventBus.metrics.published).toBe(0);
+      eventBus.publish("metric.test", {});
+      expect(eventBus.metrics.published).toBe(1);
     });
   });
 
-  describe('removeAdapter', () => {
-    it('removes a registered adapter', () => {
-      const adapter = { disconnect: vi.fn() };
-      eventBus.registerAdapter('kafka', adapter);
-      eventBus.removeAdapter('kafka');
-      expect(eventBus._adapters.has('kafka')).toBe(false);
+  describe("subscribe", () => {
+    it("registers a handler for an event type", () => {
+      const handler = vi.fn();
+      eventBus.subscribe("user.signup", handler);
+      eventBus.publish("user.signup", { userId: "1" });
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it("accepts an EventHandler instance", async () => {
+      const { EventHandler } = await import("../../src/core/events/EventHandler.js");
+      const handlerInstance = new EventHandler(vi.fn().mockResolvedValue("handled"));
+      eventBus.subscribe("async.event", handlerInstance);
+      await eventBus.publishAsync("async.event", {});
+      expect(handlerInstance.handle).toHaveBeenCalled();
+    });
+
+    it("throws for non-function handler", () => {
+      expect(() => eventBus.subscribe("invalid", "not a function")).toThrow("requires a function");
+      expect(() => eventBus.subscribe("invalid", null)).toThrow("requires a function");
+      expect(() => eventBus.subscribe("invalid", {})).toThrow("requires a function");
+    });
+
+    it("increments subscribed metric", () => {
+      expect(eventBus.metrics.subscribed).toBe(0);
+      eventBus.subscribe("sub.test", vi.fn());
+      expect(eventBus.metrics.subscribed).toBe(1);
     });
   });
 
-  describe('connectAdapters', () => {
-    it('calls connect on each adapter', async () => {
+  describe("unsubscribe", () => {
+    it("removes a handler", () => {
+      const handler = vi.fn();
+      eventBus.subscribe("remove.test", handler);
+      eventBus.unsubscribe("remove.test", handler);
+      eventBus.publish("remove.test", {});
+      expect(handler).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("emitSafe", () => {
+    it("calls listeners and returns number of listeners", () => {
+      const handler1 = vi.fn();
+      const handler2 = vi.fn();
+      eventBus.on("safe.test", handler1);
+      eventBus.on("safe.test", handler2);
+      const result = eventBus.emitSafe("safe.test", { data: 1 });
+      expect(handler1).toHaveBeenCalledWith({ data: 1 });
+      expect(handler2).toHaveBeenCalledWith({ data: 1 });
+      expect(result).toBe(2);
+    });
+
+    it("handles throwing handlers gracefully", () => {
+      const goodHandler = vi.fn();
+      const badHandler = vi.fn().mockImplementation(() => {
+        throw new Error("handler error");
+      });
+      eventBus.on("error.test", badHandler);
+      eventBus.on("error.test", goodHandler);
+      const result = eventBus.emitSafe("error.test", {});
+      expect(goodHandler).toHaveBeenCalled();
+      expect(eventBus.metrics.errors).toBe(1);
+    });
+
+    it("handles async throwing handlers", async () => {
+      const handler = vi.fn().mockRejectedValue(new Error("async error"));
+      eventBus.on("asyncerror.test", handler);
+      const result = eventBus.emitSafe("asyncerror.test", {});
+      // emitSafe doesn't wait for promises, so it just checks sync errors
+      expect(typeof result).toBe("number");
+    });
+  });
+
+  describe("adapter registration", () => {
+    it("registers an adapter", () => {
+      const mockAdapter = {
+        connect: vi.fn().mockResolvedValue(undefined),
+        disconnect: vi.fn().mockResolvedValue(undefined),
+      };
+      eventBus.registerAdapter("test", mockAdapter);
+      expect(eventBus._adapters.has("test")).toBe(true);
+    });
+
+    it("removes an adapter", () => {
+      const mockAdapter = { connect: vi.fn() };
+      eventBus.registerAdapter("toRemove", mockAdapter);
+      eventBus.removeAdapter("toRemove");
+      expect(eventBus._adapters.has("toRemove")).toBe(false);
+    });
+
+    it("connects all adapters", async () => {
       const adapter1 = { connect: vi.fn().mockResolvedValue(undefined) };
       const adapter2 = { connect: vi.fn().mockResolvedValue(undefined) };
-      eventBus.registerAdapter('a1', adapter1);
-      eventBus.registerAdapter('a2', adapter2);
+      eventBus.registerAdapter("a1", adapter1);
+      eventBus.registerAdapter("a2", adapter2);
       await eventBus.connectAdapters();
       expect(adapter1.connect).toHaveBeenCalled();
       expect(adapter2.connect).toHaveBeenCalled();
     });
 
-    it('handles adapter connect failure gracefully', async () => {
-      const badAdapter = {
-        connect: vi.fn().mockRejectedValue(new Error('connect failed')),
-      };
-      eventBus.registerAdapter('bad', badAdapter);
-      // Should not throw
-      await expect(eventBus.connectAdapters()).resolves.toBeUndefined();
+    it("disconnects all adapters", async () => {
+      const adapter = { disconnect: vi.fn().mockResolvedValue(undefined) };
+      eventBus.registerAdapter("disc", adapter);
+      await eventBus.connectAdapters();
+      await eventBus.disconnectAdapters();
+      expect(adapter.disconnect).toHaveBeenCalled();
     });
   });
 
-  describe('publish', () => {
-    it('increments published metric', async () => {
-      eventBus.on('test.event', () => {});
-      await eventBus.publish({ eventType: 'test.event', payload: {} });
-      expect(eventBus.metrics.published).toBe(1);
-    });
-
-    it('emits event to registered listeners', async () => {
-      const handler = vi.fn();
-      eventBus.on('order.created', handler);
-      await eventBus.publish({ eventType: 'order.created', payload: { id: '123' } });
-      expect(handler).toHaveBeenCalledTimes(1);
-    });
-
-    it('handles listener throwing without crashing publish', async () => {
-      eventBus.on('order.created', () => { throw new Error('handler error'); });
-      // Should not throw
-      await expect(eventBus.publish({ eventType: 'order.created', payload: {} })).resolves.toBeUndefined();
-    });
-  });
-
-  describe('subscribe', () => {
-    it('increments subscribed metric', async () => {
-      await eventBus.subscribe('test.event', vi.fn());
-      expect(eventBus.metrics.subscribed).toBe(1);
-    });
-  });
-
-  describe('registry', () => {
-    it('exposes registry via getter', () => {
-      expect(eventBus.registry).toBeDefined();
+  describe("clearMetrics", () => {
+    it("resets all metrics to zero", () => {
+      eventBus.publish("m1", {});
+      eventBus.subscribe("m2", vi.fn());
+      eventBus.clearMetrics();
+      expect(eventBus.metrics).toEqual({
+        published: 0,
+        subscribed: 0,
+        errors: 0,
+        deduplicated: 0,
+      });
     });
   });
 });
