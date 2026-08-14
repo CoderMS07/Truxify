@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { correlationIdMiddleware, correlationContext } from '../../src/middleware/correlationId.js';
+import { correlationIdMiddleware, correlationContext, runWithCorrelationId, getCorrelationStore } from '../../src/middleware/correlationId.js';
 
 function makeReq(headers = {}) {
   return {
@@ -67,7 +67,6 @@ describe('correlationIdMiddleware', () => {
     correlationContext.run({ correlationId: 'context-test-id' }, () => {
       storedId = correlationContext.getStore()?.correlationId;
     });
-    // The middleware stores the ID in the context before calling next
     expect(req.correlationId).toBe('context-test-id');
   });
 
@@ -128,13 +127,36 @@ describe('correlationIdMiddleware', () => {
 });
 
 
-// === Spec 14 test ===
-import { describe, it, expect } from 'vitest';
-import { runWithCorrelationId, getCorrelationStore } from '../../src/middleware/correlationId.js';
-describe('correlationId', () => {
-  it('stores in run()', () => {
-    runWithCorrelationId('cid-1', () => { expect(getCorrelationStore().correlationId).toBe('cid-1'); });
+// === Spec 14 test: runWithCorrelationId and getCorrelationStore ===
+describe('runWithCorrelationId and getCorrelationStore', () => {
+  it('runWithCorrelationId stores the ID and getCorrelationStore retrieves it', () => {
+    runWithCorrelationId('cid-1', () => {
+      expect(getCorrelationStore()?.correlationId).toBe('cid-1');
+    });
   });
-  it('empty outside', () => { expect(getCorrelationStore().correlationId).toBeUndefined(); });
-});
 
+  it('getCorrelationStore returns undefined outside any correlation context', () => {
+    expect(getCorrelationStore()).toBeUndefined();
+  });
+
+  it('runWithCorrelationId uses the shared correlationContext AsyncLocalStorage', () => {
+    runWithCorrelationId('shared-cid', () => {
+      const store = correlationContext.getStore();
+      expect(store?.correlationId).toBe('shared-cid');
+      expect(getCorrelationStore()?.correlationId).toBe('shared-cid');
+    });
+  });
+
+  it('multiple nested calls maintain separate contexts', () => {
+    let outerId = null;
+    let innerId = null;
+    runWithCorrelationId('outer-id', () => {
+      outerId = getCorrelationStore()?.correlationId;
+      runWithCorrelationId('inner-id', () => {
+        innerId = getCorrelationStore()?.correlationId;
+      });
+    });
+    expect(outerId).toBe('outer-id');
+    expect(innerId).toBe('inner-id');
+  });
+});
