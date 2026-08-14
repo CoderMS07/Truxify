@@ -57,6 +57,19 @@ export function redisRateLimiter({ routeKey, limit, windowMs, failClosed = false
       pipeline.zcard(key);
       const results = await pipeline.exec();
 
+      // Validate pipeline.exec() returned a valid array with the expected entries.
+      if (!results || !Array.isArray(results) || results.length < 2) {
+        if (failClosed) {
+          logger.error({ routeKey }, '[RateLimiter] pipeline.exec returned null — failing closed');
+          return res.status(503).json({
+            success: false,
+            error: 'Service temporarily unavailable. Please try again shortly.',
+          });
+        }
+        logger.warn({ routeKey }, '[RateLimiter] pipeline.exec returned null — failing open');
+        return next();
+      }
+
       // Validate ZCARD result tuple [error, value].
       const zcardTuple = results[1];
       if (!zcardTuple || zcardTuple[0]) {
