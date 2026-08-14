@@ -904,7 +904,7 @@ export async function handleLocationPing(ws, data, req) {
   let deviceTime = null;
   if (device_timestamp) {
     const parsedEpoch = Date.parse(device_timestamp);
-    if (Number.isNaN(parsedEpoch)) {
+    if (!Number.isFinite(parsedEpoch)) {
       logger.error(`[TRUXIFY VALIDATION ERROR] Malformed device_timestamp received from driver: ${driver_id}. Falling back to server time.`);
     } else {
       deviceTime = new Date(parsedEpoch);
