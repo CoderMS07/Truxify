@@ -63,7 +63,13 @@ class OPAService {
                 throw new Error(stderr);
             }
 
-            const result = JSON.parse(stdout);
+            let result;
+            try {
+              result = JSON.parse(stdout);
+            } catch (e) {
+              logger.error('OPA evaluation parse error:', e);
+              return { allowed: false, error: e.message, policy: policyName, timestamp: new Date().toISOString() };
+            }
             const allowed = result.result && result.result[0]?.value === true;
 
             // Get violations
@@ -72,7 +78,13 @@ class OPAService {
                 const { stdout: denyStdout } = await execAsync(
                     `opa eval --data ${path.join(this.policiesDir, policyName + '.rego')} --input ${inputPath} "data.${policyName}.deny"`
                 );
-                const denyResult = JSON.parse(denyStdout);
+                let denyResult;
+                try {
+                  denyResult = JSON.parse(denyStdout);
+                } catch (e) {
+                  logger.warn('OPA deny parse error:', e);
+                  denyResult = { result: null };
+                }
                 if (denyResult.result) {
                     for (const r of denyResult.result) {
                         violations.push(r.value);
