@@ -1284,21 +1284,12 @@ export async function handleLocationPing(ws, data, req) {
   deliverLocationToLocalSubscribers(trackingSubscriptions, broadcastPayload, orderDisplayId ?? null, driver_id);
   initRedisTrackerPubSub();
 
-  if (redisClient) {
-    const pubSubMessage = JSON.stringify({
-      orderDisplayId,
-      driver_id,
-      payload: broadcastPayload,
-    });
-    redisClient.publish(TRACKER_CHANNELS.LOCATION, pubSubMessage).catch((err) => {
-      logger.error({ err }, '[Tracker] Redis publish error for location update');
-      if (orderDisplayId) deliverToLocalSubscribers(orderDisplayId, broadcastPayload);
-      if (driver_id) deliverToLocalSubscribers(driver_id, broadcastPayload);
-    });
-  } else {
-    if (orderDisplayId) deliverToLocalSubscribers(orderDisplayId, broadcastPayload);
-    if (driver_id) deliverToLocalSubscribers(driver_id, broadcastPayload);
-  }
+  // Cross-replica fan-out is already handled by locationEventBus.publish above,
+  // which fans the update out to every replica via its own channel and lets each
+  // replica's consumer skip self-originated events. Publishing again here to the
+  // legacy TRACKER_CHANNELS.LOCATION channel caused every subscriber to receive
+  // the same update a second time (duplicate delivery), so we rely on the single
+  // bus publish and the local delivery done just above.
 
   // Publish to Supabase Realtime channel driver-location:{orderId}
   // Reuse cached channel to avoid creating a new channel per ping.
