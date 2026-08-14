@@ -1231,4 +1231,256 @@ router.get('/:id', authenticate, userLimiter, requirePolicy('order:view', async 
   }
 });
 
+// GET /api/orders/load-offers — browse available load offers for the driver marketplace board.
+router.get('/load-offers', authenticate, userLimiter, requirePolicy('load-offer:browse'), async (req, res) => {
+  try {
+    const pageVal = req.query.page || '1';
+    const limitVal = req.query.limit || '10';
+    const page = parseInt(String(pageVal), 10);
+    const limit = Math.min(100, Math.max(1, parseInt(String(limitVal), 10)));
+    if (page < 1 || !Number.isFinite(page)) {
+      return res.status(400).json({ error: 'page must be a positive integer' });
+    }
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
+
+    const { data: loads, error, count } = await supabaseAdmin
+      .from('load_offers')
+      .select('*', { count: 'exact' })
+      .eq('status', 'available')
+      .order('created_at', { ascending: false })
+      .range(from, to);
+
+    if (error) {
+      logger.error('Failed to fetch load offers:', error);
+      return res.status(500).json({ error: 'Failed to fetch load offers.' });
+    }
+    return res.json({
+      page,
+      limit,
+      total: count || 0,
+      totalPages: count ? Math.ceil(count / limit) : 0,
+      loads: loads || [],
+    });
+  } catch (err) {
+    logger.error('Load offers browse error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// GET /api/orders/load-offers/en-route — get load offers near a driver's current route.
+router.get('/load-offers/en-route', authenticate, userLimiter, requirePolicy('load-offer:browse'), async (req, res) => {
+  try {
+    const currentLat = Number(req.query.current_lat);
+    const currentLng = Number(req.query.current_lng);
+    const maxDetourKm = Math.min(200, Math.max(1, Number(req.query.max_detour_km) || 50));
+
+    if (!Number.isFinite(currentLat) || !Number.isFinite(currentLng)) {
+      return res.status(400).json({ error: 'current_lat and current_lng are required and must be finite numbers.' });
+    }
+    if (currentLat < -90 || currentLat > 90 || currentLng < -180 || currentLng > 180) {
+      return res.status(400).json({ error: 'Coordinates out of valid range.' });
+    }
+
+    // Fetch nearby available loads from DB (haversine radius ~100km)
+    const { data: offers, error: dbErr } = await supabaseAdmin
+      .from('load_offers')
+      .select('*')
+      .eq('status', 'available')
+      .limit(200);
+
+    if (dbErr) {
+      logger.error('Failed to fetch en-route loads:', dbErr);
+      return res.status(500).json({ error: 'Failed to fetch en-route loads.' });
+    }
+
+    const ranked = await matchEnRouteLoads({
+      currentLat,
+      currentLng,
+      offers: offers || [],
+      maxDetourKm,
+    });
+
+    return res.json({
+      current_lat: currentLat,
+      current_lng: currentLng,
+      max_detour_km: maxDetourKm,
+      loads: ranked.slice(0, 20),
+    });
+  } catch (err) {
+    logger.error('En-route loads error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// POST /api/orders/:id/bids — driver submits a bid on a load offer.
+router.post('/:id/bids', authenticate, bidLimiter, requirePolicy('bid:create'), validateBody(submitBidSchema), async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const driverId = req.user.id;
+    const { amount_inr } = req.body;
+
+    // Verify the order exists and is in 'available' status
+    const { data: order, error: orderErr } = await supabaseAdmin
+      .from('orders')
+      .select('id, status')
+      .eq('id', orderId)
+      .single();
+
+    if (orderErr || !order) {
+      return res.status(404).json({ error: 'Order not found.' });
+    }
+    if (order.status !== 'available') {
+      return res.status(409).json({ error: 'Order is not open for bidding.' });
+    }
+
+    const { data: bid, error: bidErr } = await supabaseAdmin
+      .from('bids')
+      .insert({
+        order_id: orderId,
+        driver_id: driverId,
+        amount_inr,
+        status: 'pending',
+      })
+      .select()
+      .single();
+
+    if (bidErr) {
+      logger.error('Failed to create bid:', bidErr);
+      return res.status(500).json({ error: 'Failed to submit bid.' });
+    }
+    return res.status(201).json({ bid });
+  } catch (err) {
+    logger.error('Submit bid error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// GET /api/orders/:id/bids — customer views bids on their posted load.
+router.get('/:id/bids', authenticate, userLimiter, requirePolicy('bid:view'), async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const { data: bids, error: bidsErr } = await supabaseAdmin
+      .from('bids')
+      .select('*, driver:drivers(id, name, phone, rating)')
+      .eq('order_id', orderId)
+      .order('created_at', { ascending: false });
+
+    if (bidsErr) {
+      logger.error('Failed to fetch bids:', bidsErr);
+      return res.status(500).json({ error: 'Failed to fetch bids.' });
+    }
+    return res.json({ bids: bids || [] });
+  } catch (err) {
+    logger.error('View bids error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// POST /api/orders/:id/bids/:bidId/accept — customer accepts a driver's bid.
+router.post('/:id/bids/:bidId/accept', authenticate, bidLimiter, requirePolicy('bid:accept'), validateBody(acceptBidParamsSchema), async (req, res) => {
+  try {
+    const { id: orderId, bidId } = req.params;
+    const { data: bid, error: bidErr } = await supabaseAdmin
+      .from('bids')
+      .select('*')
+      .eq('id', bidId)
+      .eq('order_id', orderId)
+      .single();
+
+    if (bidErr || !bid) {
+      return res.status(404).json({ error: 'Bid not found.' });
+    }
+    if (bid.status !== 'pending') {
+      return res.status(409).json({ error: 'Bid is no longer pending.' });
+    }
+
+    // Accept the bid and update order status
+    await supabaseAdmin.from('bids').update({ status: 'accepted' }).eq('id', bidId);
+    await supabaseAdmin.from('orders').update({ status: 'accepted', driver_id: bid.driver_id }).eq('id', orderId);
+
+    return res.json({ success: true, message: 'Bid accepted.' });
+  } catch (err) {
+    logger.error('Accept bid error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// PUT /api/orders/:id/milestones — driver updates order milestone (geofence-triggered).
+router.put('/:id/milestones', authenticate, requirePolicy('order:update'), validateBody(updateMilestoneSchema), async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const { milestone } = req.body;
+
+    const { data: order, error: orderErr } = await supabaseAdmin
+      .from('orders')
+      .select('id, status')
+      .eq('id', orderId)
+      .single();
+
+    if (orderErr || !order) {
+      return res.status(404).json({ error: 'Order not found.' });
+    }
+
+    await supabaseAdmin
+      .from('order_milestones')
+      .upsert({
+        order_id: orderId,
+        milestone,
+        updated_at: new Date().toISOString(),
+      });
+
+    return res.json({ success: true, milestone });
+  } catch (err) {
+    logger.error('Update milestone error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// POST /api/orders/:id/ratings — customer rates a completed trip.
+router.post('/:id/ratings', authenticate, requirePolicy('rating:submit'), validateBody(submitRatingSchema), async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const { stars, feedback } = req.body;
+
+    if (!Number.isFinite(stars) || stars < 1 || stars > 5) {
+      return res.status(400).json({ error: 'stars must be a number between 1 and 5.' });
+    }
+
+    const { data: order, error: orderErr } = await supabaseAdmin
+      .from('orders')
+      .select('id, customer_id, driver_id, status')
+      .eq('id', orderId)
+      .single();
+
+    if (orderErr || !order) {
+      return res.status(404).json({ error: 'Order not found.' });
+    }
+    if (order.customer_id !== req.user.id) {
+      return res.status(403).json({ error: 'Forbidden.' });
+    }
+
+    const { data: rating, error: ratingErr } = await supabaseAdmin
+      .from('ratings')
+      .insert({
+        order_id: orderId,
+        driver_id: order.driver_id,
+        stars,
+        feedback: feedback || null,
+        created_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (ratingErr) {
+      logger.error('Failed to submit rating:', ratingErr);
+      return res.status(500).json({ error: 'Failed to submit rating.' });
+    }
+    return res.status(201).json({ rating });
+  } catch (err) {
+    logger.error('Submit rating error:', err);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
 export default router;
