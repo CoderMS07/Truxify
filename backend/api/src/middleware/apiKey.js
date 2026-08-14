@@ -8,6 +8,9 @@ import * as Sentry from '@sentry/node';
  * variable (comma-separated) to allow for zero-downtime key rotation.
  */
 export const requireApiKey = (req, res, next) => {
+  // Note: Query string API keys (?api_key=...) are intentionally not accepted.
+  // Passing credentials in URLs exposes them in logs, browser history, and proxies.
+  // Only x-api-key header is supported.
   // Only the x-api-key header authenticates. Accepting api_key from the query
   // string leaks the shared credential into access logs, CDN/proxy logs,
   // browser history and Referer headers, so it is intentionally ignored.
