@@ -13,7 +13,7 @@ vi.mock("../../../src/core/health/HealthCheck.js", () => ({
 describe("supabaseHealth", () => {
   it("returns UNHEALTHY when no client is configured", async () => {
     const { default: supabaseHealth } = await import("../../../src/core/health/checks/supabaseHealth.js");
-    const result = await supabaseHealth()();
+    const result = await supabaseHealth();
     expect(result.status).toBe("unhealthy");
     expect(result.message).toBe("not_configured");
   });
