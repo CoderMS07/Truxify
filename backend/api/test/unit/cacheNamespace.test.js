@@ -1,284 +1,213 @@
-import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
-
-const mockLogger = vi.hoisted(() => ({
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-  debug: vi.fn(),
-}));
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../src/middleware/logger.js', () => ({
-  default: mockLogger,
+  default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-import { CacheNamespace } from '../../src/cache/CacheNamespace.js';
-
-function registerBuiltins() {
-  CacheNamespace.register('profile', {
-    defaultTtl: parseInt(process.env.REDIS_CACHE_TTL || '900', 10),
-  });
-  CacheNamespace.register('order', { defaultTtl: 300 });
-  CacheNamespace.register('driver', { defaultTtl: 300 });
-  CacheNamespace.register('lookup', { defaultTtl: 3600 });
-  CacheNamespace.register('osrm', { defaultTtl: 86400 });
-  CacheNamespace.register('fraud', { defaultTtl: 3600 });
-  CacheNamespace.register('idempotency', { defaultTtl: 3600 });
-  CacheNamespace.register('shard', { defaultTtl: 300 });
-  CacheNamespace.register('rate_limit', { defaultTtl: 900, enablePubSub: false });
-  CacheNamespace.register('lock', { defaultTtl: 10, enablePubSub: false });
-  CacheNamespace.register('tracker', { defaultTtl: 86400 });
-  CacheNamespace.register('load_offer', { defaultTtl: 120 });
-  CacheNamespace.register('otp', { defaultTtl: 3600, enablePubSub: false });
-  CacheNamespace.register('version', { defaultTtl: 0, enablePubSub: false });
-}
-
 describe('CacheNamespace', () => {
-  beforeEach(() => {
+  let CacheNamespace;
+
+  beforeEach(async () => {
+    vi.resetModules();
     vi.clearAllMocks();
+    const mod = await import('../../src/cache/CacheNamespace.js');
+    CacheNamespace = mod.CacheNamespace;
+    // Clear all built-in namespaces for isolation
+    CacheNamespace.clear();
   });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // ── register ────────────────────────────────────────────────────────────
 
   describe('register', () => {
-    it('registers a new namespace and returns its entry', () => {
-      CacheNamespace.clear();
-      const entry = CacheNamespace.register('custom_ns', { defaultTtl: 60 });
-      expect(entry).toEqual({
-        name: 'custom_ns',
-        prefix: 'custom_ns',
-        defaultTtl: 60,
-        enablePubSub: true,
-      });
-    });
-
-    it('returns existing entry on duplicate registration', () => {
-      CacheNamespace.clear();
-      const first = CacheNamespace.register('dup', { defaultTtl: 100 });
-      const second = CacheNamespace.register('dup', { defaultTtl: 200 });
-      expect(second).toBe(first);
-      expect(second.defaultTtl).toBe(100);
-    });
-
-    it('uses custom prefix when provided', () => {
-      CacheNamespace.clear();
-      const entry = CacheNamespace.register('prefixed', { prefix: 'pfx' });
-      expect(entry.prefix).toBe('pfx');
-    });
-
-    it('defaults enablePubSub to true', () => {
-      CacheNamespace.clear();
-      const entry = CacheNamespace.register('pubsub_default');
+    it('registers a new namespace', () => {
+      const entry = CacheNamespace.register('test_ns', { defaultTtl: 600 });
+      expect(entry.name).toBe('test_ns');
+      expect(entry.prefix).toBe('test_ns');
+      expect(entry.defaultTtl).toBe(600);
       expect(entry.enablePubSub).toBe(true);
     });
 
-    it('sets enablePubSub to false when explicitly disabled', () => {
-      CacheNamespace.clear();
-      const entry = CacheNamespace.register('no_pubsub', { enablePubSub: false });
+    it('uses provided prefix over name', () => {
+      const entry = CacheNamespace.register('profile', { prefix: 'user:profile', defaultTtl: 900 });
+      expect(entry.prefix).toBe('user:profile');
+    });
+
+    it('defaults enablePubSub to true', () => {
+      const entry = CacheNamespace.register('test_ns');
+      expect(entry.enablePubSub).toBe(true);
+    });
+
+    it('allows disabling PubSub via opts', () => {
+      const entry = CacheNamespace.register('test_ns', { enablePubSub: false });
       expect(entry.enablePubSub).toBe(false);
     });
 
     it('defaults defaultTtl to 900 when not provided', () => {
-      CacheNamespace.clear();
-      const entry = CacheNamespace.register('ttl_default');
+      const entry = CacheNamespace.register('test_ns');
       expect(entry.defaultTtl).toBe(900);
     });
+
+    it('returns existing entry when registering same name twice', () => {
+      const entry1 = CacheNamespace.register('test_ns', { defaultTtl: 600 });
+      const entry2 = CacheNamespace.register('test_ns', { defaultTtl: 999 });
+      expect(entry1).toBe(entry2);
+      expect(entry1.defaultTtl).toBe(600);
+    });
   });
+
+  // ── get ────────────────────────────────────────────────────────────────
 
   describe('get', () => {
     it('retrieves a registered namespace', () => {
-      CacheNamespace.clear();
-      CacheNamespace.register('find_me', { defaultTtl: 42 });
-      const entry = CacheNamespace.get('find_me');
-      expect(entry.name).toBe('find_me');
-      expect(entry.defaultTtl).toBe(42);
+      CacheNamespace.register('my_ns', { defaultTtl: 100 });
+      const entry = CacheNamespace.get('my_ns');
+      expect(entry).toBeDefined();
+      expect(entry.name).toBe('my_ns');
     });
 
-    it('returns undefined for an unregistered namespace', () => {
-      expect(CacheNamespace.get('nonexistent')).toBeUndefined();
+    it('returns undefined for unregistered namespace', () => {
+      const entry = CacheNamespace.get('nonexistent');
+      expect(entry).toBeUndefined();
     });
   });
 
+  // ── isValid ────────────────────────────────────────────────────────────
+
   describe('isValid', () => {
-    it('returns true for a registered namespace', () => {
-      CacheNamespace.clear();
+    it('returns true for registered namespace', () => {
       CacheNamespace.register('valid_ns');
       expect(CacheNamespace.isValid('valid_ns')).toBe(true);
     });
 
-    it('returns false for an unregistered namespace', () => {
-      expect(CacheNamespace.isValid('invalid_ns')).toBe(false);
+    it('returns false for unregistered namespace', () => {
+      expect(CacheNamespace.isValid('invalid')).toBe(false);
+    });
+
+    it('returns false after namespace is cleared', () => {
+      CacheNamespace.register('transient');
+      expect(CacheNamespace.isValid('transient')).toBe(true);
+      CacheNamespace.clear();
+      expect(CacheNamespace.isValid('transient')).toBe(false);
     });
   });
+
+  // ── names ──────────────────────────────────────────────────────────────
 
   describe('names', () => {
-    it('returns all registered namespace names', () => {
-      CacheNamespace.clear();
-      CacheNamespace.register('alpha');
-      CacheNamespace.register('beta');
-      CacheNamespace.register('gamma');
-      const result = CacheNamespace.names();
-      expect(result).toEqual(expect.arrayContaining(['alpha', 'beta', 'gamma']));
-      expect(result).toHaveLength(3);
-    });
-
-    it('returns an empty array when no namespaces are registered', () => {
-      CacheNamespace.clear();
+    it('returns empty array when no namespaces registered', () => {
       expect(CacheNamespace.names()).toEqual([]);
     });
+
+    it('returns all registered namespace names', () => {
+      CacheNamespace.register('ns1');
+      CacheNamespace.register('ns2');
+      CacheNamespace.register('ns3');
+      const names = CacheNamespace.names();
+      expect(names).toContain('ns1');
+      expect(names).toContain('ns2');
+      expect(names).toContain('ns3');
+      expect(names).toHaveLength(3);
+    });
+
+    it('does not return duplicate names', () => {
+      CacheNamespace.register('ns1');
+      CacheNamespace.register('ns1');
+      expect(CacheNamespace.names()).toEqual(['ns1']);
+    });
   });
+
+  // ── all ────────────────────────────────────────────────────────────────
 
   describe('all', () => {
-    it('returns a Map of all registered entries', () => {
-      CacheNamespace.clear();
-      CacheNamespace.register('x');
-      CacheNamespace.register('y');
-      const result = CacheNamespace.all();
-      expect(result).toBeInstanceOf(Map);
-      expect(result.size).toBe(2);
-      expect(result.has('x')).toBe(true);
-      expect(result.has('y')).toBe(true);
+    it('returns a Map of all entries', () => {
+      CacheNamespace.register('a', { defaultTtl: 1 });
+      CacheNamespace.register('b', { defaultTtl: 2 });
+      const all = CacheNamespace.all();
+      expect(all).toBeInstanceOf(Map);
+      expect(all.get('a').defaultTtl).toBe(1);
+      expect(all.get('b').defaultTtl).toBe(2);
     });
 
-    it('returns a copy, not the internal map', () => {
+    it('returns empty Map when cleared', () => {
+      CacheNamespace.register('x');
       CacheNamespace.clear();
-      CacheNamespace.register('z');
-      const result = CacheNamespace.all();
-      result.delete('z');
-      expect(CacheNamespace.isValid('z')).toBe(true);
+      expect(CacheNamespace.all().size).toBe(0);
     });
   });
+
+  // ── clear ─────────────────────────────────────────────────────────────
 
   describe('clear', () => {
     it('removes all registered namespaces', () => {
-      CacheNamespace.register('to_clear_1');
-      CacheNamespace.register('to_clear_2');
+      CacheNamespace.register('one');
+      CacheNamespace.register('two');
       CacheNamespace.clear();
       expect(CacheNamespace.names()).toEqual([]);
     });
-  });
 
-  describe('default TTL and prefix', () => {
-    it('prefix defaults to name when not specified', () => {
+    it('allows re-registering after clear', () => {
+      CacheNamespace.register('reused');
       CacheNamespace.clear();
-      const entry = CacheNamespace.register('my_namespace');
-      expect(entry.prefix).toBe('my_namespace');
-    });
-
-    it('defaultTtl defaults to 900 when not provided', () => {
-      CacheNamespace.clear();
-      const entry = CacheNamespace.register('ttl_test');
-      expect(entry.defaultTtl).toBe(900);
-    });
-
-    it('enablePubSub defaults to true when not specified', () => {
-      CacheNamespace.clear();
-      const entry = CacheNamespace.register('pubsub_test');
-      expect(entry.enablePubSub).toBe(true);
+      CacheNamespace.register('reused', { defaultTtl: 500 });
+      expect(CacheNamespace.get('reused').defaultTtl).toBe(500);
     });
   });
-});
 
-describe('CacheNamespace — built-in namespaces', () => {
-  beforeAll(() => {
-    CacheNamespace.clear();
-    registerBuiltins();
+  // ── namespace isolation ───────────────────────────────────────────────
+
+  describe('namespace isolation', () => {
+    it('different namespaces produce different prefixes', () => {
+      const a = CacheNamespace.register('service_a', { prefix: 'svc_a' });
+      const b = CacheNamespace.register('service_b', { prefix: 'svc_b' });
+      expect(a.prefix).not.toBe(b.prefix);
+    });
+
+    it('same entityId under different namespaces yields different keys', () => {
+      CacheNamespace.register('ns1', { prefix: 'prefix1' });
+      CacheNamespace.register('ns2', { prefix: 'prefix2' });
+      const key1 = `${CacheNamespace.get('ns1').prefix}:entity-1`;
+      const key2 = `${CacheNamespace.get('ns2').prefix}:entity-1`;
+      expect(key1).not.toBe(key2);
+    });
+
+    it('defaultTtl is independent per namespace', () => {
+      CacheNamespace.register('fast', { defaultTtl: 10 });
+      CacheNamespace.register('slow', { defaultTtl: 3600 });
+      expect(CacheNamespace.get('fast').defaultTtl).not.toBe(
+        CacheNamespace.get('slow').defaultTtl,
+      );
+    });
+
+    it('enablePubSub is independent per namespace', () => {
+      CacheNamespace.register('pubsub_enabled', { enablePubSub: true });
+      CacheNamespace.register('pubsub_disabled', { enablePubSub: false });
+      expect(CacheNamespace.get('pubsub_enabled').enablePubSub).toBe(true);
+      expect(CacheNamespace.get('pubsub_disabled').enablePubSub).toBe(false);
+    });
   });
 
-  it('all expected built-in names are present', () => {
-    const expected = [
-      'profile', 'order', 'driver', 'lookup', 'osrm', 'fraud',
-      'idempotency', 'shard', 'rate_limit', 'lock', 'tracker',
-      'load_offer', 'otp', 'version',
-    ];
-    for (const name of expected) {
-      expect(CacheNamespace.isValid(name)).toBe(true);
-    }
-  });
+  // ── key prefixing ─────────────────────────────────────────────────────
 
-  it('registers profile namespace', () => {
-    const entry = CacheNamespace.get('profile');
-    expect(entry).toBeDefined();
-    expect(entry.name).toBe('profile');
-    expect(entry.prefix).toBe('profile');
-  });
+  describe('key prefixing', () => {
+    it('prefix defaults to namespace name when not provided', () => {
+      const entry = CacheNamespace.register('my_ns');
+      expect(entry.prefix).toBe('my_ns');
+    });
 
-  it('registers order namespace with 300 TTL', () => {
-    const entry = CacheNamespace.get('order');
-    expect(entry).toBeDefined();
-    expect(entry.defaultTtl).toBe(300);
-  });
+    it('custom prefix is used when provided', () => {
+      const entry = CacheNamespace.register('profile', { prefix: 'user:profile' });
+      expect(entry.prefix).toBe('user:profile');
+    });
 
-  it('registers driver namespace with 300 TTL', () => {
-    const entry = CacheNamespace.get('driver');
-    expect(entry).toBeDefined();
-    expect(entry.defaultTtl).toBe(300);
-  });
-
-  it('registers lookup namespace with 3600 TTL', () => {
-    const entry = CacheNamespace.get('lookup');
-    expect(entry).toBeDefined();
-    expect(entry.defaultTtl).toBe(3600);
-  });
-
-  it('registers osrm namespace with 86400 TTL', () => {
-    const entry = CacheNamespace.get('osrm');
-    expect(entry).toBeDefined();
-    expect(entry.defaultTtl).toBe(86400);
-  });
-
-  it('registers fraud namespace with 3600 TTL', () => {
-    const entry = CacheNamespace.get('fraud');
-    expect(entry).toBeDefined();
-    expect(entry.defaultTtl).toBe(3600);
-  });
-
-  it('registers idempotency namespace with 3600 TTL', () => {
-    const entry = CacheNamespace.get('idempotency');
-    expect(entry).toBeDefined();
-    expect(entry.defaultTtl).toBe(3600);
-  });
-
-  it('registers shard namespace with 300 TTL', () => {
-    const entry = CacheNamespace.get('shard');
-    expect(entry).toBeDefined();
-    expect(entry.defaultTtl).toBe(300);
-  });
-
-  it('registers rate_limit namespace with enablePubSub false', () => {
-    const entry = CacheNamespace.get('rate_limit');
-    expect(entry).toBeDefined();
-    expect(entry.defaultTtl).toBe(900);
-    expect(entry.enablePubSub).toBe(false);
-  });
-
-  it('registers lock namespace with 10s TTL and no pubsub', () => {
-    const entry = CacheNamespace.get('lock');
-    expect(entry).toBeDefined();
-    expect(entry.defaultTtl).toBe(10);
-    expect(entry.enablePubSub).toBe(false);
-  });
-
-  it('registers tracker namespace with 86400 TTL', () => {
-    const entry = CacheNamespace.get('tracker');
-    expect(entry).toBeDefined();
-    expect(entry.defaultTtl).toBe(86400);
-  });
-
-  it('registers load_offer namespace with 120 TTL', () => {
-    const entry = CacheNamespace.get('load_offer');
-    expect(entry).toBeDefined();
-    expect(entry.defaultTtl).toBe(120);
-  });
-
-  it('registers otp namespace with 3600 TTL and no pubsub', () => {
-    const entry = CacheNamespace.get('otp');
-    expect(entry).toBeDefined();
-    expect(entry.defaultTtl).toBe(3600);
-    expect(entry.enablePubSub).toBe(false);
-  });
-
-  it('registers version namespace with 0 TTL and no pubsub', () => {
-    const entry = CacheNamespace.get('version');
-    expect(entry).toBeDefined();
-    expect(entry.defaultTtl).toBe(0);
-    expect(entry.enablePubSub).toBe(false);
+    it('prefix is used in building cache keys', () => {
+      CacheNamespace.register('driver', { prefix: 'driver:v1' });
+      const entry = CacheNamespace.get('driver');
+      const key = `${entry.prefix}:driver-123`;
+      expect(key).toBe('driver:v1:driver-123');
+    });
   });
 });

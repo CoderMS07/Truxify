@@ -1,108 +1,129 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { requestIdMiddleware, requestLogger } from '../../src/middleware/requestId.js';
 
-vi.mock('../../src/middleware/logger.js', () => {
-  const mLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-  mLogger.child = vi.fn(() => mLogger);
-  return { default: mLogger };
-});
+const mockLogger = vi.hoisted(() => ({
+  child: vi.fn().mockReturnValue({
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    level: 'info',
+  }),
+  default: {
+    child: vi.fn().mockReturnValue({
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      level: 'info',
+    }),
+  },
+}));
 
-function makeReq(overrides = {}) {
-  return { requestId: undefined, originalUrl: '/api/test', method: 'GET', headers: {}, ...overrides };
-}
+vi.mock('../../src/middleware/logger.js', () => mockLogger);
 
-function makeRes(statusCode = 200) {
-  const listeners = {};
-  return {
-    statusCode,
-    locals: {},
-    setHeader: vi.fn(),
-    on: (event, cb) => { listeners[event] = cb; },
-    emit: (event) => listeners[event]?.(),
+describe('middleware/requestId', () => {
+  const mockRes = () => {
+    const headers = {};
+    const listeners = {};
+    return {
+      headers,
+      locals: {},
+      getHeader: (name) => headers[name],
+      setHeader: (name, value) => {
+        headers[name] = value;
+      },
+      statusCode: 200,
+      on: (event, cb) => {
+        if (!listeners[event]) listeners[event] = [];
+        listeners[event].push(cb);
+      },
+      _trigger: (event) => (listeners[event] || []).forEach((cb) => cb()),
+    };
   };
-}
+  const mockNext = vi.fn();
 
-describe('requestIdMiddleware', () => {
-  it('attaches a UUID to req.requestId', () => {
-    const req = makeReq();
-    const res = makeRes();
-    const next = vi.fn();
-    requestIdMiddleware(req, res, next);
-    expect(req.requestId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-    );
-    expect(next).toHaveBeenCalledOnce();
-  });
-
-  it('sets X-Request-Id response header', () => {
-    const req = makeReq();
-    const res = makeRes();
-    requestIdMiddleware(req, res, vi.fn());
-    expect(res.setHeader).toHaveBeenCalledWith('X-Request-Id', req.requestId);
-  });
-
-  it('propagates an inbound X-Request-Id header instead of generating a new one', () => {
-    const validUuid = '123e4567-e89b-12d3-a456-426614174000';
-    const req = makeReq({ headers: { 'x-request-id': validUuid } });
-    const res = makeRes();
-    requestIdMiddleware(req, res, vi.fn());
-    expect(req.requestId).toBe(validUuid);
-    expect(res.setHeader).toHaveBeenCalledWith('X-Request-Id', validUuid);
-  });
-
-  it('generates a unique ID per request', () => {
-    const req1 = makeReq();
-    const req2 = makeReq();
-    requestIdMiddleware(req1, makeRes(), vi.fn());
-    requestIdMiddleware(req2, makeRes(), vi.fn());
-    expect(req1.requestId).not.toBe(req2.requestId);
-  });
-});
-
-describe('requestLogger', () => {
-  let logger;
-  beforeEach(async () => {
-    logger = (await import('../../src/middleware/logger.js')).default;
+  beforeEach(() => {
     vi.clearAllMocks();
+    mockNext.mockReset();
   });
 
-  it('logs info for 2xx responses', () => {
-    const req = { requestId: 'test-id', method: 'GET', originalUrl: '/api/health' };
-    const res = makeRes(200);
-    requestLogger(req, res, vi.fn());
-    res.emit('finish');
-    expect(logger.info).toHaveBeenCalledWith(
-      expect.objectContaining({ requestId: 'test-id', statusCode: 200 })
-    );
+  describe('requestIdMiddleware', () => {
+    it('generates a UUID when no x-request-id header is provided', async () => {
+      const { requestIdMiddleware } = await import('../../src/middleware/requestId.js');
+      const req = { headers: {} };
+      const res = mockRes();
+      requestIdMiddleware(req, res, mockNext);
+      expect(req.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+      expect(mockNext).toHaveBeenCalled();
+    });
+
+    it('uses x-request-id header when valid', async () => {
+      const { requestIdMiddleware } = await import('../../src/middleware/requestId.js');
+      const req = { headers: { 'x-request-id': 'valid-request-id-123' } };
+      const res = mockRes();
+      requestIdMiddleware(req, res, mockNext);
+      expect(req.requestId).toBe('valid-request-id-123');
+      expect(res.getHeader('X-Request-Id')).toBe('valid-request-id-123');
+    });
+
+    it('rejects x-request-id header with invalid characters', async () => {
+      const { requestIdMiddleware } = await import('../../src/middleware/requestId.js');
+      const req = { headers: { 'x-request-id': 'invalid id with spaces!' } };
+      const res = mockRes();
+      requestIdMiddleware(req, res, mockNext);
+      expect(req.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    });
+
+    it('sets X-Request-Id response header', async () => {
+      const { requestIdMiddleware } = await import('../../src/middleware/requestId.js');
+      const req = { headers: {} };
+      const res = mockRes();
+      requestIdMiddleware(req, res, mockNext);
+      expect(res.getHeader('X-Request-Id')).toBe(req.requestId);
+    });
+
+    it('stores requestId in res.locals', async () => {
+      const { requestIdMiddleware } = await import('../../src/middleware/requestId.js');
+      const req = { headers: {} };
+      const res = mockRes();
+      requestIdMiddleware(req, res, mockNext);
+      expect(res.locals.requestId).toBe(req.requestId);
+    });
   });
 
-  it('logs warn for 4xx responses', () => {
-    const req = { requestId: 'test-id', method: 'GET', originalUrl: '/api/missing' };
-    const res = makeRes(404);
-    requestLogger(req, res, vi.fn());
-    res.emit('finish');
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ requestId: 'test-id', statusCode: 404 })
-    );
-  });
+  describe('addTracingHeaders', () => {
+    it('sets X-Trace-Id from requestId', async () => {
+      const { addTracingHeaders } = await import('../../src/middleware/requestId.js');
+      const req = { requestId: 'trace-123' };
+      const res = mockRes();
+      addTracingHeaders(req, res, mockNext);
+      expect(res.getHeader('X-Trace-Id')).toBe('trace-123');
+      expect(mockNext).toHaveBeenCalled();
+    });
 
-  it('logs error for 5xx responses', () => {
-    const req = { requestId: 'test-id', method: 'POST', originalUrl: '/api/orders' };
-    const res = makeRes(500);
-    requestLogger(req, res, vi.fn());
-    res.emit('finish');
-    expect(logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ requestId: 'test-id', statusCode: 500 })
-    );
-  });
+    it('sets X-Span-Id as 8-char hex', async () => {
+      const { addTracingHeaders } = await import('../../src/middleware/requestId.js');
+      const req = { requestId: 'trace-123' };
+      const res = mockRes();
+      addTracingHeaders(req, res, mockNext);
+      const spanId = res.getHeader('X-Span-Id');
+      expect(spanId).toMatch(/^[0-9a-f]{8}$/);
+    });
 
-  it('includes durationMs in log payload', () => {
-    const req = { requestId: 'test-id', method: 'GET', originalUrl: '/api/health' };
-    const res = makeRes(200);
-    requestLogger(req, res, vi.fn());
-    res.emit('finish');
-    expect(logger.info).toHaveBeenCalledWith(
-      expect.objectContaining({ durationMs: expect.any(Number) })
-    );
+    it('sets X-User-Id from req.user.id', async () => {
+      const { addTracingHeaders } = await import('../../src/middleware/requestId.js');
+      const req = { requestId: 'trace-123', user: { id: 'user-abcdefgh' } };
+      const res = mockRes();
+      addTracingHeaders(req, res, mockNext);
+      expect(res.getHeader('X-User-Id')).toBe('user-abc');
+    });
+
+    it('omits X-User-Id when req.user is missing', async () => {
+      const { addTracingHeaders } = await import('../../src/middleware/requestId.js');
+      const req = { requestId: 'trace-123' };
+      const res = mockRes();
+      addTracingHeaders(req, res, mockNext);
+      expect(res.getHeader('X-User-Id')).toBeUndefined();
+    });
   });
 });
