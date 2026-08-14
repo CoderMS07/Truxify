@@ -1,92 +1,151 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { KafkaAdapter } from '../../src/core/events/adapters/KafkaAdapter.js';
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock('../../src/middleware/logger.js', () => ({
+// Mock logger
+vi.mock("../../../src/middleware/logger.js", () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-describe('KafkaAdapter', () => {
+// Mock ContextPropagator
+vi.mock("../../../src/core/telemetry/ContextPropagator.js", () => ({
+  ContextPropagator: {
+    injectIntoEventPayload: vi.fn((e) => e),
+  },
+}));
+
+// Mock EventPublisher base class
+vi.mock("../../../src/core/events/EventPublisher.js", () => ({
+  EventPublisher: class EventPublisher {
+    constructor() {}
+  },
+}));
+
+const { KafkaAdapter } = await import("../../../src/core/events/adapters/KafkaAdapter.js");
+
+describe("KafkaAdapter", () => {
+  let mockKafkaConfig;
   let adapter;
-  let mockConfig;
 
   beforeEach(() => {
-    vi.clearAllMocks();
-    mockConfig = {
+    mockKafkaConfig = {
       connect: vi.fn().mockResolvedValue(undefined),
       disconnect: vi.fn().mockResolvedValue(undefined),
       publishEvent: vi.fn().mockResolvedValue(undefined),
       publishBatch: vi.fn().mockResolvedValue(undefined),
     };
-    adapter = new KafkaAdapter(mockConfig);
+    adapter = new KafkaAdapter(mockKafkaConfig);
   });
 
-  describe('constructor', () => {
-    it('initializes _connected to false', () => {
+  describe("constructor", () => {
+    it("creates an adapter with unconnected state", () => {
       expect(adapter.isConnected).toBe(false);
-    });
-
-    it('initializes empty _topicMap', () => {
-      expect(adapter._topicMap.size).toBe(0);
+      expect(adapter._kafkaConfig).toBe(mockKafkaConfig);
     });
   });
 
-  describe('setTopicMap', () => {
-    it('sets topic mappings', () => {
-      const result = adapter.setTopicMap({ 'order.created': 'truxify-orders' });
-      expect(adapter._topicMap.get('order.created')).toBe('truxify-orders');
-      expect(result).toBe(adapter); // fluent
-    });
-  });
-
-  describe('getTopic', () => {
-    it('returns mapped topic when set', () => {
-      adapter.setTopicMap({ 'order.created': 'truxify-orders' });
-      expect(adapter.getTopic('order.created')).toBe('truxify-orders');
-    });
-
-    it('returns dot-to-underscore conversion when not mapped', () => {
-      expect(adapter.getTopic('order.shipped')).toBe('order_shipped');
-    });
-
-    it('returns original when no conversion needed', () => {
-      expect(adapter.getTopic('simple_event')).toBe('simple_event');
-    });
-
-    it('replaces all dots with underscores', () => {
-      expect(adapter.getTopic('a.b.c')).toBe('a_b_c');
-    });
-  });
-
-  describe('connect', () => {
-    it('sets connected to true on success', async () => {
+  describe("connect", () => {
+    it("calls kafkaConfig.connect and sets connected to true", async () => {
       await adapter.connect();
+      expect(mockKafkaConfig.connect).toHaveBeenCalled();
       expect(adapter.isConnected).toBe(true);
     });
 
-    it('is idempotent when already connected', async () => {
+    it("does nothing if already connected", async () => {
       await adapter.connect();
-      await adapter.connect(); // should not throw
-      expect(adapter.isConnected).toBe(true);
+      await adapter.connect();
+      expect(mockKafkaConfig.connect).toHaveBeenCalledTimes(1);
     });
 
-    it('throws when config.connect fails', async () => {
-      mockConfig.connect.mockRejectedValue(new Error('Kafka unavailable'));
-      await expect(adapter.connect()).rejects.toThrow('Kafka unavailable');
+    it("throws if kafkaConfig.connect fails", async () => {
+      mockKafkaConfig.connect.mockRejectedValueOnce(new Error("Connection failed"));
+      await expect(adapter.connect()).rejects.toThrow("Connection failed");
     });
   });
 
-  describe('disconnect', () => {
-    it('sets connected to false on success', async () => {
+  describe("disconnect", () => {
+    it("calls kafkaConfig.disconnect and sets connected to false", async () => {
       await adapter.connect();
       await adapter.disconnect();
+      expect(mockKafkaConfig.disconnect).toHaveBeenCalled();
       expect(adapter.isConnected).toBe(false);
     });
 
-    it('handles disconnect failure gracefully', async () => {
-      mockConfig.disconnect.mockRejectedValue(new Error('Disconnect error'));
-      await adapter.connect();
-      await adapter.disconnect(); // should not throw
-      expect(adapter.isConnected).toBe(false);
+    it("does nothing if not connected", async () => {
+      await adapter.disconnect();
+      expect(mockKafkaConfig.disconnect).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("setTopicMap", () => {
+    it("sets topic mappings", () => {
+      adapter.setTopicMap({ "order.created": "orders-topic" });
+      expect(adapter.getTopic("order.created")).toBe("orders-topic");
+    });
+
+    it("falls back to eventType with dots replaced by underscores", () => {
+      adapter.setTopicMap({});
+      expect(adapter.getTopic("order.created")).toBe("order_created");
+    });
+  });
+
+  describe("publish", () => {
+    it("publishes an event to the correct topic", async () => {
+      adapter.setTopicMap({ "order.created": "orders-topic" });
+      const event = {
+        eventType: "order.created",
+        metadata: { eventId: "event-123" },
+        payload: { orderId: "123" },
+      };
+      await adapter.publish(event);
+      expect(mockKafkaConfig.publishEvent).toHaveBeenCalledWith(
+        "orders-topic",
+        expect.objectContaining({
+          eventId: "event-123",
+          eventType: "order.created",
+          data: { orderId: "123" },
+        }),
+        "event-123"
+      );
+    });
+
+    it("auto-connects if not connected", async () => {
+      const event = { eventType: "test", metadata: {}, payload: {} };
+      await adapter.publish(event);
+      expect(mockKafkaConfig.connect).toHaveBeenCalled();
+      expect(adapter.isConnected).toBe(true);
+    });
+
+    it("throws if publishEvent fails", async () => {
+      mockKafkaConfig.publishEvent.mockRejectedValueOnce(new Error("Publish failed"));
+      const event = { eventType: "test", metadata: {}, payload: {} };
+      await expect(adapter.publish(event)).rejects.toThrow("Publish failed");
+    });
+  });
+
+  describe("publishBatch", () => {
+    it("publishes multiple events", async () => {
+      adapter.setTopicMap({ "batch.event": "batch-topic" });
+      const events = [
+        { eventType: "batch.event", metadata: {}, payload: { id: 1 } },
+        { eventType: "batch.event", metadata: {}, payload: { id: 2 } },
+      ];
+      await adapter.publishBatch(events);
+      expect(mockKafkaConfig.publishBatch).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ topic: "batch-topic" }),
+        ])
+      );
+    });
+
+    it("auto-connects if not connected", async () => {
+      const events = [{ eventType: "test", metadata: {}, payload: {} }];
+      await adapter.publishBatch(events);
+      expect(mockKafkaConfig.connect).toHaveBeenCalled();
+    });
+
+    it("throws if publishBatch fails", async () => {
+      mockKafkaConfig.publishBatch.mockRejectedValueOnce(new Error("Batch failed"));
+      const events = [{ eventType: "test", metadata: {}, payload: {} }];
+      await expect(adapter.publishBatch(events)).rejects.toThrow("Batch failed");
     });
   });
 });
