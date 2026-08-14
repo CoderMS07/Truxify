@@ -1,46 +1,100 @@
-import { describe, it, expect } from "vitest";
-import { BaseEvent } from "../../../src/core/events/BaseEvent.js";
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { BaseEvent } from '../../src/core/events/BaseEvent.js';
+import { EventMetadata, EVENT_CATEGORIES, EVENT_SOURCES } from '../../src/core/events/EventMetadata.js';
 
-describe("BaseEvent", () => {
-  it("rejects non-string eventType", () => {
-    expect(() => new BaseEvent({ eventType: 123 })).toThrow("non-empty eventType string");
-    expect(() => new BaseEvent({ eventType: "" })).toThrow("non-empty eventType string");
-    expect(() => new BaseEvent({})).toThrow("non-empty eventType string");
+vi.mock('../../src/middleware/logger.js', () => ({
+  default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
+
+describe('BaseEvent', () => {
+  it('creates event with required eventType', () => {
+    const event = new BaseEvent({ eventType: 'order.created', source: 'order-service' });
+    expect(event.eventType).toBe('order.created');
+    expect(event.source).toBe('order-service');
+    expect(event.category).toBe(EVENT_CATEGORIES.DOMAIN);
+    expect(typeof event.eventId).toBe('string');
+    expect(typeof event.timestamp).toBe('string');
   });
 
-  it("creates event with valid eventType and defaults", () => {
-    const event = new BaseEvent({ eventType: "order.created" });
-    expect(event.eventType).toBe("order.created");
-    expect(event.payload).toEqual({});
-    expect(event.timestamp).toBeDefined();
-    expect(event.eventId).toBeDefined();
+  it('throws when eventType is missing', () => {
+    expect(() => new BaseEvent({ source: 'test' })).toThrow('BaseEvent requires a non-empty eventType string');
   });
 
-  it("accepts custom payload", () => {
-    const payload = { orderId: "123" };
-    const event = new BaseEvent({ eventType: "order.created", payload });
+  it('throws when eventType is not a string', () => {
+    expect(() => new BaseEvent({ eventType: 123 })).toThrow('BaseEvent requires a non-empty eventType string');
+  });
+
+  it('throws when eventType is empty string', () => {
+    expect(() => new BaseEvent({ eventType: '' })).toThrow('BaseEvent requires a non-empty eventType string');
+  });
+
+  it('accepts custom payload', () => {
+    const payload = { orderId: '123', amount: 500 };
+    const event = new BaseEvent({ eventType: 'order.paid', source: 'payment', payload });
     expect(event.payload).toEqual(payload);
   });
 
-  it("withCorrelationId returns the same instance with updated metadata", () => {
-    const event = new BaseEvent({ eventType: "order.created" });
-    expect(event.correlationId).toBeNull();
-    const updated = event.withCorrelationId("corr-1");
-    expect(updated).toBe(event);
-    expect(event.correlationId).toBe("corr-1");
+  it('uses provided correlationId and causationId', () => {
+    const event = new BaseEvent({
+      eventType: 'test',
+      source: 'test',
+      correlationId: 'corr-001',
+      causationId: 'evt-002',
+    });
+    expect(event.correlationId).toBe('corr-001');
+    expect(event.causationId).toBe('evt-002');
   });
 
-  it("withCausationId returns the same instance with updated metadata", () => {
-    const event = new BaseEvent({ eventType: "order.created" });
-    const updated = event.withCausationId("cause-1");
-    expect(updated).toBe(event);
-    expect(event.metadata.causationId).toBe("cause-1");
+  it('accepts existing EventMetadata instance', () => {
+    const metadata = new EventMetadata({
+      eventType: 'order.shipped',
+      source: 'fulfillment',
+      correlationId: 'corr-123',
+    });
+    const event = new BaseEvent({ metadata });
+    expect(event.eventType).toBe('order.shipped');
+    expect(event.correlationId).toBe('corr-123');
   });
 
-  it("toJSON produces a serializable object", () => {
-    const event = new BaseEvent({ eventType: "order.created", payload: { id: 1 } });
+  it('withCorrelationId mutates and returns self', () => {
+    const event = new BaseEvent({ eventType: 'test', source: 'test' });
+    const result = event.withCorrelationId('new-corr');
+    expect(event.correlationId).toBe('new-corr');
+    expect(result).toBe(event); // mutates in place, returns this
+  });
+
+  it('withCausationId mutates and returns self', () => {
+    const event = new BaseEvent({ eventType: 'test', source: 'test' });
+    const result = event.withCausationId('new-cause');
+    expect(event.causationId).toBe('new-cause');
+    expect(result).toBe(event);
+  });
+
+  it('toJSON returns metadata and payload', () => {
+    const payload = { data: 'value' };
+    const event = new BaseEvent({
+      eventType: 'driver.assigned',
+      source: 'dispatch',
+      payload,
+    });
     const json = event.toJSON();
     expect(json.metadata).toBeDefined();
-    expect(json.payload).toEqual({ id: 1 });
+    expect(json.metadata.eventType).toBe('driver.assigned');
+    expect(json.payload).toEqual(payload);
+  });
+
+  it('fromJSON reconstructs BaseEvent', () => {
+    const original = new BaseEvent({
+      eventType: 'order.cancelled',
+      source: 'order-service',
+      payload: { reason: 'customer_request' },
+      correlationId: 'corr-999',
+    });
+    const json = original.toJSON();
+    const reconstructed = BaseEvent.fromJSON(json);
+    expect(reconstructed.eventType).toBe('order.cancelled');
+    expect(reconstructed.source).toBe('order-service');
+    expect(reconstructed.correlationId).toBe('corr-999');
+    expect(reconstructed.payload).toEqual({ reason: 'customer_request' });
   });
 });
