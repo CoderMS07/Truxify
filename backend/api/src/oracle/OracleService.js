@@ -50,6 +50,17 @@ class OracleService {
 
   async _verifyOTP(orderId, otp) {
     try {
+      // Early exit if order already has OTP verified to avoid unnecessary DB lookups
+      const { data: order, error: orderErr } = await this.supabase
+        .from('orders')
+        .select('otp_verified')
+        .eq('id', orderId)
+        .maybeSingle();
+
+      if (!orderErr && order?.otp_verified) {
+        return { confirmed: true, provider: 'OTPVerifier', reason: 'Already verified', timestamp: new Date().toISOString() };
+      }
+
       const { data: otpRecord, error: otpErr } = await this.supabase
         .from('delivery_otps')
         .select('id, otp_hash, otp_salt, expires_at')
