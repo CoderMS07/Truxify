@@ -195,14 +195,30 @@
       "position": [
         1450,
         300
-      ]
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
         "conditions": {
+          "combinator": "or",
           "string": [
             {
               "value1": "={{$json.status}}",
+              "operation": "equals",
+              "value2": "disputed"
+            },
+            {
+              "value1": "={{$json.data.status}}",
+              "operation": "equals",
+              "value2": "disputed"
+            },
+            {
+              "value1": "={{$json.order.status}}",
+              "operation": "equals",
               "value2": "disputed"
             }
           ]
@@ -321,7 +337,7 @@
     },
     {
       "parameters": {
-        "toEmail": "admin@truxify.com",
+        "toEmail": "={{$env.ADMIN_ALERT_EMAIL}}",
         "subject": "=Escrow Alert: Package Dispute PDF Failed for Booking {{$node[\"Dispute Webhook Trigger\"].json.body.bookingId}}",
         "textBody": "=CRITICAL: The Package Dispute PDF step failed after 3 retries for Booking {{$node[\"Dispute Webhook Trigger\"].json.body.bookingId}}. Dispute evidence could not be packaged. Immediate manual intervention required.",
         "options": {}
@@ -337,7 +353,7 @@
     },
     {
       "parameters": {
-        "toEmail": "admin@truxify.com",
+        "toEmail": "={{$env.ADMIN_ALERT_EMAIL}}",
         "subject": "=Escrow Alert: Notify Both Parties Failed for Booking {{$node[\"Dispute Webhook Trigger\"].json.body.bookingId}}",
         "textBody": "=CRITICAL: The Notify Both Parties step failed after 3 retries for Booking {{$node[\"Dispute Webhook Trigger\"].json.body.bookingId}}. The disputed parties were not notified. Immediate manual intervention required.",
         "options": {}
