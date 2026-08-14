@@ -70,8 +70,6 @@ class VoiceAIService:
         }
         
         logger.info(f"✅ Voice AI Service initialized with {len(self.languages)} languages")
-<<<<<<< HEAD
-=======
 
     def _confidence_from_result(self, result: Dict) -> Optional[float]:
         segments = result.get('segments') or []
@@ -80,7 +78,6 @@ class VoiceAIService:
             return None
         mean_logprob = sum(avg_logprobs) / len(avg_logprobs)
         return max(0.0, min(1.0, 1.0 + mean_logprob))
->>>>>>> upstream/main
     
     async def detect_language(self, audio_data: bytes) -> Dict:
         """Detect language from speech with dialect recognition"""
@@ -97,11 +94,7 @@ class VoiceAIService:
             
             detected_lang = result.get('language', 'hi')
             text = result.get('text', '')
-<<<<<<< HEAD
-            confidence = result.get('confidence', 0.7)
-=======
             confidence = self._confidence_from_result(result)
->>>>>>> upstream/main
             
             # Fine-tune dialect detection
             dialect = self._detect_dialect(text, detected_lang)
@@ -119,10 +112,7 @@ class VoiceAIService:
             )
             
             return {
-<<<<<<< HEAD
-=======
                 'success': True,
->>>>>>> upstream/main
                 'language_code': detected_lang,
                 'language_name': self.languages.get(detected_lang, {}).get('name', 'Unknown'),
                 'dialect': dialect,
@@ -134,14 +124,6 @@ class VoiceAIService:
         except Exception as e:
             logger.error(f"Language detection failed: {e}")
             return {
-<<<<<<< HEAD
-                'language_code': 'hi',
-                'language_name': 'Hindi',
-                'dialect': 'hindi',
-                'confidence': 0.5,
-                'text': '',
-                'is_supported': True,
-=======
                 'success': False,
                 'language_code': None,
                 'language_name': None,
@@ -149,7 +131,6 @@ class VoiceAIService:
                 'confidence': None,
                 'text': '',
                 'is_supported': False,
->>>>>>> upstream/main
                 'error': str(e)
             }
     
@@ -207,11 +188,7 @@ class VoiceAIService:
             )
             
             text = result.get('text', '')
-<<<<<<< HEAD
-            confidence = result.get('confidence', 0.7)
-=======
             confidence = self._confidence_from_result(result)
->>>>>>> upstream/main
             
             # Adapt text for dialect
             adapted_text = self._adapt_dialect(text, dialect)
@@ -328,15 +305,12 @@ class VoiceAIService:
         try:
             # 1. Detect language
             detection = await self.detect_language(audio_data)
-<<<<<<< HEAD
-=======
             if not detection.get('success'):
                 return {
                     'success': False,
                     'error': detection.get('error', 'language detection failed'),
                     'timestamp': datetime.now().isoformat()
                 }
->>>>>>> upstream/main
             
             # 2. Transcribe speech
             transcription = await self.transcribe_speech(

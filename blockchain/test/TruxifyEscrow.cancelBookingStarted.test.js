@@ -4,16 +4,6 @@ import { expect } from "chai";
 import { loadFixture } from "@nomicfoundation/hardhat-network-helpers";
 
 // createBooking requires an owner-signed EIP-191 commitment over
-<<<<<<< HEAD
-// keccak256(abi.encodePacked(chainId, escrow, customer, bookingId, nonce)).
-// The shared deployWithBooking fixture omits the signature, so this file keeps
-// its own fixture to exercise cancelBooking's started-trip guard (issue #8891).
-async function signCommitment(owner, escrow, customer, bookingId, nonce) {
-  const chainId = (await ethers.provider.getNetwork()).chainId;
-  const commitment = ethers.solidityPackedKeccak256(
-    ["uint256", "address", "address", "uint256", "uint256"],
-    [chainId, await escrow.getAddress(), customer.address, bookingId, nonce]
-=======
 // keccak256(abi.encodePacked(chainId, escrow, customer, bookingId, driver,
 // amount, nonce)). The shared deployWithBooking fixture omits the signature, so
 // this file keeps its own fixture to exercise cancelBooking's started-trip guard
@@ -24,7 +14,6 @@ async function signCommitment(owner, escrow, customer, bookingId, driver, amount
   const commitment = ethers.solidityPackedKeccak256(
     ["uint256", "address", "address", "uint256", "address", "uint256", "uint256"],
     [chainId, await escrow.getAddress(), customer.address, bookingId, driver, amount, nonce]
->>>>>>> upstream/main
   );
   return owner.signMessage(ethers.getBytes(commitment));
 }
@@ -37,11 +26,7 @@ describe("TruxifyEscrow #8891 — cancelBooking started-trip guard", function ()
 
     const bookingId = 1n;
     const amount = ethers.parseEther("1.0");
-<<<<<<< HEAD
-    const signature = await signCommitment(owner, escrow, customer, bookingId, 0n);
-=======
     const signature = await signCommitment(owner, escrow, customer, bookingId, driver.address, amount, 0n);
->>>>>>> upstream/main
 
     await escrow
       .connect(customer)
