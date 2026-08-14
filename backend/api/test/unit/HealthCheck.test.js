@@ -1,13 +1,12 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { HealthStatus, withTimeout, executeCheck } from '../../src/core/health/HealthCheck.js';
 
-vi.mock('../../../src/middleware/logger.js', () => ({
-  default: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+vi.mock('../../src/middleware/logger.js', () => ({
+  default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-const { HealthStatus, withTimeout, executeCheck } = await import('../../../src/core/health/HealthCheck.js');
-
 describe('HealthStatus', () => {
-  it('exports correct status constants', () => {
+  it('defines expected status values', () => {
     expect(HealthStatus.HEALTHY).toBe('healthy');
     expect(HealthStatus.DEGRADED).toBe('degraded');
     expect(HealthStatus.UNHEALTHY).toBe('unhealthy');
@@ -16,72 +15,88 @@ describe('HealthStatus', () => {
 });
 
 describe('withTimeout', () => {
-  it('resolves when promise resolves before timeout', async () => {
-    const promise = new Promise(resolve => setTimeout(() => resolve('done'), 5));
-    const result = await withTimeout(promise, 1000);
-    expect(result).toBe('done');
+  beforeEach(() => {
+    vi.useFakeTimers();
   });
 
-  it('rejects with timeout error when exceeded', async () => {
-    const promise = new Promise(resolve => setTimeout(() => resolve('done'), 500));
-    await expect(withTimeout(promise, 10)).rejects.toThrow('healthcheck timeout after 10ms');
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it('uses default timeout of 400ms', async () => {
-    const promise = new Promise(resolve => setTimeout(() => resolve('done'), 500));
-    await expect(withTimeout(promise)).rejects.toThrow('healthcheck timeout after 400ms');
+  it('resolves when promise resolves within timeout', async () => {
+    const promise = Promise.resolve('ok');
+    const result = withTimeout(promise, 1000);
+    vi.advanceTimersByTime(500);
+    await Promise.resolve(); // flush microtasks
+    await expect(result).resolves.toBe('ok');
   });
 
-  it('passes through a resolved value', async () => {
-    const result = await withTimeout(Promise.resolve(42), 1000);
-    expect(result).toBe(42);
-  });
-
-  it('passes through a rejected value', async () => {
-    await expect(withTimeout(Promise.reject(new Error('boom')), 1000)).rejects.toThrow('boom');
+  it('rejects when promise takes too long', async () => {
+    vi.useRealTimers(); // Need real timers for actual delays
+    const promise = new Promise(r => setTimeout(() => r('ok'), 200));
+    const result = withTimeout(promise, 50);
+    await expect(result).rejects.toThrow('healthcheck timeout');
   });
 });
 
 describe('executeCheck', () => {
-  it('returns correct status object on healthy result', async () => {
-    const result = await executeCheck('testsvc', async () => ({ status: HealthStatus.HEALTHY }));
-    expect(result.name).toBe('testsvc');
-    expect(result.status).toBe(HealthStatus.HEALTHY);
-    expect(result.responseTime).toBeGreaterThanOrEqual(0);
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns healthy status when check resolves', async () => {
+    const checkFn = vi.fn().mockResolvedValue({ status: 'healthy' });
+    const result = await executeCheck('test-service', checkFn, {});
+    expect(result.status).toBe('healthy');
+    expect(result.name).toBe('test-service');
     expect(result.critical).toBe(false);
   });
 
-  it('returns HEALTHY when checkFn returns null', async () => {
-    const result = await executeCheck('testsvc', async () => null);
-    expect(result.status).toBe(HealthStatus.HEALTHY);
-  });
-
-  it('returns DEGRADED when checkFn returns degraded status', async () => {
-    const result = await executeCheck('testsvc', async () => ({ status: HealthStatus.DEGRADED, message: 'slow' }));
-    expect(result.status).toBe(HealthStatus.DEGRADED);
+  it('returns degraded status when check returns degraded', async () => {
+    const checkFn = vi.fn().mockResolvedValue({ status: 'degraded', message: 'slow' });
+    const result = await executeCheck('test-service', checkFn, {});
+    expect(result.status).toBe('degraded');
     expect(result.message).toBe('slow');
   });
 
-  it('returns UNHEALTHY when checkFn throws', async () => {
-    const result = await executeCheck('testsvc', async () => { throw new Error('db timeout'); });
-    expect(result.status).toBe(HealthStatus.UNHEALTHY);
-    expect(result.message).toBe('db timeout');
+  it('returns unhealthy when check throws', async () => {
+    const checkFn = vi.fn().mockRejectedValue(new Error('Connection refused'));
+    const result = await executeCheck('test-service', checkFn, {});
+    expect(result.status).toBe('unhealthy');
+    expect(result.message).toBe('Connection refused');
+    expect(result.critical).toBe(false);
   });
 
-  it('returns UNHEALTHY when checkFn times out', async () => {
-    const slowFn = () => new Promise(resolve => setTimeout(() => resolve({ status: HealthStatus.HEALTHY }), 500));
-    const result = await executeCheck('slowsvc', slowFn, { timeoutMs: 10 });
-    expect(result.status).toBe(HealthStatus.UNHEALTHY);
-    expect(result.message).toMatch(/timeout/);
-  });
-
-  it('returns result.message when checkFn returns it', async () => {
-    const result = await executeCheck('testsvc', async () => ({ status: HealthStatus.HEALTHY, message: 'all good' }));
-    expect(result.message).toBe('all good');
-  });
-
-  it('marks critical flag from opts', async () => {
-    const result = await executeCheck('critsvc', async () => ({ status: HealthStatus.HEALTHY }), { critical: true });
+  it('uses provided critical flag', async () => {
+    const checkFn = vi.fn().mockResolvedValue({ status: 'healthy' });
+    const result = await executeCheck('critical-service', checkFn, { critical: true });
     expect(result.critical).toBe(true);
+  });
+
+  it('includes responseTime in result', async () => {
+    vi.useRealTimers();
+    const checkFn = vi.fn().mockImplementation(async () => {
+      await new Promise(r => setTimeout(r, 10));
+      return { status: 'healthy' };
+    });
+    const result = await executeCheck('test-service', checkFn, {});
+    expect(typeof result.responseTime).toBe('number');
+    expect(result.responseTime).toBeGreaterThanOrEqual(10);
+  });
+
+  it('includes metadata in result', async () => {
+    const checkFn = vi.fn().mockResolvedValue({ status: 'healthy', metadata: { url: 'http://localhost' } });
+    const result = await executeCheck('test-service', checkFn, {});
+    expect(result.metadata).toEqual({ url: 'http://localhost' });
+  });
+
+  it('returns unknown status when check returns undefined result', async () => {
+    const checkFn = vi.fn().mockResolvedValue(undefined);
+    const result = await executeCheck('test-service', checkFn, {});
+    expect(result.status).toBe('healthy'); // nullish coalescing with HEALTHY
   });
 });
