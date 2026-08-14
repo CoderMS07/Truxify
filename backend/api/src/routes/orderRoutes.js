@@ -258,6 +258,62 @@ router.post('/:id/geofence-confirm', authenticate, requireRole(['driver']), asyn
 );
 
 // ============================================================================
+// X. UPDATE MILESTONE (DRIVER) — PUT /api/orders/:id/milestones
+// ============================================================================
+/**
+ * @openapi
+ * /api/orders/{id}/milestones:
+ *   put:
+ *     tags: [Orders]
+ *     summary: Update order milestone
+ *     description: Allows a driver to advance an order milestone (e.g. Arrived at Pickup, In Transit). Called by the driver app geofence trigger.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/UpdateMilestoneRequest'
+ *     responses:
+ *       200:
+ *         description: Milestone updated
+ *       400:
+ *         description: Validation error or invalid milestone
+ *       403:
+ *         description: Driver not assigned to this order
+ *       404:
+ *         description: Order not found
+ *       409:
+ *         description: Milestone already completed or out of sequence
+ */
+router.put('/:id/milestones', authenticate, requireRole(['driver']), validateParams(paramIdSchema), validateBody(updateMilestoneSchema), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { milestone } = req.body;
+    const result = await orderMilestoneService.updateMilestone({
+      orderId: id,
+      milestone,
+      driverId: req.user.id,
+    });
+    return res.json(result);
+  } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
+    logger.error('[milestones] Update milestone error:', err.message);
+    return res.status(500).json({ error: 'Failed to update milestone.' });
+  }
+}
+);
+
+// ============================================================================
 // 1. CREATE ORDER (CUSTOMER) — POST /api/orders
 // ============================================================================
 /**
@@ -1409,7 +1465,7 @@ router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requirePolicy(
 });
 
 // POST /api/orders/:id/ratings - customer submits rating for a driver
-router.post('/:id/ratings', authenticate, userLimiter, validateParams(paramIdSchema), validateBody(submitRatingSchema), async (req, res) => {
+router.post('/:id/ratings', authenticate, userLimiter, requirePolicy('order:submit-rating'), validateParams(paramIdSchema), validateBody(submitRatingSchema), async (req, res) => {
   try {
     const { stars, comment } = req.body;
     const result = await orderLifecycleService.submitRating(req.params.id, req.user.id, stars, comment, createUserClient(req.user.id));
@@ -1420,21 +1476,6 @@ router.post('/:id/ratings', authenticate, userLimiter, validateParams(paramIdSch
     }
     logger.error('Rating submission error:', err);
     return res.status(500).json({ error: 'Failed to submit rating.' });
-  }
-});
-
-// POST /api/orders/:id/bids - driver submits bid on a load offer
-router.post('/:id/bids', authenticate, requireRole(['driver']), bidLimiter, validateParams(paramIdSchema), validateBody(submitBidSchema), async (req, res) => {
-  try {
-    const { bid_amount } = req.body;
-    const result = await orderLifecycleService.submitBid(req.params.id, req.user.id, bid_amount);
-    return res.json(result);
-  } catch (err) {
-    if (err instanceof DomainError) {
-      return res.status(err.status).json(err.payload);
-    }
-    logger.error('Bid submission error:', err);
-    return res.status(500).json({ error: 'Failed to submit bid.' });
   }
 });
 
