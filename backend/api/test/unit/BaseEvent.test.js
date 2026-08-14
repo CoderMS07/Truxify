@@ -42,7 +42,7 @@ describe('BaseEvent', () => {
       causationId: 'evt-002',
     });
     expect(event.correlationId).toBe('corr-001');
-    expect(event.causationId).toBe('evt-002');
+    expect(event.metadata.causationId).toBe('evt-002');
   });
 
   it('accepts existing EventMetadata instance', () => {
@@ -51,7 +51,7 @@ describe('BaseEvent', () => {
       source: 'fulfillment',
       correlationId: 'corr-123',
     });
-    const event = new BaseEvent({ metadata });
+    const event = new BaseEvent({ eventType: 'test', metadata });
     expect(event.eventType).toBe('order.shipped');
     expect(event.correlationId).toBe('corr-123');
   });
@@ -66,7 +66,7 @@ describe('BaseEvent', () => {
   it('withCausationId mutates and returns self', () => {
     const event = new BaseEvent({ eventType: 'test', source: 'test' });
     const result = event.withCausationId('new-cause');
-    expect(event.causationId).toBe('new-cause');
+    expect(event.metadata.causationId).toBe('new-cause');
     expect(result).toBe(event);
   });
 
