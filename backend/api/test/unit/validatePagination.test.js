@@ -1,62 +1,57 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
-vi.mock('../../src/middleware/logger.js', () => ({
-  default: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-}));
-
-let logger;
-beforeEach(async () => {
-  logger = (await import('../../src/middleware/logger.js')).default;
-  vi.clearAllMocks();
-});
-
-function makeReq(q = {}) { return { query: { ...q } }; }
-function makeRes() {
-  const h = {};
-  return {
-    getHeader: vi.fn(n => h[n]),
-    setHeader: vi.fn((n, v) => { h[n] = v; }),
-    status: vi.fn(function(s) { this.statusCode = s; return this; }),
-    json: vi.fn(function(b) { return this; }),
-    on: vi.fn(),
-  };
-}
+import { describe, it, expect } from 'vitest'
+import { validatePagination } from '../../src/lib/validatePagination.js'
 
 describe('validatePagination', () => {
-  let vp;
-  beforeEach(async () => {
-    const mod = await import('../../src/middleware/pagination.js');
-    vp = mod.validatePagination;
-  });
+  it('returns correct offset and limit for valid input', () => {
+    const result = validatePagination({ page: 1, pageSize: 20 })
+    expect(result).toEqual({ page: 1, pageSize: 20, offset: 0, limit: 20 })
+  })
 
-  it('defaults limit=10 offset=0', async () => {
-    const req = makeReq(), res = makeRes(), next = vi.fn();
-    vp()(req, res, next);
-    expect(req.pagination.limit).toBe(10);
-    expect(req.pagination.offset).toBe(0);
-  });
+  it('applies defaults for missing page and pageSize', () => {
+    const result = validatePagination({})
+    expect(result).toEqual({ page: 1, pageSize: 20, offset: 0, limit: 20 })
+  })
 
-  it('caps limit at 100', async () => {
-    const req = makeReq({ limit: '999' }), res = makeRes(), next = vi.fn();
-    vp()(req, res, next);
-    expect(req.pagination.limit).toBe(100);
-  });
+  it('applies defaults when called with no arguments', () => {
+    const result = validatePagination()
+    expect(result).toEqual({ page: 1, pageSize: 20, offset: 0, limit: 20 })
+  })
 
-  it('returns 400 for non-numeric limit', async () => {
-    const req = makeReq({ limit: 'abc' }), res = makeRes(), next = vi.fn();
-    vp()(req, res, next);
-    expect(res.status).toHaveBeenCalledWith(400);
-  });
+  it('computes correct offset for page 2 and above', () => {
+    const result = validatePagination({ page: 3, pageSize: 20 })
+    expect(result).toEqual({ page: 3, pageSize: 20, offset: 40, limit: 20 })
+  })
 
-  it('computes page offset correctly', async () => {
-    const req = makeReq({ page: '3', limit: '10' }), res = makeRes(), next = vi.fn();
-    vp()(req, res, next);
-    expect(req.pagination.offset).toBe(20);
-  });
+  it('returns error when page is less than 1', () => {
+    const result = validatePagination({ page: 0, pageSize: 20 })
+    expect(result.error).toBe('page must be >= 1')
+  })
 
-  it('caps offset at 10000', async () => {
-    const req = makeReq({ offset: '50000' }), res = makeRes(), next = vi.fn();
-    vp()(req, res, next);
-    expect(req.pagination.offset).toBe(10000);
-  });
-});
+  it('returns error when page is non-numeric', () => {
+    const result = validatePagination({ page: 'abc', pageSize: 20 })
+    expect(result.error).toBe('page must be >= 1')
+  })
+
+  it('returns error when pageSize is less than 1', () => {
+    const result = validatePagination({ page: 1, pageSize: 0 })
+    expect(result.error).toBe('pageSize must be >= 1')
+  })
+
+  it('returns error when pageSize exceeds 200', () => {
+    const result = validatePagination({ page: 1, pageSize: 201 })
+    expect(result.error).toBe('pageSize must be <= 200')
+  })
+
+  it('returns error when offset exceeds MAX_OFFSET', () => {
+    // page 50001 * pageSize 20 = offset 1,000,000 (exactly MAX_OFFSET), passes
+    // page 50001 * pageSize 21 = offset 1,050,021 > MAX_OFFSET 1,000,000, fails
+    const result = validatePagination({ page: 50001, pageSize: 21 })
+    expect(result.error).toContain('exceeds MAX_OFFSET')
+  })
+
+  it('accepts pageSize up to 200', () => {
+    const result = validatePagination({ page: 1, pageSize: 200 })
+    expect(result.error).toBeUndefined()
+    expect(result.pageSize).toBe(200)
+  })
+})
