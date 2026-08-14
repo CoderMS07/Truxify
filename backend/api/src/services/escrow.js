@@ -129,11 +129,13 @@ export async function validateEscrowSetup () {
         `[escrow] ❌ No contract deployed at ${address}. ` +
         'Check ESCROW_CONTRACT_ADDRESS in your .env.'
       )
+      escrowContract = null
       return false
     }
     logger.info(`[escrow] ✅ Bytecode confirmed at ${address} (${(code.length - 2) / 2} bytes).`)
   } catch (err) {
     logger.error({ event: 'ESCROW_BYTECODE_QUERY_ERROR', address, error: err && err.message }, `[escrow] Failed to query bytecode at ${address}`)
+    escrowContract = null
     return false
   }
 
@@ -151,6 +153,7 @@ export async function validateEscrowSetup () {
       'Check that ESCROW_CONTRACT_ADDRESS points to the active TruxifyEscrow contract, ' +
       'not the deprecated Escrow.sol.'
     )
+    escrowContract = null
     return false
   }
 
