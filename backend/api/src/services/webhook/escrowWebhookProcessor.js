@@ -201,6 +201,10 @@ async function releaseOrder({ order, txHash, now }) {
 }
 
 async function handlePaymentReleased(payload) {
+  if (!payload.txHash) {
+    throw new Error('Missing txHash in escrow release webhook payload — release requires on-chain proof');
+  }
+  await verifyPolygonTransactionReceipt(payload.txHash);
   const order = await findOrderByIdOrDisplayId(payload.orderId);
   const now = new Date().toISOString();
 
@@ -433,6 +437,7 @@ async function handleWithdrawalSettled(payload) {
       escrow_release_error: isRefund ? undefined : null,
       updated_at: now,
     })
+    .update({ ...settlement, updated_at: now })
     .eq('id', order.id)
     .in('escrow_status', targetStatuses);
     .in('escrow_status', [...REFUND_RECONCILABLE_STATUSES, ...RELEASE_RECONCILABLE_STATUSES])
