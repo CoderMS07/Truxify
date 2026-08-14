@@ -285,11 +285,14 @@ class StateDivergenceDetector {
         status: 'in_progress',
       };
 
-      await (supabaseAdmin || supabase)
-        .from('state_reconciliations')
-        .insert([reconciliation]);
-
-      logger.info('[StateDivergenceDetector] State reconciliation initiated:', reconciliationId);
+      try {
+        await (supabaseAdmin || supabase)
+          .from('state_reconciliations')
+          .insert([reconciliation]);
+        logger.info('[StateDivergenceDetector] State reconciliation initiated:', reconciliationId);
+      } catch (err) {
+        logger.error({ err }, '[StateDivergenceDetector] Failed to record reconciliation in DB, continuing with in-memory record.');
+      }
 
       return reconciliation;
     });
