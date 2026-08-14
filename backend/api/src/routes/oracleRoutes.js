@@ -49,8 +49,12 @@ router.get('/status', authenticate, async (req, res) => {
     res.status(200).json({
       success: true,
       data: {
-        providers: 3,
-        threshold: 2,
+        providers: [
+          process.env.CHAINLINK_ENABLED === 'true',
+          true, // customVerifier always enabled
+          process.env.BACKUP_ORACLE_ENABLED === 'true',
+        ].filter(Boolean).length,
+        threshold: Number(process.env.ORACLE_CONSENSUS_THRESHOLD) || 2,
         timestamp: new Date().toISOString()
       }
     });
