@@ -20,7 +20,7 @@ const SURGE_PEAK_AMPLITUDE = 1.3;
  */
 export async function getLiveTrafficMultiplier(pickupLat, pickupLng) {
   try {
-    if (!pickupLat || !pickupLng) {
+    if (typeof pickupLat !== 'number' || typeof pickupLng !== 'number' || Number.isNaN(pickupLat) || Number.isNaN(pickupLng)) {
       return 1.0;
     }
 
