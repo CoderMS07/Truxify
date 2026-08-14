@@ -205,6 +205,7 @@ router.get('/telemetry/:id', telemetryHistoryLimiter, authenticate, validatePara
     }
     return res.json(data);
   } catch (err) {
+    logger.error({ event: 'IOT_TELEMETRY_FETCH_ERROR', requestId: req.requestId || req.id, error: err && (err.message || String(err)) }, 'Internal server error in IoT telemetry fetch');
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
