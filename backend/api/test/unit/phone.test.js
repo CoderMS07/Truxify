@@ -13,8 +13,12 @@ describe('normalizePhone', () => {
     expect(normalizePhone('919876543210')).toBe('+919876543210');
   });
 
-  it('returns null for a 0-prefixed 11-digit number (not handled)', () => {
-    expect(normalizePhone('09876543210')).toBeNull();
+  it('normalizes a 0-prefixed 11-digit number (trunk prefix before country code)', () => {
+    expect(normalizePhone('09876543210')).toBe('+919876543210');
+  });
+
+  it('normalizes a 0-prefixed number with country code 91 (0 + 91)', () => {
+    expect(normalizePhone('091234567890')).toBe('+911234567890');
   });
 
   it('strips spaces and punctuation', () => {
@@ -43,5 +47,9 @@ describe('normalizePhone', () => {
 
   it('returns null for numbers with letters', () => {
     expect(normalizePhone('98765abc10')).toBeNull();
+  });
+
+  it('returns null for invalid country code (e.g. 01-prefixed without 91)', () => {
+    expect(normalizePhone('0187654321')).toBeNull();
   });
 });
