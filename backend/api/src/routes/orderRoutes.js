@@ -186,7 +186,7 @@ import {
   recordDepositTx,
   confirmEscrowRefund,
 } from '../core/container.js';
-import { getEscrowBookingId, resolveExpectedDepositAmount, paisaToMaticWei, submitEscrowRefund } from '../services/escrow.js';
+import { getEscrowBookingId, getEscrowBooking, resolveExpectedDepositAmount, paisaToMaticWei, submitEscrowRefund } from '../services/escrow.js';
 
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
 import { computeOrderPricing } from '../lib/pricing.js';
@@ -583,6 +583,22 @@ router.put('/:id/change-drop', authenticate, userLimiter, changeDropLimiter, req
     // at deposit time and on release), so it must track total_amount using the
     // same canonical paisa→wei conversion the rest of the escrow pipeline uses.
     const newAmountWei = paisaToMaticWei(pricing.totalAmount);
+
+    // If an on-chain escrow already holds funds for this order, rewriting
+    // escrow_amount_wei would leave the DB payout unbacked by the contract.
+    // Block the change-drop (or require re-funding) until the on-chain escrow
+    // is rebalanced to the re-priced amount, so DB payout == on-chain balance.
+    if (order.escrow_status === 'funding' || order.escrow_status === 'funded' || order.escrow_status === 'released') {
+      const bookingId = getEscrowBookingId(order.order_display_id);
+      const booking = await getEscrowBooking(bookingId);
+      const onChainAmount = booking && booking.amount > 0n ? BigInt(booking.amount) : 0n;
+      if (onChainAmount > 0n && BigInt(newAmountWei) !== onChainAmount) {
+        throw new DomainError(409, {
+          error: 'Drop location cannot be changed: the on-chain escrow must be rebalanced to the new price first.',
+          recovery: 'Cancel this order to receive a refund, then rebook with the correct destination.',
+        });
+      }
+    }
 
     const updates = {
       drop_address,
