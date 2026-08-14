@@ -32,3 +32,9 @@ export function correlationIdMiddleware(req, res, next) {
   const store = { correlationId };
   correlationContext.run(store, next);
 }
+
+
+// === Spec 14: ===
+// === Spec 14: AsyncLocalStorage for correlation IDs ===
+export function getCorrelationStore() { return correlationContext.getStore() || undefined; }
+export function runWithCorrelationId(cid, fn) { return correlationContext.run({ correlationId: cid, startedAt: Date.now() }, fn); }
