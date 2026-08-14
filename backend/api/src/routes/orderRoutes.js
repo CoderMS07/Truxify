@@ -1078,7 +1078,7 @@ router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, 
 router.get('/:id/route', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-route', async (req) => {
   const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id');
   return { order };
-}), validateParams(paramIdSchema), async (req, res) => {
+})), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
 
   try {
@@ -1344,7 +1344,7 @@ router.get('/my/history', authenticate, userLimiter, requirePolicy('order:view-h
 router.get('/:id/timeline', authenticate, userLimiter, requirePolicy('order:view-timeline', async (req) => {
   const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id');
   return { order };
-}), validateParams(paramIdSchema), async (req, res) => {
+})), validateParams(paramIdSchema), async (req, res) => {
   try {
     const timeline = await orderLifecycleService.getOrderTimeline(req.params.id, req.user.id);
     return res.json(timeline);
@@ -1361,7 +1361,7 @@ router.get('/:id/timeline', authenticate, userLimiter, requirePolicy('order:view
 router.get('/:id', authenticate, userLimiter, requirePolicy('order:view', async (req) => {
   const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id');
   return { order };
-}), validateParams(paramIdSchema), async (req, res) => {
+})), validateParams(paramIdSchema), async (req, res) => {
   try {
     const detail = await orderLifecycleService.getOrderDetail(req.params.id, req.user.id);
     return res.json(detail);
@@ -1378,7 +1378,7 @@ router.get('/:id', authenticate, userLimiter, requirePolicy('order:view', async 
 router.get('/:id/bids', authenticate, userLimiter, requirePolicy('order:view', async (req) => {
   const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id');
   return { order };
-}), validateParams(paramIdSchema), async (req, res) => {
+})), validateParams(paramIdSchema), async (req, res) => {
   try {
     const bids = await orderLifecycleService.getBidsForOrder(req.params.id, req.user.id);
     return res.json({ bids });
@@ -1395,7 +1395,7 @@ router.get('/:id/bids', authenticate, userLimiter, requirePolicy('order:view', a
 router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requirePolicy('order:view', async (req) => {
   const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id');
   return { order };
-}), validateParams(paramIdSchema), async (req, res) => {
+})), validateParams(paramIdSchema), async (req, res) => {
   try {
     const result = await orderLifecycleService.acceptBid(req.params.id, req.params.bidId, req.user.id);
     return res.json(result);
