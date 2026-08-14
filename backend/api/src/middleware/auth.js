@@ -187,9 +187,9 @@ export async function authenticate(req, res, next) {
       process.env.DEV_ACCESS_TOKEN &&
       devToken === process.env.DEV_ACCESS_TOKEN
     ) {
-      const testUserId = devIdentity.id;
-      const testUserRole = devIdentity.role || "customer";
-      const testFullName = devIdentity.name || "Test User";
+      const testUserId = req.headers['x-user-id'] || 'test-dev-user-001';
+      const testUserRole = req.headers['x-user-role'] || 'customer';
+      const testFullName = req.headers['x-user-name'] || 'Test Dev User';
 
       if (testUserId) {
         req.user = {
