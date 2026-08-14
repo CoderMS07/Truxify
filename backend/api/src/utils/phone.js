@@ -19,14 +19,18 @@ export function normalizePhone(phone) {
   // Handle the E.164 + prefix explicitly before stripping digits
   let digits = phone.replace(/[^\d]/g, '');
 
-  // Strip a leading trunk prefix 0 (e.g. 0919876543210 -> 919876543210)
-  if (digits.startsWith('0')) {
-    digits = digits.slice(1);
-  }
-
-  // Remove country code prefix if present (91 for India)
+  // Remove country code prefix if present (91 for India) — do this FIRST
+  // so that the trunk-prefix strip below only fires for local 10-digit numbers.
   if (digits.startsWith('91') && digits.length === 12) {
     digits = digits.slice(2);
+  }
+
+  // Strip a leading trunk prefix 0 only from remaining 11-digit sequences
+  // (10 local digits + leading 0, e.g. 091234567890 → 91234567890).
+  // This prevents 12-digit numbers (already stripped above) from being
+  // incorrectly reduced to 11 digits and rejected.
+  if (digits.startsWith('0') && digits.length === 11) {
+    digits = digits.slice(1);
   }
 
   // Validate: must be exactly 10 digits after country code removal
