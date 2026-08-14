@@ -103,26 +103,35 @@ class ApiClient {
   }
 
   static String _getBaseUrl(String? overrideUrl) {
-    if (overrideUrl != null) return overrideUrl;
-    const envUrl = String.fromEnvironment('TRUXIFY_API_BASE_URL');
-    if (envUrl.isNotEmpty) return envUrl;
-    if (kReleaseMode) {
-      developer.log(
-        '[ApiClient] TRUXIFY_API_BASE_URL not set — falling back to localhost. '
-        'Set --dart-define=TRUXIFY_API_BASE_URL=<url> for production builds.',
+    final url = overrideUrl ?? defaultBaseUrl;
+    if (!url.startsWith('https://')) {
+      throw StateError(
+        'TRUXIFY_API_BASE_URL must use the https:// scheme; '
+        'cleartext http:// is not allowed and would expose bearer tokens: $url',
       );
     }
-    return defaultBaseUrl;
+    return url;
   }
 
   static String get defaultBaseUrl {
     const envUrl = String.fromEnvironment('TRUXIFY_API_BASE_URL');
-    if (envUrl.isNotEmpty) return envUrl;
-    if (kReleaseMode) throw StateError('TRUXIFY_API_BASE_URL must be set in release mode');
-    
-    if (kIsWeb) return 'http://localhost:5000';
-    if (Platform.isAndroid) return 'http://10.0.2.2:5000';
-    return 'http://localhost:5000';
+    if (envUrl.isNotEmpty) {
+      if (!envUrl.startsWith('https://')) {
+        throw StateError(
+          'TRUXIFY_API_BASE_URL must use the https:// scheme; '
+          'cleartext http:// is not allowed: $envUrl',
+        );
+      }
+      return envUrl;
+    }
+    if (kReleaseMode) {
+      throw StateError('TRUXIFY_API_BASE_URL must be set in release mode');
+    }
+    // Dev/test fallback is TLS-only so bearer tokens / POD uploads are never
+    // sent over cleartext HTTP (fixes #13094).
+    if (kIsWeb) return 'https://localhost:5000';
+    if (Platform.isAndroid) return 'https://10.0.2.2:5000';
+    return 'https://localhost:5000';
   }
 
   static String _normalise(String url) =>
