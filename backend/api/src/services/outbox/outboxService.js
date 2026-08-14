@@ -99,14 +99,20 @@ export class OutboxService {
    * Reset failed events back to pending for retry (up to maxRetries).
    */
   async requeueFailedEvents(maxRetries = 5) {
-    const { error } = await supabase
-      .from('outbox_events')
-      .update({ status: 'pending' })
-      .eq('status', 'failed')
-      .lt('retry_count', maxRetries);
+    let result;
+    try {
+      result = await supabase
+        .from('outbox_events')
+        .update({ status: 'pending' })
+        .eq('status', 'failed')
+        .lt('retry_count', maxRetries);
+    } catch (err) {
+      logger.error('[OutboxService] Failed to requeue failed events:', err?.message ?? err);
+      return;
+    }
 
-    if (error) {
-      logger.error('[OutboxService] Failed to requeue failed events:', error.message);
+    if (result?.error) {
+      logger.error('[OutboxService] Failed to requeue failed events:', result.error.message);
     }
   }
 }
