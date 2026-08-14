@@ -25,16 +25,6 @@ const checkBypassEligibility = async (driverId, lat, lng) => {
   };
 };
 
-const MAX_GROSS_WEIGHT_LBS = 80000;
-const MAX_SINGLE_AXLE_LBS = 20000;
-const MAX_TANDEM_AXLE_LBS = 34000;
-const PSI_TO_LBS_FACTOR = 250; // Mock calibration factor
-const BASE_AXLE_WEIGHT_LBS = 5000; // Unsprung weight
-
-/**
- * Syncs highly accurate internal air suspension weights with DOT enforcement software.
- * Bypasses random pull-in probability if weights are completely legal.
- */
 /**
  * Syncs highly accurate internal air suspension weights with DOT enforcement software.
  * Returns an UNSUPPORTED response until a real WIM provider (Drivewyze/PrePass) API is integrated.
