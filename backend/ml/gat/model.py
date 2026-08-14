@@ -10,6 +10,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Number of node features emitted by TrafficGraphBuilder.get_pytorch_data().
+# The GAT model MUST be constructed with this same in_features, otherwise
+# forward() fails with a node-feature size mismatch (see #13979).
+GAT_NODE_FEATURE_DIM = 5
+
 class GraphAttentionLayer(nn.Module):
     """Graph Attention Layer"""
     
@@ -44,7 +49,7 @@ class SpatialTemporalGAT(nn.Module):
     
     def __init__(
         self,
-        in_features: int = 64,
+        in_features: int = GAT_NODE_FEATURE_DIM,
         hidden_features: int = 128,
         out_features: int = 32,
         num_heads: int = 8,
@@ -105,6 +110,18 @@ class SpatialTemporalGAT(nn.Module):
     ) -> torch.Tensor:
         # x shape: (batch_size, num_nodes, time_steps, features)
         batch_size, num_nodes, time_steps, features = x.shape
+
+        # Guard against the node-feature dimension mismatch that previously
+        # crashed every /gat/predict call: the builder emits
+        # GAT_NODE_FEATURE_DIM features, and the model must be constructed with
+        # the same in_features.
+        if features != self.in_features:
+            raise ValueError(
+                f"Node feature dimension mismatch: model in_features={self.in_features} "
+                f"but received {features} features. TrafficGraphBuilder emits "
+                f"{GAT_NODE_FEATURE_DIM} features; construct SpatialTemporalGAT with "
+                f"in_features={GAT_NODE_FEATURE_DIM}."
+            )
         
         # Reshape for spatial processing
         x = x.permute(0, 2, 1, 3).contiguous()  # (batch, time, nodes, features)
@@ -157,6 +174,11 @@ class SpatialTemporalGAT(nn.Module):
 class TrafficGraphBuilder:
     """Build traffic graph from road network"""
     
+    # Known node-feature count emitted by get_pytorch_data(). Callers must pass
+    # this into SpatialTemporalGAT(in_features=...) so the model stays aligned
+    # with the real data (see #13979).
+    NODE_FEATURE_DIM = GAT_NODE_FEATURE_DIM
+    
     def __init__(self):
         self.graph = nx.Graph()
         self.node_features = {}
@@ -190,7 +212,8 @@ class TrafficGraphBuilder:
     
     def get_pytorch_data(self) -> Data:
         """Convert graph to PyTorch Geometric Data"""
-        # Node features
+        # Node features — must contain exactly NODE_FEATURE_DIM entries so the
+        # dimensions stay aligned with the model constructed via in_features.
         node_features = []
         for node in self.graph.nodes(data=True):
             features = [
@@ -200,6 +223,10 @@ class TrafficGraphBuilder:
                 node[1].get('lat', 0) / 90,
                 node[1].get('lng', 0) / 180
             ]
+            assert len(features) == self.NODE_FEATURE_DIM, (
+                f"Node feature count {len(features)} != NODE_FEATURE_DIM "
+                f"({self.NODE_FEATURE_DIM})"
+            )
             node_features.append(features)
         
         # Edge indices
