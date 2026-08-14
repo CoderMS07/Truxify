@@ -104,6 +104,8 @@ export function requireIdempotency(ttlSeconds = 3600) {
         return res.status(cached.statusCode).json(cached.body);
       }
 
+      let pendingCache = null;
+
       if (redisClient) {
         const lockKey = `${key}:lock`;
         const lockAcquired = await redisClient.set(lockKey, '1', 'NX', 'PX', LOCK_TTL_MS);
@@ -162,7 +164,6 @@ export function requireIdempotency(ttlSeconds = 3600) {
         // a duplicate arriving after 'finish' finds the cached entry and
         // short-circuits instead of re-acquiring the lock and re-entering the
         // handler.
-        let pendingCache = null;
         const finalize = async () => {
           if (pendingCache) {
             const cachePromise = pendingCache;
