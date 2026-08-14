@@ -5,6 +5,7 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "dispute-trigger",
+        "authentication": "basicAuth",
         "options": {}
       },
       "id": "1d8ea83e-d9a4-4db2-a9b0-30f16f5c5315",
@@ -276,6 +277,7 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "admin-resolution",
+        "authentication": "basicAuth",
         "options": {}
       },
       "id": "5b23dca9-48cf-4ef2-ba2e-ffbc8601dd77",
