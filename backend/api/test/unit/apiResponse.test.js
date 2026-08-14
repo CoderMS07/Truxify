@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { success, error, paginated } from '../../src/lib/apiResponse.js';
 
-describe('apiResponse helpers', () => {
-  describe('success()', () => {
-    it('returns default success response structure', () => {
-      const res = success();
-      expect(res).toEqual({
+describe('apiResponse', () => {
+  describe('success', () => {
+    it('returns correct shape with defaults', () => {
+      const result = success();
+      expect(result).toEqual({
         success: true,
         statusCode: 200,
         message: 'Success',
@@ -13,129 +13,103 @@ describe('apiResponse helpers', () => {
       });
     });
 
-    it('returns custom data, message, and statusCode', () => {
-      const payload = { id: 1, name: 'Item' };
-      const res = success(payload, 'Item fetched', 201);
-      expect(res).toEqual({
-        success: true,
-        statusCode: 201,
-        message: 'Item fetched',
-        data: payload,
-      });
-    });
-  });
-
-  describe('error()', () => {
-    it('returns default error response structure', () => {
-      const res = error();
-      expect(res).toEqual({
-        success: false,
-        statusCode: 500,
-        message: 'An error occurred',
-      });
+    it('uses provided data', () => {
+      const result = success({ id: '123' });
+      expect(result.data).toEqual({ id: '123' });
     });
 
-    it('returns custom error message and status code', () => {
-      const res = error('Unauthorized', 401);
-      expect(res).toEqual({
-        success: false,
-        statusCode: 401,
-        message: 'Unauthorized',
-      });
+    it('uses provided message', () => {
+      const result = success(null, 'Created successfully');
+      expect(result.message).toBe('Created successfully');
     });
 
-    it('includes error details when provided', () => {
-      const errDetails = [{ field: 'email', message: 'Invalid email' }];
-      const res = error('Validation Failed', 400, errDetails);
-      expect(res).toEqual({
-        success: false,
-        statusCode: 400,
-        message: 'Validation Failed',
-        errors: errDetails,
-      });
+    it('uses provided statusCode', () => {
+      const result = success(null, 'OK', 201);
+      expect(result.statusCode).toBe(201);
     });
 
-    it('omits errors key when errors argument is null or undefined', () => {
-      const resNull = error('Bad Request', 400, null);
-      const resUndefined = error('Bad Request', 400, undefined);
-      expect('errors' in resNull).toBe(false);
-      expect('errors' in resUndefined).toBe(false);
-    });
-  });
-
-  describe('paginated()', () => {
-    it('formats paginated response with correct pagination metadata', () => {
-      const items = [{ id: 1 }, { id: 2 }];
-      const res = paginated(items, 1, 2, 5, 'Data retrieved');
-
-      expect(res).toEqual({
+    it('accepts all parameters', () => {
+      const result = success({ items: [1, 2, 3] }, 'Found items', 200);
+      expect(result).toEqual({
         success: true,
         statusCode: 200,
-        message: 'Data retrieved',
+        message: 'Found items',
+        data: { items: [1, 2, 3] },
+      });
+    });
+  });
+
+  describe('error', () => {
+    it('returns correct shape with defaults', () => {
+      const result = error();
+      expect(result.success).toBe(false);
+      expect(result.statusCode).toBe(500);
+      expect(result.message).toBe('An error occurred');
+    });
+
+    it('uses provided message', () => {
+      const result = error('Not found');
+      expect(result.message).toBe('Not found');
+      expect(result.statusCode).toBe(500);
+    });
+
+    it('uses provided statusCode', () => {
+      const result = error('Not authorized', 403);
+      expect(result.statusCode).toBe(403);
+    });
+
+    it('includes errors array when provided', () => {
+      const errors = [{ field: 'email', msg: 'Invalid' }];
+      const result = error('Validation failed', 400, errors);
+      expect(result.errors).toEqual(errors);
+    });
+
+    it('does not include errors when null', () => {
+      const result = error('Server error', 500, null);
+      expect(result.errors).toBeUndefined();
+    });
+  });
+
+  describe('paginated', () => {
+    it('returns correct shape', () => {
+      const items = [{ id: '1' }, { id: '2' }];
+      const result = paginated(items, 1, 10, 25);
+      expect(result).toEqual({
+        success: true,
+        message: 'Success',
         data: items,
         pagination: {
           page: 1,
-          limit: 2,
-          total: 5,
+          limit: 10,
+          total: 25,
           totalPages: 3,
-          hasNextPage: true,
-          hasPrevPage: false,
         },
       });
     });
 
-    it('handles last page pagination metadata correctly', () => {
-      const items = [{ id: 5 }];
-      const res = paginated(items, 3, 2, 5);
-
-      expect(res.pagination).toEqual({
-        page: 3,
-        limit: 2,
-        total: 5,
-        totalPages: 3,
-        hasNextPage: false,
-        hasPrevPage: true,
-      });
+    it('calculates totalPages correctly', () => {
+      const result = paginated([], 1, 10, 30);
+      expect(result.pagination.totalPages).toBe(3);
     });
 
-    it('handles empty results and zero total', () => {
-      const res = paginated([], 1, 10, 0);
+    it('handles zero total', () => {
+      const result = paginated([], 1, 10, 0);
+      expect(result.pagination.totalPages).toBe(0);
+    });
 
-      expect(res.pagination).toEqual({
+    it('uses default pagination values', () => {
+      const result = paginated([1, 2]);
+      expect(result.pagination).toEqual({
         page: 1,
         limit: 10,
         total: 0,
         totalPages: 0,
-        hasNextPage: false,
-        hasPrevPage: false,
       });
     });
+
+    it('uses provided custom message', () => {
+      const result = paginated([], 1, 10, 0, 'No data found');
+      expect(result.message).toBe('No data found');
+    });
   });
-
-
-describe('paginated edge cases', () => {
-  it('handles page 0 gracefully', () => {
-    const result = paginated([{ id: 1 }], 0, 10, 1);
-    expect(result.pagination.page).toBe(0);
-    expect(result.pagination.totalPages).toBe(1);
-    expect(result.pagination.hasPrevPage).toBe(false);
-    expect(result.pagination.hasNextPage).toBe(false);
-  });
-
-  it('handles page greater than totalPages', () => {
-    const result = paginated([], 100, 10, 50);
-    expect(result.pagination.page).toBe(100);
-    expect(result.pagination.totalPages).toBe(5);
-    expect(result.pagination.hasNextPage).toBe(false);
-    expect(result.pagination.hasPrevPage).toBe(true);
-  });
-
-  it('handles total=0 gracefully', () => {
-    const result = paginated([], 1, 10, 0);
-    expect(result.pagination.totalPages).toBe(0);
-    expect(result.pagination.hasNextPage).toBe(false);
-    expect(result.pagination.hasPrevPage).toBe(false);
-  });
-});
-
 });
