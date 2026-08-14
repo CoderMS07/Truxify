@@ -10,6 +10,8 @@ import hashlib
 import os
 from cryptography.fernet import Fernet
 
+from .fl_server import robust_aggregate
+
 logger = logging.getLogger(__name__)
 
 class FederatedServer:
@@ -23,6 +25,10 @@ class FederatedServer:
         self.round = 0
         self.min_clients = 3
         self.clients_per_round = 5
+        # Clients selected for the current round. Updates from any other
+        # (unregistered or unselected) client are rejected.
+        self.selected_clients = []
+        self.current_round = None
         self.encryption_key = Fernet.generate_key()
         self.cipher = Fernet(self.encryption_key)
         self.redis.setex('federated:encryption_key', 86400, self.encryption_key)
@@ -62,6 +68,8 @@ class FederatedServer:
         
         # Select clients for this round
         selected_clients = clients[:self.clients_per_round]
+        self.selected_clients = selected_clients
+        self.current_round = self.round
         
         # Broadcast global model weights
         if self.global_weights is None:
@@ -81,6 +89,21 @@ class FederatedServer:
         """Get list of available clients"""
         clients = self.redis.smembers('federated:clients')
         return [c.decode('utf-8') for c in clients]
+    
+    def _is_authorized_client(self, client_id):
+        """Return True only if ``client_id`` is registered and selected this round.
+
+        Prevents unauthenticated callers from injecting model updates: the
+        sender must both be a known/registered client and have been selected as
+        a participant in the current round (otherwise an attacker could POST
+        forged weights and poison the global model).
+        """
+        if client_id in self.client_weights:
+            # Already submitted for this round; ignore duplicate updates.
+            return False
+        registered = client_id in self._get_available_clients()
+        selected = client_id in self.selected_clients
+        return registered and selected
     
     def _send_weights_to_client(self, client_id, weights):
         """Send model weights to client"""
@@ -111,6 +134,12 @@ class FederatedServer:
     def receive_client_update(self, client_id, encrypted_weights):
         """Receive and process client model updates"""
         try:
+            # Authenticate the sender: it must be a registered client that was
+            # selected for the current round before its weights are accepted.
+            if not self._is_authorized_client(client_id):
+                logger.warning(f"🚫 Rejected update from unauthorized client {client_id}")
+                return {'success': False, 'error': 'unauthorized_client'}
+
             # Decrypt weights
             decrypted = self.cipher.decrypt(encrypted_weights)
             weights = json.loads(decrypted)
@@ -152,7 +181,10 @@ class FederatedServer:
             # Apply noisy gradients back to weights
             self.client_weights[client_id] = [gw + ng for gw, ng in zip(self.global_weights, noisy_grads)]
         
-        # Federated Averaging
+        # Robust Federated Aggregation: coordinate-wise median (byzantine-robust)
+        # instead of a naive plain mean, so a single malicious or compromised
+        # client submitting extreme weights cannot skew the global model. The
+        # per-layer delta from the previous global weights is also clipped.
         num_clients = len(self.client_weights)
         new_weights = []
         
@@ -161,9 +193,15 @@ class FederatedServer:
             for client_id in self.client_weights:
                 layer_weights.append(self.client_weights[client_id][layer_idx])
             
-            # Average weights
-            avg_weight = np.mean(layer_weights, axis=0)
-            new_weights.append(avg_weight)
+            global_layer = (
+                self.global_weights[layer_idx] if self.global_weights else None
+            )
+            agg_weight = robust_aggregate(
+                layer_weights,
+                global_layer,
+                clip_norm=self.dp_clip_norm,
+            )
+            new_weights.append(agg_weight)
         
         # Update global model
         self.global_weights = new_weights
