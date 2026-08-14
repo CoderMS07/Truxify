@@ -404,7 +404,7 @@ export async function optimisePacking({ packages, truck, deliveryAddresses }) {
     signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS_HEAVY),
   });
 
-  return handleResponse(response);
+  return handleResponse(response, url, 'POST');
 }
 
 /**
