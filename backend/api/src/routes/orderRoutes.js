@@ -798,6 +798,62 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
 });
 
 // ============================================================================
+// 18a. SUBMIT RATING FOR A DELIVERED ORDER (CUSTOMER) — POST /api/orders/:id/ratings
+// ============================================================================
+/**
+ * @openapi
+ * /api/orders/{id}/ratings:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Submit a rating for an order
+ *     description: Allows a customer to submit a rating and review for a delivered order.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/SubmitRatingRequest'
+ *     responses:
+ *       201:
+ *         description: Rating submitted
+ *       400:
+ *         description: Validation error or order not delivered
+ *       403:
+ *         description: Forbidden for non-owner
+ *       404:
+ *         description: Order not found
+ *       409:
+ *         description: Duplicate rating
+ */
+router.post('/:id/ratings', authenticate, userLimiter, requirePolicy('order:submit-rating'), validateParams(paramIdSchema), validateBody(submitRatingSchema), async (req, res) => {
+  try {
+    const { stars, comment } = req.body;
+    const result = await orderLifecycleService.submitRating(
+      req.params.id,
+      req.user.id,
+      stars,
+      comment,
+      req.token ? createUserClient(req.token) : undefined
+    );
+    return res.status(201).json(result);
+  } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
+    logger.error('Failed to submit rating:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error.' });
+  }
+});
+
+// ============================================================================
 // 18. PREDICT RIDE DEMAND (CUSTOMER OR DRIVER)
 // ============================================================================
 /**
