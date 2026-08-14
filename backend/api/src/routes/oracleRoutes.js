@@ -1,6 +1,7 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
 import { oracleService } from '../core/container.js';
+import { ORACLE_PROVIDER_COUNT, ORACLE_THRESHOLD } from '../oracle/OracleService.js';
 import { supabase, createUserClient } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { safeIpKeyGenerator, createStore } from '../middleware/rateLimiter.js';
@@ -49,8 +50,8 @@ router.get('/status', authenticate, async (req, res) => {
     res.status(200).json({
       success: true,
       data: {
-        providers: 3,
-        threshold: 2,
+        providers: ORACLE_PROVIDER_COUNT,
+        threshold: ORACLE_THRESHOLD,
         timestamp: new Date().toISOString()
       }
     });
