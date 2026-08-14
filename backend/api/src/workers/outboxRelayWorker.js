@@ -19,7 +19,8 @@ async function relayOnce() {
     for (const event of events) {
       try {
         // Publish via existing eventBus — idempotent on consumer side via processed_events
-        eventBus.emitSafe(event.event_type, {
+        // Await all listeners to confirm the publish succeeded before marking as published
+        await eventBus.emitSafe(event.event_type, {
           eventId: event.id,
           aggregateId: event.aggregate_id,
           aggregateType: event.aggregate_type,

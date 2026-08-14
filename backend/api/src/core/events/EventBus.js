@@ -143,21 +143,36 @@ class EventBus extends EventEmitter {
 
   emitSafe(event, ...args) {
     const listeners = this.rawListeners(event);
+    const syncErrors = [];
+    const asyncPromises = [];
+
     for (const listener of listeners) {
       try {
         const result = listener.apply(this, args);
-        if (result && typeof result.catch === 'function') {
-          result.catch(err => {
-            logger.error(`[EventBus] Unhandled async listener error for "${event}":`, err);
-            this._metrics.errors++;
-          });
+        if (result && typeof result.then === 'function') {
+          asyncPromises.push(
+            result.catch(err => {
+              logger.error(`[EventBus] Unhandled async listener error for "${event}":`, err);
+              this._metrics.errors++;
+            }),
+          );
         }
       } catch (err) {
         logger.error(`[EventBus] Sync listener error for "${event}":`, err);
         this._metrics.errors++;
+        syncErrors.push(err);
       }
     }
-    return listeners.length > 0;
+
+    if (asyncPromises.length === 0) {
+      return Promise.resolve({ success: true, hadListeners: listeners.length > 0, syncErrors });
+    }
+
+    return Promise.all(asyncPromises).then(() => ({
+      success: true,
+      hadListeners: listeners.length > 0,
+      syncErrors,
+    }));
   }
 
   subscribe(eventType, handler) {
