@@ -60,7 +60,7 @@ export async function reconcilePendingEscrowRefunds(orderRepository) {
     const { data: pendingOrders, error } = await orderRepository.findPendingEscrowRefunds();
 
     if (error) {
-      logger.error('[escrow-reconciliation] Failed to load pending refunds:', error.message);
+      logger.error({ err: error }, '[escrow-reconciliation] Failed to load pending refunds');
       return;
     }
 
@@ -74,7 +74,7 @@ export async function reconcilePendingEscrowRefunds(orderRepository) {
         const nextRetryTime = updatedAtTime + backoffMs;
 
         if (Date.now() < nextRetryTime) {
-          logger.info(`[escrow-reconciliation] Order ${order.order_display_id} in backoff period (retry ${retryCount}), skipping until ${new Date(nextRetryTime).toISOString()}`);
+          logger.info({ event: 'ESCROW_BACKOFF', orderId: order.order_display_id, retryCount, nextRetryTime: new Date(nextRetryTime).toISOString() }, '[escrow-reconciliation] Order in backoff period, skipping');
           continue;
         }
       }
@@ -83,35 +83,35 @@ export async function reconcilePendingEscrowRefunds(orderRepository) {
         try {
           await redisClient.expire(LOCK_KEY, LOCK_TTL_SECONDS);
         } catch (err) {
-          logger.warn('[escrow-reconciliation] Failed to refresh lock:', err.message);
+          logger.warn({ err }, '[escrow-reconciliation] Failed to refresh lock');
         }
       }
 
       const lockKey = `escrow_lock:${order.id}`;
       const lockValue = await acquireLock(lockKey, 30000);
       if (!lockValue) {
-        logger.info(`[escrow-reconciliation] Order ${order.order_display_id} locked by another process (API or Job), skipping.`);
+        logger.info({ event: 'ESCROW_LOCK_SKIP', orderId: order.order_display_id }, '[escrow-reconciliation] Order locked by another process, skipping');
         continue;
       }
 
       try {
         const retryCount = order.escrow_refund_attempts ?? 0;
         if (retryCount >= MAX_RETRIES) {
-          logger.warn(`[escrow-reconciliation] Order ${order.order_display_id} exceeded max retries (${MAX_RETRIES}), escalating.`);
+          logger.warn({ event: 'ESCROW_MAX_RETRIES', orderId: order.order_display_id, maxRetries: MAX_RETRIES }, '[escrow-reconciliation] Order exceeded max retries, escalating');
           continue;
         }
 
         const { data: claimed, error: claimError } = await orderRepository.claimRefundReconciliation(order.id, instanceId);
 
         if ((!claimed || (Array.isArray(claimed) && claimed.length === 0)) && !claimError) {
-          logger.info(`[escrow-reconciliation] Order ${order.order_display_id} already claimed by another instance, skipping.`);
+          logger.info({ event: 'ESCROW_ALREADY_CLAIMED', orderId: order.order_display_id }, '[escrow-reconciliation] Order already claimed, skipping');
           continue;
         }
 
         if (claimError) {
           const { data: existing } = await orderRepository.findOrderById(order.id, 'escrow_status, reconciled_by');
           if (existing && (existing.escrow_status !== 'refund_pending' || existing.reconciled_by)) {
-            logger.info(`[escrow-reconciliation] Order ${order.order_display_id} already processed, skipping.`);
+            logger.info({ event: 'ESCROW_ALREADY_PROCESSED', orderId: order.order_display_id }, '[escrow-reconciliation] Order already processed, skipping');
             continue;
           }
         }
