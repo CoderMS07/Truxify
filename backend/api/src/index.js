@@ -168,6 +168,7 @@ import {
   startWithdrawalSettlementWorker,
   stopWithdrawalSettlementWorker
 } from './workers/withdrawalSettlementWorker.js'
+import { startOutboxRelayWorker, stopOutboxRelayWorker } from './workers/outboxRelayWorker.js'
 import './subscribers/reputationSubscriber.js'
 
 // Configuration load from root folder is handled in db.js
@@ -565,6 +566,7 @@ app.use('/api/blockchain', (req, _res, next) => {
 // Auth-gated internal endpoints consumed by automation/n8n workflows:
 //   GET  /api/internal/escrow-velocity
 //   POST /api/internal/pause-escrow
+//   POST /api/internal/defensive-pause
 // ============================================================================
 app.use('/api/internal', requireApiKey, internalRoutes)
 
@@ -752,7 +754,6 @@ server.listen(PORT, () => {
   startDevicePruningWorker()
   startDocumentExpiryWorker()
   startWithdrawalSettlementWorker()
-  import { startOutboxRelayWorker } from './workers/outboxRelayWorker.js'
   startOutboxRelayWorker()
 
   // Register worker states for health aggregation
@@ -796,7 +797,6 @@ async function shutdown(signal) {
   stopDlqWorker()
   stopDocumentExpiryWorker()
   stopWithdrawalSettlementWorker()
-  import { stopOutboxRelayWorker } from './workers/outboxRelayWorker.js'
   stopOutboxRelayWorker()
   fraudDetection.destroy()
   CacheManager.shutdown()

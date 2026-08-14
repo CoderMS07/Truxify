@@ -61,7 +61,7 @@ function parsePositiveFloat(raw, fallback, label) {
     return fallback;
   }
   const n = Number(raw);
-  if (Number.isFinite(n) && n > 0) return n;
+  if (Number.isFinite(n) && n >= 0) return n;
   if (label) logger.warn(`[pricing] ${label}=${raw} is invalid — using default ${fallback}`);
   return fallback;
 }
@@ -136,7 +136,7 @@ export function computeOrderPricing(input, rateCard = readRateCard()) {
   if (!rateCard.ratePerTonneKm || rateCard.ratePerTonneKm <= 0) {
     throw new RangeError(`ratePerTonneKm must be > 0, got ${rateCard.ratePerTonneKm}`);
   }
-  if (!rateCard.handlingFee || rateCard.handlingFee < 0) {
+  if (rateCard.handlingFee == null || rateCard.handlingFee < 0) {
     throw new RangeError(`handlingFee must be >= 0, got ${rateCard.handlingFee}`);
   }
 
@@ -203,7 +203,7 @@ export function convertKmToMiles(km) {
   return km * 0.621371;
 }
 
-export const __testing = { DEFAULTS, readRateCard, EARTH_RADIUS_KM };
+export const __testing = { DEFAULTS, readRateCard, EARTH_RADIUS_KM, parsePositiveFloat };
 
 
 // === Spec 10: ===
