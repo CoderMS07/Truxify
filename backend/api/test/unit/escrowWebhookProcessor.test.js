@@ -259,3 +259,37 @@ describe('processEscrowWebhookEvent — idempotency (crash-after-side-effect / d
     expect(updatePayloads().filter(p => p.escrow_status === 'released')).toHaveLength(0);
   });
 });
+
+describe('regression: refund events must not credit the driver wallet (#12156)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockQuery.maybeSingle.mockReset();
+  });
+
+  it('does not credit the driver wallet and sets refunded on a refund event', async () => {
+    const order = {
+      id: 'order-uuid',
+      order_display_id: '#OD9',
+      driver_id: 'driver-1',
+      escrow_status: 'refund_pending',
+      release_tx_hash: null,
+      refund_tx_hash: null,
+    };
+    mockQuery.maybeSingle.mockResolvedValue({ data: order, error: null });
+
+    await expect(
+      processEscrowWebhookEvent('BookingCancelled', { orderId: '#OD9', txHash: '0xdef' })
+    ).resolves.toEqual({ received: true });
+
+    // A refund must follow the refund path: revert escrow and set `refunded`
+    // WITHOUT crediting the driver's wallet (which would double-pay on a
+    // cancelled order).
+    const walletCalls = mockSupabaseAdmin.from.mock.calls.filter(
+      ([table]) => table === 'wallet_transactions'
+    );
+    expect(walletCalls).toHaveLength(0);
+    expect(mockQuery.update).toHaveBeenCalledWith(
+      expect.objectContaining({ escrow_status: 'refunded' })
+    );
+  });
+});
