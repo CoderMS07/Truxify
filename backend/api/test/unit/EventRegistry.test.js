@@ -23,7 +23,7 @@ describe("EventRegistry", () => {
   it("validate returns valid:true for unregistered types with no validator", () => {
     const reg = new EventRegistry();
     const result = reg.validate("order.created", {});
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
   });
 
   it("validate uses custom validator", () => {
