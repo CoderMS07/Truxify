@@ -104,7 +104,15 @@ class FraudDetectionService {
     // Check Redis cache
     const cached = this.redis ? await this.redis.get(`behavior:${userId}`) : null;
     if (cached) {
-      return JSON.parse(cached);
+      try {
+        return JSON.parse(cached);
+      } catch (parseError) {
+        logger.warn(`Corrupt behavioral profile cache for ${userId}, rebuilding from DB`, parseError);
+        if (this.redis) {
+          await this.redis.del(`behavior:${userId}`).catch(() => {});
+        }
+        // Fall through to rebuild the profile from the DB / defaults below.
+      }
     }
 
     // Check in-memory cache (written by trackBehavior during Redis outages)
