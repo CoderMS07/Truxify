@@ -266,15 +266,28 @@ router.post('/kyc/upload', kycUploadLimiter, upload.single('image'), authenticat
     const ocrData = await mlResponse.json();
 
     if (ocrData.verified) {
-      const { error: verifyError } = await supabaseAdmin
-        .from('driver_details')
-        .update({ 
-          kyc_status: 'Verified',
-          kyc_doc_number: ocrData.extracted_number
-        })
-        .eq('user_id', userId);
+      const docNumber = typeof ocrData.extracted_number === 'string'
+        ? ocrData.extracted_number.trim().toUpperCase()
+        : '';
 
-      if (verifyError) throw verifyError;
+      if (!docNumber) {
+        const { error: verifyError } = await supabaseAdmin
+          .from('driver_details')
+          .update({ kyc_status: 'Rejected' })
+          .eq('user_id', userId);
+
+        if (verifyError) throw verifyError;
+      } else {
+        const { error: verifyError } = await supabaseAdmin
+          .from('driver_details')
+          .update({
+            kyc_status: 'Verified',
+            kyc_doc_number: docNumber,
+          })
+          .eq('user_id', userId);
+
+        if (verifyError) throw verifyError;
+      }
     } else {
        const { error: rejectError } = await supabaseAdmin
         .from('driver_details')
