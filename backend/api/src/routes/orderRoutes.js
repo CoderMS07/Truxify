@@ -210,7 +210,7 @@ router.post('/:id/geofence-confirm', authenticate, requireRole(['driver']), asyn
     return res.status(400).json({ error: 'Invalid driver_lat or driver_lng' });
   }
 
-  if (!id || !id.trim()) {
+  if (!req.params.id || !req.params.id.trim()) {
     return res.status(400).json({ error: 'Invalid order id' });
   }
   let geofenceRadiusM;
