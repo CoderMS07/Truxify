@@ -126,8 +126,7 @@ describe('reverseGeocode', () => {
 
 
 // === Spec 21 test ===
-import { describe, it, expect } from 'vitest';
-import { clampGeohashPrecision } from '../../src/services/reverseGeocode.js';
+import { clampGeohashPrecision } from '../../src/lib/reverseGeocode.js';
 describe('clampGeohashPrecision', () => {
   it('null → 6', () => { expect(clampGeohashPrecision(null)).toBe(6); });
   it('15 → 12', () => { expect(clampGeohashPrecision(15)).toBe(12); });
