@@ -339,13 +339,13 @@ router.get('/load-offers/en-route', authenticate, userLimiter, requirePolicy('lo
 });
 
 // ============================================================================
-// 13c. DRIVER OTP CONFIRM ALIAS — POST /api/deliveries/:id/confirm-otp
+// 13c. DRIVER OTP CONFIRM ALIAS — POST /api/orders/:id/confirm-otp
 // ============================================================================
 /**
  * Friendly alias of /:id/verify-delivery for the driver app.
  * Accepts the same body { otp } and delegates to the same pipeline.
- * Mounted on the *orders* router but exposed as /api/deliveries/:id/confirm-otp
- * via the separate deliveryRoutes mount in index.js (see below).
+ * Registered on the orders router as /:id/confirm-otp, exposed to the driver
+ * app at /api/orders/:id/confirm-otp via the /api/orders mount in index.js.
  *
  * This keeps the driver app URL surface clean while reusing identical logic.
  */
