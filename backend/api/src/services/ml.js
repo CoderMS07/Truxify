@@ -44,6 +44,10 @@ function parseWeightKg(weight) {
 }
 
 function parseWeightKgSafe(weight) {
+  if (weight == null) {
+    logger.warn('[ML] parseWeightKgSafe received null/undefined weight');
+    return 0;
+  }
   const result = parseWeightKg(weight);
   if (Number.isNaN(result)) {
     logger.warn(`[ML] parseWeightKg received unparseable weight: ${weight}`);
