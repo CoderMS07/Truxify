@@ -43,7 +43,13 @@ class SnykService {
                 return { success: false, error: stderr };
             }
             
-            const results = JSON.parse(stdout);
+            let results;
+            try {
+              results = JSON.parse(stdout);
+            } catch (parseErr) {
+              logger.error('Dependency scan parse error:', parseErr);
+              return { success: false, error: parseErr.message };
+            }
             this.scanResults.push({
                 type: 'dependencies',
                 timestamp: new Date().toISOString(),
@@ -72,7 +78,13 @@ class SnykService {
                 return { success: false, error: stderr };
             }
             
-            const results = JSON.parse(stdout);
+            let results;
+            try {
+              results = JSON.parse(stdout);
+            } catch (parseErr) {
+              logger.error('Container scan parse error:', parseErr);
+              return { success: false, error: parseErr.message };
+            }
             this.scanResults.push({
                 type: 'container',
                 image: safeImage,
@@ -102,7 +114,13 @@ class SnykService {
                 return { success: false, error: stderr };
             }
             
-            const results = JSON.parse(stdout);
+            let results;
+            try {
+              results = JSON.parse(stdout);
+            } catch (parseErr) {
+              logger.error('IaC scan parse error:', parseErr);
+              return { success: false, error: parseErr.message };
+            }
             this.scanResults.push({
                 type: 'iac',
                 path: safePath,
@@ -132,7 +150,13 @@ class SnykService {
                 return { success: false, error: stderr };
             }
             
-            const results = JSON.parse(stdout);
+            let results;
+            try {
+              results = JSON.parse(stdout);
+            } catch (parseErr) {
+              logger.error('Code scan parse error:', parseErr);
+              return { success: false, error: parseErr.message };
+            }
             this.scanResults.push({
                 type: 'code',
                 path: safePath,
