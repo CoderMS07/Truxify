@@ -532,10 +532,12 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
   const offset = (page - 1) * limit;
 
   try {
+    const normalizedTripId = typeof tripId === 'string' && tripId.startsWith('TX-') ? tripId.slice(3) : tripId;
+
     const { data: order, error: orderErr } = await supabaseAdmin
       .from('orders')
-      .select('id, driver_id, customer_id')
-      .eq('id', tripId)
+      .select('id, driver_id, customer_id, order_display_id')
+      .or(`id.eq.${tripId},order_display_id.eq.${normalizedTripId}`)
       .maybeSingle();
 
     if (orderErr) {
@@ -555,10 +557,15 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
       }
     }
 
+    // trip_events.trip_id is persisted as the bare order display id (no 'TX-'
+    // prefix), so filter by that key regardless of whether tripId was supplied
+    // as an order UUID or a display id.
+    const tripEventsKey = order.order_display_id || normalizedTripId;
+
     let eventsQuery = supabase
       .from('trip_events')
       .select('event_id, user_id, trip_id, event_type, event_timestamp, latitude, longitude, metadata, created_at', { count: 'exact' })
-      .eq('trip_id', tripId);
+      .eq('trip_id', tripEventsKey);
 
     if (type && typeof type === 'string') {
       eventsQuery = eventsQuery.eq('event_type', type);
