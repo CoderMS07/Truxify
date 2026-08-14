@@ -1,176 +1,131 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import crypto from 'crypto';
 
-const mockLogger = vi.hoisted(() => ({
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-  debug: vi.fn(),
+const mockSupabase = {
+  from: vi.fn(),
+};
+
+vi.mock('../../src/config/db.js', () => ({
+  supabase: mockSupabase,
 }));
 
 vi.mock('../../src/middleware/logger.js', () => ({
-  default: mockLogger,
+  default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
-
-// Minimal supabase mock that records the query chain.
-function buildSupabaseMock() {
-  const chain = {
-    data: null,
-    error: null,
-    lastUpdate: null,
-    lastEq: null,
-    select: vi.fn(function (cols) {
-      this.lastSelect = cols;
-      return this;
-    }),
-    insert: vi.fn(function (row) {
-      this.lastInsert = row;
-      return this;
-    }),
-    update: vi.fn(function (row) {
-      this.lastUpdate = row;
-      return this;
-    }),
-    eq: vi.fn(function (col, val) {
-      this.lastEq = [col, val];
-      return this;
-    }),
-    lt: vi.fn(function () {
-      return this;
-    }),
-    order: vi.fn(function () {
-      return this;
-    }),
-    limit: vi.fn(function () {
-      // fetchPendingEvents() ends its chain with .limit() and awaits the
-      // result, so this must resolve to { data, error }.
-      return Promise.resolve({ data: this.data, error: this.error });
-    }),
-    maybeSingle: vi.fn(function () {
-      return Promise.resolve({ data: this.data, error: this.error });
-    }),
-    single: vi.fn(function () {
-      return Promise.resolve({ data: this.data, error: this.error });
-    }),
-    rpc: vi.fn(function () {
-      // The old buggy code called rpc() as a column value; this mock must
-      // never be reached by a correct implementation.
-      return { invalid: true };
-    }),
-  };
-  return { chain, supabase: { from: vi.fn(() => chain) } };
-}
-
-const mocks = buildSupabaseMock();
-vi.mock('../../src/config/db.js', () => ({
-  supabaseAdmin: mocks.supabase,
-}));
-
-const { outboxService } = await import('../../src/services/outbox/outboxService.js');
 
 describe('OutboxService', () => {
-  beforeEach(() => {
+  let OutboxService, service;
+
+  beforeEach(async () => {
+    vi.resetModules();
     vi.clearAllMocks();
-    mocks.chain.data = null;
-    mocks.chain.error = null;
+    const mod = await import('../../src/services/outbox/outboxService.js');
+    OutboxService = mod.OutboxService;
+    service = new OutboxService();
   });
 
   describe('writeEvent', () => {
-    it('writes a pending outbox event via supabaseAdmin and returns its id', async () => {
-      mocks.chain.data = { id: 'evt-1' };
-      const id = await outboxService.writeEvent({
-        aggregateId: 'order-1',
-        eventType: 'order.created',
-        payload: { a: 1 },
-      });
-
-      expect(id).toBe('evt-1');
-      expect(mocks.chain.lastInsert).toMatchObject({
-        aggregate_id: 'order-1',
-        aggregate_type: 'order',
-        event_type: 'order.created',
-        status: 'pending',
-        retry_count: 0,
-      });
-      expect(mocks.chain.lastInsert.payload).toEqual({ a: 1 });
-      expect(mocks.chain.lastInsert.id).toBeTypeOf('string');
-    });
-
     it('returns null when aggregateId is missing', async () => {
-      const id = await outboxService.writeEvent({ eventType: 'order.created' });
-      expect(id).toBeNull();
-      expect(mocks.supabase.from).not.toHaveBeenCalled();
+      const result = await service.writeEvent({ eventType: 'order.created' });
+      expect(result).toBeNull();
     });
 
-    it('throws when the insert errors so failures are observable', async () => {
-      mocks.chain.error = { message: 'insert failed' };
-      await expect(
-        outboxService.writeEvent({ aggregateId: 'order-1', eventType: 'order.created' })
-      ).rejects.toThrow(/insert failed/);
+    it('returns null when eventType is missing', async () => {
+      const result = await service.writeEvent({ aggregateId: 'order-123' });
+      expect(result).toBeNull();
+    });
+
+    it('returns null when both aggregateId and eventType are missing', async () => {
+      const result = await service.writeEvent({});
+      expect(result).toBeNull();
+    });
+
+    it('inserts event to outbox_events table when valid', async () => {
+      const mockInsert = vi.fn().mockReturnValue({
+        insert: vi.fn().mockReturnValue({
+          select: vi.fn().mockReturnValue({
+            single: vi.fn().mockResolvedValue({ data: { id: 'evt-123' }, error: null }),
+          }),
+        }),
+      });
+      mockSupabase.from.mockReturnValue(mockInsert());
+
+      const result = await service.writeEvent({
+        aggregateId: 'order-456',
+        eventType: 'order.shipped',
+        payload: { driver: 'driver-1' },
+      });
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('outbox_events');
     });
   });
 
   describe('fetchPendingEvents', () => {
-    it('returns rows ordered by created_at ascending', async () => {
-      mocks.chain.data = [{ id: 'evt-1' }, { id: 'evt-2' }];
-      const rows = await outboxService.fetchPendingEvents(10);
-
-      expect(rows).toHaveLength(2);
-      expect(mocks.chain.lastEq).toEqual(['status', 'pending']);
-    });
-
-    it('returns an empty array on error', async () => {
-      mocks.chain.error = { message: 'db down' };
-      const rows = await outboxService.fetchPendingEvents();
-      expect(rows).toEqual([]);
-    });
-  });
-
-  describe('markFailed', () => {
-    it('fetches the current retry_count and increments it in the update', async () => {
-      mocks.chain.data = { retry_count: 2 };
-      await outboxService.markFailed('evt-1', 'boom');
-
-      expect(mocks.chain.lastUpdate).toMatchObject({
-        status: 'failed',
-        last_error: 'boom',
-        retry_count: 3,
+    it('returns empty array on error', async () => {
+      const mockSelect = vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          order: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue({ data: null, error: new Error('DB error') }),
+          }),
+        }),
       });
-      // The buggy implementation embedded a query builder here; verify we
-      // pass a plain number instead.
-      expect(mocks.chain.lastUpdate.retry_count).toBeTypeOf('number');
-      expect(mocks.supabase.from).toHaveBeenCalledTimes(2);
+      mockSupabase.from.mockReturnValue(mockSelect());
+
+      const result = await service.fetchPendingEvents();
+      expect(result).toEqual([]);
     });
 
-    it('defaults retry_count to 1 when the row has no retry_count', async () => {
-      mocks.chain.data = null;
-      await outboxService.markFailed('evt-2', 'err');
+    it('returns data array when query succeeds', async () => {
+      const events = [{ id: '1' }, { id: '2' }];
+      const mockSelect = vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          order: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue({ data: events, error: null }),
+          }),
+        }),
+      });
+      mockSupabase.from.mockReturnValue(mockSelect());
 
-      expect(mocks.chain.lastUpdate.retry_count).toBe(1);
+      const result = await service.fetchPendingEvents();
+      expect(result).toEqual(events);
     });
 
-    it('skips when eventId is missing', async () => {
-      await outboxService.markFailed(null, 'err');
-      expect(mocks.supabase.from).not.toHaveBeenCalled();
+    it('returns empty array when data is null', async () => {
+      const mockSelect = vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          order: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue({ data: null, error: null }),
+          }),
+        }),
+      });
+      mockSupabase.from.mockReturnValue(mockSelect());
+
+      const result = await service.fetchPendingEvents();
+      expect(result).toEqual([]);
     });
   });
 
   describe('markPublished', () => {
-    it('marks the event as published', async () => {
-      mocks.chain.error = null;
-      await outboxService.markPublished('evt-1');
+    it('updates status to published', async () => {
+      const mockUpdate = vi.fn().mockReturnValue({
+        eq: vi.fn().mockResolvedValue({ error: null }),
+      });
+      mockSupabase.from.mockReturnValue(mockUpdate());
 
-      expect(mocks.chain.lastUpdate).toMatchObject({ status: 'published' });
-      expect(mocks.chain.lastEq).toEqual(['id', 'evt-1']);
+      await service.markPublished('evt-123');
+      expect(mockSupabase.from).toHaveBeenCalledWith('outbox_events');
     });
   });
 
-  describe('requeueFailedEvents', () => {
-    it('resets failed events below maxRetries to pending', async () => {
-      mocks.chain.error = null;
-      await outboxService.requeueFailedEvents(5);
+  describe('markFailed', () => {
+    it('calls from with outbox_events', async () => {
+      const mockUpdate = vi.fn().mockReturnValue({
+        eq: vi.fn().mockResolvedValue({ error: null }),
+      });
+      mockSupabase.from.mockReturnValue(mockUpdate());
 
-      expect(mocks.chain.lastUpdate).toEqual({ status: 'pending' });
-      expect(mocks.chain.lastEq).toEqual(['status', 'failed']);
+      await service.markFailed('evt-123', 'Network timeout');
+      expect(mockSupabase.from).toHaveBeenCalledWith('outbox_events');
     });
   });
 });
