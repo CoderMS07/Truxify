@@ -199,12 +199,20 @@ export async function predictPrice({
   }
 
   const adjustedPrice = initialValidation.validated.estimated_price * safeMultiplier;
-  const revalidated = validatePricePrediction({
+  const revalidatedInput = {
       ...raw,
       estimated_price: adjustedPrice,
-      min_price: typeof raw?.min_price === 'number' ? raw.min_price * safeMultiplier : undefined,
-      max_price: typeof raw?.max_price === 'number' ? raw.max_price * safeMultiplier : undefined,
-  });
+  };
+  // Only include min_price/max_price in the revalidation input when the
+  // original response contained valid finite numbers — avoids injecting
+  // undefined which the validator rejects as invalid.
+  if (typeof raw?.min_price === 'number' && Number.isFinite(raw.min_price)) {
+      revalidatedInput.min_price = raw.min_price * safeMultiplier;
+  }
+  if (typeof raw?.max_price === 'number' && Number.isFinite(raw.max_price)) {
+      revalidatedInput.max_price = raw.max_price * safeMultiplier;
+  }
+  const revalidated = validatePricePrediction(revalidatedInput);
 
   if (!revalidated.ok) {
       logger.warn({
