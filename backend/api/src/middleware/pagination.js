@@ -37,6 +37,9 @@ export function validatePagination(options = {}) {
       }
     } else if (req.query.page) {
        const parsedPage = parseInteger(req.query.page);
+       if (parsedPage !== null && parsedPage < 1) {
+         return res.status(400).json({ error: 'Invalid page parameter: must be >= 1' });
+       }
        if (Number.isFinite(parsedPage) && parsedPage > 0) {
           const computedOffset = (parsedPage - 1) * limit;
           // Guard against NaN (e.g., if limit is 0) and cap at maxOffset
