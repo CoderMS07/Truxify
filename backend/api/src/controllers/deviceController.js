@@ -1,4 +1,3 @@
-import { supabaseAdmin } from '../config/db.js';
 import { supabase, supabaseAdmin } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { errorResponse } from '../utils/apiResponse.js';
@@ -168,7 +167,7 @@ export async function unregisterDeviceToken(req, res, next) {
       });
     }
 
-    const { error: rpcError } = await supabaseAdmin.rpc('unregister_device_token', {
+    const { error: rpcError, data: deletedRows } = await supabaseAdmin.rpc('unregister_device_token', {
       p_user_id:   userId,
       p_fcm_token: fcmToken,
     });
