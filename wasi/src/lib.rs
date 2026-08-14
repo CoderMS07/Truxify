@@ -127,9 +127,40 @@ fn is_path_allowed(path: &str) -> bool {
     };
 
     let allowed_prefixes = ["/tmp/truxify/", "./data/", "/var/truxify/"];
+    let mut lexically_ok = false;
     for prefix in allowed_prefixes {
         if let Some(root) = resolve_lexically(prefix) {
             if resolved == root || resolved.starts_with(&format!("{}/", root)) {
+                lexically_ok = true;
+                break;
+            }
+        }
+    }
+    if !lexically_ok {
+        return false;
+    }
+
+    // The lexical check above is necessary but not sufficient: a symlink placed
+    // inside the sandbox still resolves to a target outside it, and the real
+    // `std::fs` operations follow that symlink. Re-verify the canonical
+    // (symlink-resolved) form of the path against the canonical sandbox roots.
+    // If the path does not exist yet (so it cannot be a symlink escape of an
+    // existing target) we trust the lexical result.
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        return canonical_target_allowed(&canon.to_string_lossy(), allowed_prefixes);
+    }
+    true
+}
+
+// Returns true only when `canon` (a symlink-resolved absolute path) equals or
+// lies beneath one of the canonicalized sandbox roots.
+fn canonical_target_allowed(canon: &str, allowed_prefixes: [&str; 3]) -> bool {
+    for prefix in allowed_prefixes {
+        if let Some(root) = std::fs::canonicalize(resolve_lexically(prefix).unwrap_or_default())
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+        {
+            if canon == root || canon.starts_with(&format!("{}/", root)) {
                 return true;
             }
         }
@@ -214,6 +245,42 @@ mod tests {
         assert_eq!(resolve_lexically("/tmp/truxify/../../etc/passwd"), Some("/etc/passwd".to_string()));
         assert_eq!(resolve_lexically("./data/../data/x"), Some("data/x".to_string()));
         assert_eq!(resolve_lexically("../data/../../etc/hostname"), Some("../../etc/hostname".to_string()));
+    }
+
+    #[test]
+    fn rejects_symlink_escape_outside_sandbox() {
+        // Build a self-contained sandbox and a sibling directory outside it.
+        let sandbox = std::path::Path::new("./data");
+        let outside = std::path::Path::new("./.outside_sandbox");
+        let _ = std::fs::create_dir_all(sandbox);
+        let _ = std::fs::create_dir_all(outside);
+        let secret = outside.join("secret.txt");
+        let _ = std::fs::write(&secret, "topsecret");
+
+        // Symlink placed *inside* the sandbox but pointing *outside* it.
+        let link = sandbox.join("escape");
+        let _ = std::fs::remove_file(&link);
+
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink("../.outside_sandbox", &link).is_ok();
+        #[cfg(not(unix))]
+        let created = false;
+
+        if !created {
+            // Symlink creation unsupported (e.g. missing privileges on Windows):
+            // nothing to exercise, so clean up and treat as a pass.
+            let _ = std::fs::remove_file(&secret);
+            let _ = std::fs::remove_dir_all(outside);
+            return;
+        }
+
+        // Lexically this starts with ./data/, but canonicalizing follows the
+        // symlink out of the sandbox and must be rejected.
+        assert!(!is_path_allowed("./data/escape/secret.txt"));
+
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&secret);
+        let _ = std::fs::remove_dir_all(outside);
     }
 }
 
