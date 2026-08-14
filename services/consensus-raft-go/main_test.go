@@ -4,22 +4,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-<<<<<<< HEAD
-=======
 	"os"
->>>>>>> upstream/main
 	"strings"
 	"testing"
 	"time"
 )
 
-<<<<<<< HEAD
-=======
 func init() {
 	os.Setenv("RAFT_STATE_FILE", "none")
 }
 
->>>>>>> upstream/main
 func TestNewRaftNodeInit(t *testing.T) {
 	node := NewRaftNode("node1", []string{"node2", "node3"}, []string{"http://localhost:8081", "http://localhost:8082"})
 	if node.NodeID != "node1" {
@@ -577,10 +571,6 @@ func TestHandleVoteResetsElectionTimer(t *testing.T) {
 	if !updatedSeen.After(oldTime) {
 		t.Errorf("expected lastLeaderSeen to be reset upon granting vote, got %v", updatedSeen)
 	}
-<<<<<<< HEAD
-}
-
-=======
 }func TestHandleCommitOrderDuplicateDeduplication(t *testing.T) {
 	bypassAuth = true
 	defer func() { bypassAuth = false }()
@@ -758,4 +748,3 @@ func TestHandleCommitOrderAcceptsBodyWithinLimit(t *testing.T) {
 		t.Fatalf("expected 400 for malformed in-limit body, got %d", w.Code)
 	}
 }
->>>>>>> upstream/main
