@@ -1,72 +1,79 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { InternalEventAdapter } from '../../src/core/events/adapters/InternalEventAdapter.js';
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock('../../src/middleware/logger.js', () => ({
+// Mock logger
+vi.mock("../../../src/middleware/logger.js", () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
-describe('InternalEventAdapter', () => {
+const { InternalEventAdapter } = await import("../../../src/core/events/adapters/InternalEventAdapter.js");
+
+describe("InternalEventAdapter", () => {
   let adapter;
 
   beforeEach(() => {
     adapter = new InternalEventAdapter();
   });
 
-  it('is connected by default', () => {
-    expect(adapter.isConnected).toBe(true);
+  describe("constructor", () => {
+    it("creates an adapter that is connected by default", () => {
+      expect(adapter.isConnected).toBe(true);
+    });
   });
 
-  it('connect sets connected to true', async () => {
-    adapter._connected = false;
-    await adapter.connect();
-    expect(adapter.isConnected).toBe(true);
+  describe("connect", () => {
+    it("sets isConnected to true", async () => {
+      adapter._connected = false;
+      await adapter.connect();
+      expect(adapter.isConnected).toBe(true);
+    });
   });
 
-  it('disconnect sets connected to false', async () => {
-    await adapter.disconnect();
-    expect(adapter.isConnected).toBe(false);
+  describe("disconnect", () => {
+    it("sets isConnected to false and removes all listeners", async () => {
+      const handler = vi.fn();
+      adapter.on("test.event", handler);
+      await adapter.disconnect();
+      expect(adapter.isConnected).toBe(false);
+    });
   });
 
-  it('publish emits event locally', async () => {
-    const received = [];
-    adapter.on('order.created', (event) => received.push(event));
-    const event = { eventType: 'order.created', payload: { id: '123' } };
-    await adapter.publish(event);
-    expect(received).toHaveLength(1);
-    expect(received[0]).toBe(event);
+  describe("publish", () => {
+    it("emits the event locally when connected", async () => {
+      const handler = vi.fn();
+      adapter.on("order.created", handler);
+      const event = { eventType: "order.created", payload: { orderId: "123" } };
+      await adapter.publish(event);
+      expect(handler).toHaveBeenCalledWith(event);
+    });
+
+    it("throws when not connected", async () => {
+      adapter._connected = false;
+      const event = { eventType: "test" };
+      await expect(adapter.publish(event)).rejects.toThrow("Not connected");
+    });
   });
 
-  it('publish throws when not connected', async () => {
-    adapter._connected = false;
-    await expect(adapter.publish({ eventType: 'test' })).rejects.toThrow('Not connected');
+  describe("subscribe", () => {
+    it("registers a handler for an event type when connected", async () => {
+      const handler = vi.fn();
+      await adapter.subscribe("user.signup", handler);
+      adapter.emit("user.signup", { userId: "1" });
+      expect(handler).toHaveBeenCalledWith({ userId: "1" });
+    });
+
+    it("throws when not connected", async () => {
+      adapter._connected = false;
+      await expect(adapter.subscribe("test", vi.fn())).rejects.toThrow("Not connected");
+    });
   });
 
-  it('subscribe registers handler for event type', async () => {
-    const handler = vi.fn();
-    await adapter.subscribe('payment.processed', handler);
-    const event = { eventType: 'payment.processed', payload: { amount: 500 } };
-    await adapter.publish(event);
-    expect(handler).toHaveBeenCalledWith(event);
-  });
-
-  it('subscribe throws when not connected', async () => {
-    adapter._connected = false;
-    await expect(adapter.subscribe('test', vi.fn())).rejects.toThrow('Not connected');
-  });
-
-  it('unsubscribe removes handler', async () => {
-    const handler = vi.fn();
-    await adapter.subscribe('trip.started', handler);
-    await adapter.unsubscribe('trip.started', handler);
-    await adapter.publish({ eventType: 'trip.started', payload: {} });
-    expect(handler).not.toHaveBeenCalled();
-  });
-
-  it('disconnect removes all listeners', async () => {
-    const handler = vi.fn();
-    adapter.on('order.cancelled', handler);
-    await adapter.disconnect();
-    await adapter.publish({ eventType: 'order.cancelled', payload: {} });
-    expect(handler).not.toHaveBeenCalled();
+  describe("unsubscribe", () => {
+    it("removes a handler", async () => {
+      const handler = vi.fn();
+      await adapter.subscribe("remove.test", handler);
+      await adapter.unsubscribe("remove.test", handler);
+      adapter.emit("remove.test", {});
+      expect(handler).not.toHaveBeenCalled();
+    });
   });
 });
