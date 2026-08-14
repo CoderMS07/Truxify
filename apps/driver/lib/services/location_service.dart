@@ -73,6 +73,29 @@ class LocationService {
   DateTime? _lastSentTime;
   String? _lastTriggeredMilestone;
 
+  /// Serializes location sends so the shared throttle state
+  /// (_lastSentPosition/_lastSentTime) is read and updated atomically. Without
+  /// this, the position-stream listener and the 5s fallback timer can both read
+  /// the same stale throttle state before either writes it, letting both pass
+  /// the throttle check and emit duplicate pings (issue #13955).
+  Completer<void>? _sendChain;
+
+  /// Runs [task] strictly after any previously queued send completes, so the
+  /// throttle decision + ping + state update happen atomically.
+  Future<void> _serializeSend(Future<void> Function() task) async {
+    final previous = _sendChain;
+    final next = Completer<void>();
+    _sendChain = next;
+    if (previous != null) {
+      await previous.future;
+    }
+    try {
+      await task();
+    } finally {
+      next.complete();
+    }
+  }
+
   // Durable offline queue + single replay worker for it.
   final OfflineLocationQueue _offlineQueue = OfflineLocationQueue.instance;
   final LocationReplayService _replayService = LocationReplayService.instance;
@@ -211,55 +234,90 @@ class LocationService {
       },
     );
 
-    // Fallback timer: ensure a ping is sent at least every 30 seconds
+    // Fallback timer: ensure a heartbeat ping is sent at least every interval.
+    // It is serialized with the position-stream sends and re-checks the
+    // throttle so it never duplicates a ping that was already sent within the
+    // interval (issue #13955).
     _maxIntervalTimer?.cancel();
     _maxIntervalTimer = Timer.periodic(_maxInterval, (_) {
-      if (_lastSentPosition != null && _isTracking) {
-        debugPrint('[LocationService] Max interval elapsed, sending fallback ping');
-        unawaited(_sendLocationPing(_lastSentPosition!));
+      if (_isTracking) {
+        unawaited(_sendFallbackPing());
+      }
+    });
+  }
+
+  /// Heartbeat ping for the fallback timer. Re-checks the throttle (and re-checks
+  /// again under the send lock) so it only fires when no successful ping landed
+  /// within [_maxInterval], preventing duplicate backend writes.
+  Future<void> _sendFallbackPing() async {
+    final last = _lastSentPosition;
+    if (last == null || !_isTracking) return;
+    final now = DateTime.now();
+    if (_lastSentTime != null &&
+        now.difference(_lastSentTime!) < _maxInterval) {
+      return;
+    }
+    await _serializeSend(() async {
+      if (!_isTracking) return;
+      if (_lastSentTime != null &&
+          DateTime.now().difference(_lastSentTime!) < _maxInterval) {
+        return;
+      }
+      debugPrint('[LocationService] Max interval elapsed, sending fallback ping');
+      final result = await _sendLocationPing(last);
+      if (result == LocationDelivery.delivered ||
+          result == LocationDelivery.queued) {
+        _lastSentTime = DateTime.now();
       }
     });
   }
 
   Future<void> _handleLocationUpdate(Position position) async {
-    // Implement displacement-based throttling
-    if (_lastSentPosition == null) {
-      // First position, always send
-      final result = await _sendLocationPing(position);
-      if (result == LocationDelivery.delivered ||
-          result == LocationDelivery.queued) {
-        _lastSentPosition = position;
-        _lastSentTime = DateTime.now();
+    // Serialize the throttle decision + send + state update so two concurrent
+    // updates (or the fallback timer) cannot both read the same stale throttle
+    // state and both pass the check (issue #13955).
+    await _serializeSend(() async {
+      if (!_isTracking) return;
+
+      // Implement displacement-based throttling
+      if (_lastSentPosition == null) {
+        // First position, always send
+        final result = await _sendLocationPing(position);
+        if (result == LocationDelivery.delivered ||
+            result == LocationDelivery.queued) {
+          _lastSentPosition = position;
+          _lastSentTime = DateTime.now();
+        }
+        return;
       }
-      return;
-    }
 
-    final now = DateTime.now();
-    final timeSinceLastSend = now.difference(_lastSentTime!);
+      final now = DateTime.now();
+      final timeSinceLastSend = now.difference(_lastSentTime!);
 
-    // Calculate distance moved using Geolocator
-    final distanceMoved = Geolocator.distanceBetween(
-      _lastSentPosition!.latitude,
-      _lastSentPosition!.longitude,
-      position.latitude,
-      position.longitude,
-    );
-
-    // Send if: moved 15m+ OR max interval (30s) has elapsed
-    if (distanceMoved >= _minDistanceMeters ||
-        timeSinceLastSend.compareTo(_maxInterval) >= 0) {
-      final result = await _sendLocationPing(position);
-      if (result == LocationDelivery.delivered ||
-          result == LocationDelivery.queued) {
-        _lastSentPosition = position;
-        _lastSentTime = now;
-      }
-    } else {
-      debugPrint(
-        '[LocationService] Location update throttled (moved ${distanceMoved.toStringAsFixed(1)}m, '
-        'max is ${_minDistanceMeters}m)',
+      // Calculate distance moved using Geolocator
+      final distanceMoved = Geolocator.distanceBetween(
+        _lastSentPosition!.latitude,
+        _lastSentPosition!.longitude,
+        position.latitude,
+        position.longitude,
       );
-    }
+
+      // Send if: moved 15m+ OR max interval (30s) has elapsed
+      if (distanceMoved >= _minDistanceMeters ||
+          timeSinceLastSend.compareTo(_maxInterval) >= 0) {
+        final result = await _sendLocationPing(position);
+        if (result == LocationDelivery.delivered ||
+            result == LocationDelivery.queued) {
+          _lastSentPosition = position;
+          _lastSentTime = now;
+        }
+      } else {
+        debugPrint(
+          '[LocationService] Location update throttled (moved ${distanceMoved.toStringAsFixed(1)}m, '
+          'max is ${_minDistanceMeters}m)',
+        );
+      }
+    });
   }
 
   /// Sends a location ping, or durably queues it when the transport is
