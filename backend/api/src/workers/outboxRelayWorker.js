@@ -19,7 +19,7 @@ async function relayOnce() {
     for (const event of events) {
       try {
         // Publish via existing eventBus — idempotent on consumer side via processed_events
-        eventBus.emitSafe(event.event_type, {
+        const published = eventBus.emitSafe(event.event_type, {
           eventId: event.id,
           aggregateId: event.aggregate_id,
           aggregateType: event.aggregate_type,
@@ -27,11 +27,26 @@ async function relayOnce() {
           createdAt: event.created_at,
         });
 
-        await outboxService.markPublished(event.id);
-        logger.info('[OutboxRelay] Published event:', { eventId: event.id, type: event.event_type });
+        // emitSafe returns false when no listeners are registered (it swallows
+        // listener errors internally and never throws). Only mark published when
+        // at least one listener was actually called.
+        if (published) {
+          try {
+            await outboxService.markPublished(event.id);
+            logger.info('[OutboxRelay] Published event:', { eventId: event.id, type: event.event_type });
+          } catch (markErr) {
+            logger.error('[OutboxRelay] Failed to mark event published:', { eventId: event.id, err: markErr.message });
+          }
+        } else {
+          logger.warn('[OutboxRelay] No listeners registered for event type — skipping publish:', { eventId: event.id, type: event.event_type });
+        }
       } catch (err) {
         logger.error('[OutboxRelay] Failed to publish event:', { eventId: event.id, err: err.message });
-        await outboxService.markFailed(event.id, err.message);
+        try {
+          await outboxService.markFailed(event.id, err.message);
+        } catch (markErr) {
+          logger.error('[OutboxRelay] Failed to mark event failed:', { eventId: event.id, err: markErr.message });
+        }
       }
     }
   } catch (err) {
