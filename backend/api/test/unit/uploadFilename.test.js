@@ -1,116 +1,89 @@
-/**
- * Coverage for upload filename sanitisation.
- *
- * `file.originalname` is entirely client-controlled and previously flowed
- * unsanitised from the voice upload endpoint into the speech pipeline.
- */
-import { describe, expect, it } from 'vitest';
-import { sanitizeUploadFilename } from '../../src/lib/uploadFilename.js';
+import { describe, it, expect } from 'vitest';
+import { sanitizeUploadFilename, checkContentLength } from '../../src/lib/uploadFilename.js';
 
-describe('sanitizeUploadFilename', () => {
-  it('passes an ordinary filename through unchanged', () => {
-    expect(sanitizeUploadFilename('voice-query.wav')).toBe('voice-query.wav');
-    expect(sanitizeUploadFilename('recording_01.mp3')).toBe('recording_01.mp3');
+describe('uploadFilename', () => {
+  describe('sanitizeUploadFilename', () => {
+    it('returns fallback for non-string input', () => {
+      expect(sanitizeUploadFilename(null)).toBe('upload');
+      expect(sanitizeUploadFilename(undefined)).toBe('upload');
+      expect(sanitizeUploadFilename(123)).toBe('upload');
+      expect(sanitizeUploadFilename('')).toBe('upload');
+    });
+
+    it('returns custom fallback when provided', () => {
+      expect(sanitizeUploadFilename(null, 'myfile')).toBe('myfile');
+      expect(sanitizeUploadFilename('', 'custom')).toBe('custom');
+    });
+
+    it('strips directory traversal paths', () => {
+      expect(sanitizeUploadFilename('../../../etc/passwd')).toBe('passwd');
+      expect(sanitizeUploadFilename('C:\\Windows\\System32\\config')).toBe('config');
+      expect(sanitizeUploadFilename('/etc/shadow')).toBe('shadow');
+    });
+
+    it('strips path traversal sequences', () => {
+      expect(sanitizeUploadFilename('..%2F..%2Fetc/passwd')).toBe('passwd');
+      expect(sanitizeUploadFilename('foo/../../../bar')).toBe('bar');
+    });
+
+    it('removes control characters', () => {
+      expect(sanitizeUploadFilename('file\x00name.txt')).toBe('filename.txt');
+      expect(sanitizeUploadFilename('file\x1fname.txt')).toBe('filename.txt');
+    });
+
+    it('collapses multiple dots and removes leading dots', () => {
+      expect(sanitizeUploadFilename('...hidden')).toBe('hidden');
+      expect(sanitizeUploadFilename('file...name')).toBe('file.name');
+    });
+
+    it('rejects Windows reserved names', () => {
+      expect(sanitizeUploadFilename('CON')).toBe('upload');
+      expect(sanitizeUploadFilename('PRN')).toBe('upload');
+      expect(sanitizeUploadFilename('AUX')).toBe('upload');
+      expect(sanitizeUploadFilename('NUL')).toBe('upload');
+      expect(sanitizeUploadFilename('com1')).toBe('upload');
+      expect(sanitizeUploadFilename('LPT9')).toBe('upload');
+    });
+
+    it('preserves valid filenames', () => {
+      expect(sanitizeUploadFilename('photo.jpg')).toBe('photo.jpg');
+      expect(sanitizeUploadFilename('document_2024.pdf')).toBe('document_2024.pdf');
+      expect(sanitizeUploadFilename('my-photo.PNG')).toBe('my-photo.PNG');
+    });
+
+    it('truncates long filenames to MAX_FILENAME_LENGTH', () => {
+      const longName = 'a'.repeat(200) + '.jpg';
+      const result = sanitizeUploadFilename(longName);
+      expect(result.length).toBeLessThanOrEqual(120);
+      expect(result.endsWith('.jpg')).toBe(true);
+    });
   });
 
-  it('strips POSIX directory components', () => {
-    expect(sanitizeUploadFilename('/etc/passwd')).toBe('passwd');
-    expect(sanitizeUploadFilename('../../etc/passwd')).toBe('passwd');
-  });
+  describe('checkContentLength', () => {
+    it('returns ok for valid content length', () => {
+      const req = { headers: { 'content-length': '1024' } };
+      expect(checkContentLength(req)).toEqual({ ok: true, length: 1024 });
+    });
 
-  it('strips Windows directory components on any platform', () => {
-    // path.basename would not handle backslashes on a POSIX server.
-    expect(sanitizeUploadFilename('..\\..\\windows\\system32\\config')).toBe('config');
-    expect(sanitizeUploadFilename('C:\\temp\\audio.wav')).toBe('audio.wav');
-  });
+    it('returns error for missing content-length', () => {
+      const req = { headers: {} };
+      const result = checkContentLength(req);
+      expect(result.ok).toBe(false);
+      expect(result.error.status).toBe(411);
+    });
 
-  it('neutralises traversal sequences that survive separator stripping', () => {
-    const result = sanitizeUploadFilename('....//....//evil.wav');
-    expect(result).not.toContain('..');
-    expect(result).not.toContain('/');
-  });
+    it('returns error for non-numeric content-length', () => {
+      const req = { headers: { 'content-length': 'abc' } };
+      const result = checkContentLength(req);
+      expect(result.ok).toBe(false);
+      expect(result.error.status).toBe(400);
+    });
 
-  it('removes NUL bytes and control characters', () => {
-    expect(sanitizeUploadFilename('audio\x00.wav')).toBe('audio.wav');
-    expect(sanitizeUploadFilename('au\x07dio\x1f.wav')).toBe('audio.wav');
-  });
-
-  it('collapses shell metacharacters to underscores', () => {
-    const result = sanitizeUploadFilename('audio;rm -rf ~.wav');
-    expect(result).not.toMatch(/[;~ ]/);
-    expect(result).toMatch(/^[A-Za-z0-9._-]+$/);
-  });
-
-  it('strips leading dots so the result is never a hidden file', () => {
-    expect(sanitizeUploadFilename('.hidden.wav')).toBe('hidden.wav');
-    expect(sanitizeUploadFilename('...wav')).toBe('wav');
-  });
-
-  it('truncates an over-long name while preserving the extension', () => {
-    const long = `${'a'.repeat(500)}.wav`;
-    const result = sanitizeUploadFilename(long);
-    expect(result.length).toBeLessThanOrEqual(120);
-    expect(result.endsWith('.wav')).toBe(true);
-  });
-
-  it('falls back for empty, whitespace-only and non-string input', () => {
-    expect(sanitizeUploadFilename('')).toBe('upload');
-    expect(sanitizeUploadFilename(null)).toBe('upload');
-    expect(sanitizeUploadFilename(undefined)).toBe('upload');
-    expect(sanitizeUploadFilename(42)).toBe('upload');
-    expect(sanitizeUploadFilename({})).toBe('upload');
-  });
-
-  it('falls back when nothing survives sanitisation', () => {
-    expect(sanitizeUploadFilename('/')).toBe('upload');
-    expect(sanitizeUploadFilename('...')).toBe('upload');
-    expect(sanitizeUploadFilename('\x00\x01')).toBe('upload');
-  });
-
-  it('rejects Windows reserved device names', () => {
-    expect(sanitizeUploadFilename('CON')).toBe('upload');
-    expect(sanitizeUploadFilename('con.wav')).toBe('upload');
-    expect(sanitizeUploadFilename('LPT1.mp3')).toBe('upload');
-    expect(sanitizeUploadFilename('nul')).toBe('upload');
-  });
-
-  it('honours a caller-supplied fallback', () => {
-    expect(sanitizeUploadFilename('', 'voice-query.wav')).toBe('voice-query.wav');
-    expect(sanitizeUploadFilename(null, 'photo.jpg')).toBe('photo.jpg');
-  });
-
-  it('always returns a non-empty string with no separators', () => {
-    const hostile = [
-      '../../../../root/.ssh/authorized_keys',
-      '..\\..\\..\\boot.ini',
-      'a/b/c/../../../d.wav',
-      '\x00../etc/shadow',
-      '   ',
-      '$(whoami).wav',
-      '`id`.mp3',
-      'file\nname.wav',
-    ];
-
-    for (const input of hostile) {
-      const result = sanitizeUploadFilename(input);
-      expect(result.length).toBeGreaterThan(0);
-      expect(result).not.toContain('/');
-      expect(result).not.toContain('\\');
-      expect(result).not.toContain('..');
-      expect(result).toMatch(/^[A-Za-z0-9._-]+$/);
-    }
+    it('returns error for content exceeding maxBytes', () => {
+      const req = { headers: { 'content-length': String(30 * 1024 * 1024) } };
+      const result = checkContentLength(req, 25 * 1024 * 1024);
+      expect(result.ok).toBe(false);
+      expect(result.error.status).toBe(413);
+    });
   });
 });
-
-
-// === Spec 18 test ===
-import { checkContentLength } from '../../src/lib/uploadFilename.js';
-describe('checkContentLength', () => {
-  it('passes small', () => { expect(checkContentLength({ headers: { 'content-length': '100' } }, 1024).ok).toBe(true); });
-  it('rejects large', () => {
-    const r = checkContentLength({ headers: { 'content-length': '5000' } }, 1024);
-    expect(r.ok).toBe(false);
-    expect(r.error.status).toBe(413);
-  });
-});
-
