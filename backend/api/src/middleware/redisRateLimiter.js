@@ -54,6 +54,18 @@ export function redisRateLimiter({ routeKey, limit, windowMs, failClosed = false
       const results = await pipeline.exec();
 
       // Validate ZCARD result tuple [error, value].
+      // Guard against null (transient Redis failures can return null from pipeline.exec).
+      if (!results) {
+        if (failClosed) {
+          logger.error({ routeKey }, '[RateLimiter] pipeline.exec returned null — failing closed');
+          return res.status(503).json({
+            success: false,
+            error: 'Service temporarily unavailable. Please try again shortly.',
+          });
+        }
+        logger.warn({ routeKey }, '[RateLimiter] pipeline.exec returned null — failing open');
+        return next();
+      }
       const zcardTuple = results[1];
       if (!zcardTuple || zcardTuple[0]) {
         if (failClosed) {
