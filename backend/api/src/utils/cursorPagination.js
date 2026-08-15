@@ -28,6 +28,16 @@ export function decodeCursor(cursor) {
     const json = Buffer.from(cursor, 'base64url').toString('utf8');
     const result = JSON.parse(json);
     if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+    if (result.page_size !== undefined) {
+      const ps = result.page_size;
+      if (
+        typeof ps !== 'number' ||
+        !Number.isInteger(ps) ||
+        ps < 1
+      ) {
+        return null;
+      }
+    }
     return result;
   } catch (err) {
     logger.warn('[cursorPagination] Failed to decode cursor:', err?.message);
