@@ -80,6 +80,14 @@ describe('apiResponse helpers', () => {
       expect(result.pagination.hasPrevPage).toBe(false);
     });
 
+    it('hasNextPage is true on penultimate page when total divides evenly by limit', () => {
+      // total=30, limit=10: totalPages=3, page=2 is not last, hasNextPage should be true
+      const result = paginated(['a'], 2, 10, 30);
+      expect(result.pagination.totalPages).toBe(3);
+      expect(result.pagination.hasNextPage).toBe(true);
+      expect(result.pagination.hasPrevPage).toBe(true);
+    });
+
     it('converts page and limit to numbers', () => {
       const result = paginated([], '2', '10', 30);
       expect(result.pagination.page).toBe(2);
