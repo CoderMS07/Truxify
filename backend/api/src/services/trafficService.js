@@ -92,5 +92,9 @@ function getRushHourMultiplier(date) {
     ? (hour - RUSH_HOUR_START_AM) / (RUSH_HOUR_END_AM - RUSH_HOUR_START_AM)
     : (hour - RUSH_HOUR_START_PM) / (RUSH_HOUR_END_PM - RUSH_HOUR_START_PM);
   const surge = MIN_SURGE_MULTIPLIER + SURGE_PEAK_AMPLITUDE * Math.sin(peakHour * Math.PI);
-  return Number(Math.min(MAX_SURGE_MULTIPLIER, Math.max(MIN_SURGE_MULTIPLIER, surge)).toFixed(2));
+  const result = Math.min(MAX_SURGE_MULTIPLIER, Math.max(MIN_SURGE_MULTIPLIER, surge));
+  if (!Number.isFinite(result)) {
+    return 1.0;
+  }
+  return Number(result.toFixed(2));
 }
