@@ -159,7 +159,7 @@ import {
   startDlqWorker,
   stopDlqWorker,
 } from './workers/dlqWorker.js'
-import { startStaleOrderWorker } from './workers/staleOrderWorker.js'
+import { startStaleOrderWorker, stopStaleOrderWorker } from './workers/staleOrderWorker.js'
 import { startDevicePruningWorker } from './workers/devicePruningWorker.js'
 import { startOutboxRelayWorker, stopOutboxRelayWorker } from './workers/outboxRelayWorker.js'
 import BlockchainMetrics from './services/blockchain/blockchainMetrics.js'
@@ -798,6 +798,7 @@ async function shutdown(signal) {
   stopDocumentExpiryWorker()
   stopWithdrawalSettlementWorker()
   stopOutboxRelayWorker()
+  stopStaleOrderWorker()
   fraudDetection.destroy()
   CacheManager.shutdown()
 
