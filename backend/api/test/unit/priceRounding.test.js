@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { toPaisa, toInr, roundPrice } from '../../src/lib/priceRounding.js';
+import { describe, it, expect } from 'vitest'
+import { toPaisa, toInr, roundPrice } from '../../src/lib/priceRounding.js'
 
 describe('priceRounding', () => {
   describe('toPaisa', () => {
