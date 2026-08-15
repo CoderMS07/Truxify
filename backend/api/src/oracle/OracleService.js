@@ -240,6 +240,13 @@ class OracleService {
       return { verified: false, ipfsHash: null, blockchainHash, verificationUrl: null, error: err.message };
     }
   }
+
+  getStatus() {
+    return {
+      providers: ['OTPVerifier', 'GPSVerifier', 'StatusVerifier'],
+      threshold: 2,
+    };
+  }
 }
 
 export default OracleService;

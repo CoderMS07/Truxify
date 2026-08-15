@@ -49,8 +49,7 @@ router.get('/status', authenticate, async (req, res) => {
     res.status(200).json({
       success: true,
       data: {
-        providers: 3,
-        threshold: 2,
+        ...oracleService.getStatus(),
         timestamp: new Date().toISOString()
       }
     });
