@@ -151,7 +151,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
 
   String? _formatRupeesFromPaise(dynamic value) {
     if (value is! num) return null;
-    return '₹ ${(value / 100).toStringAsFixed(0)}';
+    return '₹ ${(value / 100).toStringAsFixed(2)}';
   }
 
   Future<void> _loadOrderAndTimeline() async {
@@ -164,7 +164,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
         setState(() {
           final rawAmount = orderMap['total_amount'] ?? 0;
           final amountInRupees = (rawAmount is num)
-              ? (rawAmount / 100).toStringAsFixed(0)
+              ? (rawAmount / 100).toStringAsFixed(2)
               : rawAmount.toString();
           
           final driverName = _resolveDriverName(orderMap);

@@ -169,7 +169,7 @@ class _OrdersScreenState extends State<OrdersScreen>
           _historyOrders = historyOrders.map((order) {
             final rawAmount = order['total_amount'] ?? 0;
             final amountInRupees = (rawAmount is num)
-                ? (rawAmount / 100).toStringAsFixed(0)
+                ? (rawAmount / 100).toStringAsFixed(2)
                 : rawAmount.toString();
             return HistoryOrderData(
               orderId: order['order_display_id']?.toString() ?? '',
@@ -248,7 +248,7 @@ class _OrdersScreenState extends State<OrdersScreen>
             _historyOrders = historyRaw.map((order) {
               final rawAmount = order['total_amount'] ?? 0;
               final amountInRupees = (rawAmount is num)
-                  ? (rawAmount / 100).toStringAsFixed(0)
+                  ? (rawAmount / 100).toStringAsFixed(2)
                   : rawAmount.toString();
               return HistoryOrderData(
                 orderId: order['order_display_id']?.toString() ?? '',
