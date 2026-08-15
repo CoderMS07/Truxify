@@ -50,7 +50,12 @@ class WebRTCSignalingServer {
       }
 
       const peerId = this.generatePeerId();
-      const meshId = url.searchParams.get('meshId') || this.getOrCreateMesh();
+      const rawMeshId = url.searchParams.get('meshId');
+      if (rawMeshId !== undefined && (typeof rawMeshId !== 'string' || rawMeshId.length === 0 || rawMeshId.length > 64)) {
+        ws.close(4001, 'Invalid meshId');
+        return;
+      }
+      const meshId = rawMeshId || this.getOrCreateMesh();
 
       // Store peer with authenticated user info
       this.peers.set(peerId, {
@@ -209,6 +214,10 @@ class WebRTCSignalingServer {
   }
 
   normalizeLocation(location) {
+    if (location == null) {
+      logger.warn('[WebRTCSignalingServer] normalizeLocation called with null input');
+      return { lat: 0, lng: 0 };
+    }
     return {
       ...location,
       lat: Number(location.lat),

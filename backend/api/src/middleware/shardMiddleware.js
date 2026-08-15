@@ -2,7 +2,11 @@ import shardManager from '../services/sharding/ShardManager.js';
 import logger from './logger.js';
 
 function firstDefined(...values) {
-  return values.find(value => value !== undefined && value !== null && value !== '');
+  const result = values.find(value => value !== undefined && value !== null && value !== '');
+  if (result === undefined && values.length > 0) {
+    logger.warn('[shardMiddleware] firstDefined: all arguments were null/undefined/empty', { values });
+  }
+  return result;
 }
 
 function parseCoordinate(value) {
