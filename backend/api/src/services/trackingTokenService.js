@@ -57,7 +57,7 @@ export class TrackingTokenService {
   async validateToken(rawToken) {
     const tokenHash = this.hashToken(rawToken);
 
-    const { data: token, error } = await this._supabase
+    const { data: token, error } = await this._supabaseAdmin
       .from('tracking_tokens')
       .select('id, order_display_id, expires_at, revoked, revoked_at')
       .eq('token_hash', tokenHash)
@@ -147,7 +147,7 @@ export class TrackingTokenService {
   }
 
   async getOrderForPublicTracking(orderDisplayId) {
-    const { data: order, error: orderError } = await this._supabase
+    const { data: order, error: orderError } = await this._supabaseAdmin
       .from('orders')
       .select(`
         order_display_id,
@@ -212,7 +212,7 @@ export class TrackingTokenService {
   }
 
   async getOrderTimeline(orderDisplayId) {
-    const { data, error } = await this._supabase
+    const { data, error } = await this._supabaseAdmin
       .from('order_timeline')
       .select('milestone, milestone_time, completed, sort_order')
       .eq('order_display_id', orderDisplayId)
@@ -235,7 +235,7 @@ export class TrackingTokenService {
       throw new Error('Service-role client required for driver location tracking');
     }
 
-    const { data: order, error: orderError } = await this._supabase
+    const { data: order, error: orderError } = await this._supabaseAdmin
       .from('orders')
       .select('driver_id')
       .eq('order_display_id', orderDisplayId)
