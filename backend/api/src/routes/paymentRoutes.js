@@ -319,8 +319,7 @@ router.post(
           escrow_booking_id: bookingId,
           escrow_tx_hash: tx_hash,
           updated_at: new Date().toISOString(),
-        },
-        [{ op: 'neq', column: 'escrow_status', value: 'funded' }]
+        }
       );
 
       if (updateErr) {
