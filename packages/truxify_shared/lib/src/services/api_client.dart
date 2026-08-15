@@ -110,16 +110,14 @@ class ApiClient {
   }
 
   static String _getBaseUrl(String? overrideUrl) {
-    if (overrideUrl != null) return overrideUrl;
-    const envUrl = String.fromEnvironment('TRUXIFY_API_BASE_URL');
-    if (envUrl.isNotEmpty) return envUrl;
-    if (kReleaseMode) {
-      developer.log(
-        '[ApiClient] TRUXIFY_API_BASE_URL not set — falling back to localhost. '
-        'Set --dart-define=TRUXIFY_API_BASE_URL=<url> for production builds.',
+    final url = overrideUrl ?? defaultBaseUrl;
+    if (!url.startsWith('https://')) {
+      throw StateError(
+        'TRUXIFY_API_BASE_URL must use the https:// scheme; '
+        'cleartext http:// is not allowed and would expose bearer tokens: $url',
       );
     }
-    return defaultBaseUrl;
+    return url;
   }
 
   static String get defaultBaseUrl {

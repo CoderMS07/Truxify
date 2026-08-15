@@ -31,8 +31,8 @@ void main() {
   });
 
   group('SyncEngine.apiBaseUrl', () {
-    test('defaults to localhost when TRUXIFY_API_BASE_URL is not injected', () {
-      expect(SyncEngine.apiBaseUrl, 'http://localhost:5000');
+    test('defaults to a TLS localhost URL when TRUXIFY_API_BASE_URL is not injected', () {
+      expect(SyncEngine.apiBaseUrl, 'https://localhost:5000');
     });
   });
 

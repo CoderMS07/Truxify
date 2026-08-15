@@ -18,12 +18,22 @@ class SyncEngine {
   /// cleartext host (previously `http://10.0.2.2:5000`).
   static String get apiBaseUrl {
     const envUrl = String.fromEnvironment('TRUXIFY_API_BASE_URL');
-    if (envUrl.isNotEmpty) return envUrl;
+    if (envUrl.isNotEmpty) {
+      if (!envUrl.startsWith('https://')) {
+        throw StateError(
+          'TRUXIFY_API_BASE_URL must use the https:// scheme; '
+          'cleartext http:// is not allowed: $envUrl',
+        );
+      }
+      return envUrl;
+    }
     if (kReleaseMode) throw StateError('TRUXIFY_API_BASE_URL must be set in release mode');
 
-    if (kIsWeb) return 'http://localhost:5000';
-    if (Platform.isAndroid) return 'http://10.0.2.2:5000';
-    return 'http://localhost:5000';
+    // Dev/test fallback is TLS-only so bearer tokens / POD uploads are never
+    // sent over cleartext HTTP (fixes #13094).
+    if (kIsWeb) return 'https://localhost:5000';
+    if (Platform.isAndroid) return 'https://10.0.2.2:5000';
+    return 'https://localhost:5000';
   }
 
   static Future<Database> get database async {
