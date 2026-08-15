@@ -31,9 +31,11 @@ class _OfflineTrackingScreenState extends State<OfflineTrackingScreen> {
   }
 
   void _startMockGps() {
+    var i = 0;
     _gpsTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
       // Simulate driving
-      _trackingService.recordLocation(41.8781 + (timer.tick * 0.001), -87.6298, 65.0);
+      i++;
+      _trackingService.recordLocation(41.8781 + (i * 0.001), -87.6298, 65.0);
       _updateUi();
     });
   }
