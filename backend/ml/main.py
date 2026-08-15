@@ -43,6 +43,8 @@ from app.models.price_prediction import (
 from app.execution import (
     run_inference,
     close_inference_executor,
+    close_training_executor,
+    run_training_job,
     inference_capacity,
 )
 from app.models.bilateral_matcher import match_bilateral
@@ -118,8 +120,9 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info("ML Engine shutting down — releasing executor and HTTP clients")
+    logger.info("ML Engine shutting down — releasing executors and HTTP clients")
     close_inference_executor()
+    close_training_executor()
     close_weather_resources()
 
 
@@ -697,19 +700,25 @@ async def mid_trip_endpoint(input: MidTripInput, _auth=Depends(verify_api_key)):
 
 @app.post("/train/demand", response_model=TrainResponse)
 async def train_demand_endpoint(_auth=Depends(verify_api_key)):
-    timeout = int(os.environ.get("ML_TRAINING_TIMEOUT_SECONDS", 300))
-    try:
-        metrics = await asyncio.wait_for(
-            run_inference(train_demand_forecast_model),
-            timeout=timeout,
-        )
-        return TrainResponse(status="success", metrics=metrics)
-    except asyncio.TimeoutError:
-        logger.error("Demand model training timed out after %d seconds", timeout)
-        raise HTTPException(status_code=504, detail="Training timed out")
-    except Exception as e:
-        logger.error("Demand model training failed: %s", e)
-        raise HTTPException(status_code=500, detail="Training failed")
+    timeout = float(os.environ.get("ML_TRAINING_TIMEOUT_SECONDS", 300))
+    # Serialize concurrent trainings of the same model: only one publication can
+    # be in flight at a time for "demand_forecast". On timeout the async lock is
+    # released while the worker thread finishes in the background, but the
+    # worker is signalled to skip publishing (see run_training_job).
+    async with get_model_lock(DEMAND_MODEL_NAME):
+        try:
+            metrics = await run_training_job(
+                DEMAND_MODEL_NAME,
+                train_demand_forecast_model,
+                timeout=timeout,
+            )
+            return TrainResponse(status="success", metrics=metrics)
+        except asyncio.TimeoutError:
+            logger.error("Demand model training timed out after %s seconds", timeout)
+            raise HTTPException(status_code=504, detail="Training timed out")
+        except Exception as e:
+            logger.error("Demand model training failed: %s", e)
+            raise HTTPException(status_code=500, detail="Training failed")
 
 
 @app.post("/train/demand/rollback")
@@ -722,32 +731,35 @@ async def rollback_demand_endpoint(_auth=Depends(verify_api_key)):
     belongs to the unrelated ETA shadow-traffic A/B testing system and has
     no knowledge of the demand-forecast model or its versions.
     """
-    try:
-        result = await asyncio.to_thread(rollback_demand_forecast_model)
-        return result
-    except Exception as e:
-        logger.error("Demand model rollback failed: %s", e)
-        raise HTTPException(status_code=500, detail="Rollback failed")
+    async with get_model_lock(DEMAND_MODEL_NAME):
+        try:
+            result = await asyncio.to_thread(rollback_demand_forecast_model)
+            return result
+        except Exception as e:
+            logger.error("Demand model rollback failed: %s", e)
+            raise HTTPException(status_code=500, detail="Rollback failed")
 
 
 @app.post("/train/price", response_model=TrainResponse)
 async def train_price_endpoint(_auth=Depends(verify_api_key)):
-    timeout = int(os.environ.get("ML_TRAINING_TIMEOUT_SECONDS", 300))
-    try:
-        metrics = await asyncio.wait_for(
-            run_inference(train_price_model),
-            timeout=timeout,
-        )
-        return TrainResponse(status="success", metrics=metrics)
-    except PriceModelDataUnavailableError as e:
-        logger.warning("Price model training skipped: %s", e)
-        raise HTTPException(status_code=503, detail=str(e))
-    except asyncio.TimeoutError:
-        logger.error("Price model training timed out after %d seconds", timeout)
-        raise HTTPException(status_code=504, detail="Training timed out")
-    except Exception as e:
-        logger.error("Price model training failed: %s", e)
-        raise HTTPException(status_code=500, detail="Training failed")
+    timeout = float(os.environ.get("ML_TRAINING_TIMEOUT_SECONDS", 300))
+    async with get_model_lock(PRICE_MODEL_NAME):
+        try:
+            metrics = await run_training_job(
+                PRICE_MODEL_NAME,
+                train_price_model,
+                timeout=timeout,
+            )
+            return TrainResponse(status="success", metrics=metrics)
+        except PriceModelDataUnavailableError as e:
+            logger.warning("Price model training skipped: %s", e)
+            raise HTTPException(status_code=503, detail=str(e))
+        except asyncio.TimeoutError:
+            logger.error("Price model training timed out after %s seconds", timeout)
+            raise HTTPException(status_code=504, detail="Training timed out")
+        except Exception as e:
+            logger.error("Price model training failed: %s", e)
+            raise HTTPException(status_code=500, detail="Training failed")
 
 
 # ---------------------------------------------------------------------------

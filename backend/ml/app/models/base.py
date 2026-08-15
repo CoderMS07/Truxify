@@ -1,34 +1,125 @@
-import os
+import asyncio
+import inspect
 import json
 import pickle
 import hashlib
 import logging
-import asyncio
-from typing import Any, Optional
+import os
+import pickle
+import shutil
+import threading
+import uuid
 from datetime import datetime
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+MODEL_STORAGE_DIR = os.environ.get(
+    "MODEL_STORAGE_DIR",
+    os.path.join(os.path.dirname(__file__), "..", "..", "models_storage"),
+)
+
+# ---------------------------------------------------------------------------
+# Model-scoped locking.
+#
+# Two levels of mutual exclusion protect model artifacts:
+#
+# 1. _get_lock()/get_model_lock(): an ``asyncio.Lock`` per model used on the
+#    event loop to serialize whole training requests for the same model
+#    (see ensure_model_loaded() and the /train endpoints).
+# 2. _get_write_lock(): a ``threading.Lock`` per model held around every
+#    synchronous artifact publication (publish_model() / restore_previous_model()).
+#    This is required because training actually executes on worker threads
+#    (executor), where an asyncio.Lock cannot be used, and multiple threads
+#    (an HTTP-triggered retrain racing a lazy auto-train from a prediction)
+#    can otherwise write the same model concurrently.
+# ---------------------------------------------------------------------------
 MODEL_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "models_storage")
 
 _model_locks: dict[str, asyncio.Lock] = {}
+_model_write_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
 
-def _get_lock(model_name: str) -> asyncio.Lock:
+
+def _get_lock(model_name: str) -> "asyncio.Lock":
     if model_name not in _model_locks:
         _model_locks[model_name] = asyncio.Lock()
     return _model_locks[model_name]
+
+
+def get_model_lock(model_name: str) -> "asyncio.Lock":
+    """Return the event-loop-level lock serializing trainings of *model_name*."""
+    return _get_lock(model_name)
+
+
+def _get_write_lock(model_name: str) -> threading.Lock:
+    """Return the thread-level lock serializing artifact writes for *model_name*."""
+    with _locks_guard:
+        lock = _model_write_locks.get(model_name)
+        if lock is None:
+            lock = threading.Lock()
+            _model_write_locks[model_name] = lock
+        return lock
+
+
+class TrainingCancelled(Exception):
+    """Raised when a training run is cancelled (e.g. its HTTP request timed
+    out) and must not publish a new model generation.
+
+    Backwards-compatible alias; the canonical definition lives in
+    app/execution.py where the training-timeout machinery is implemented.
+    """
+
+
+def _training_cancelled() -> bool:
+    """Return True when the calling worker thread's training job was cancelled."""
+    try:
+        from ..execution import is_training_cancelled
+        return is_training_cancelled()
+    except Exception:
+        return False
+
+
+def _raise_if_cancelled(model_name: str) -> None:
+    """Raise TrainingCancelled when the calling training worker timed out."""
+    from ..execution import TrainingCancelled as _ExecutionTrainingCancelled
+    if _training_cancelled():
+        logger.warning("Not publishing '%s': training run was cancelled", model_name)
+        raise _ExecutionTrainingCancelled(f"Training for '{model_name}' was cancelled")
+
+
+# ---------------------------------------------------------------------------
+# Paths.
+#
+# Layout per model inside MODEL_STORAGE_DIR:
+#
+#   <name>_active.json            # {"generation": "<genid>"}  (atomic pointer)
+#   <name>_previous_active.json   # previous generation pointer (rollback)
+#   <name>.pkl / <name>_meta.json # legacy flat mirrors, kept for compatibility
+#   generations/<name>/<genid>/
+#       model.pkl                 # immutable generation artifact
+#       meta.json                 # generation metadata (matches the artifact)
+#
+# Internal readers (load_model / get_model_meta / model_exists) resolve the
+# active generation through the pointer, so they can never observe a mixed
+# model/metadata state: the pointer is swapped atomically and only after a
+# fully validated generation has been written.
+# ---------------------------------------------------------------------------
 
 def get_model_path(model_name: str) -> str:
     os.makedirs(MODEL_STORAGE_DIR, exist_ok=True)
     return os.path.join(MODEL_STORAGE_DIR, f"{model_name}.pkl")
 
+
 def get_meta_path(model_name: str) -> str:
     os.makedirs(MODEL_STORAGE_DIR, exist_ok=True)
     return os.path.join(MODEL_STORAGE_DIR, f"{model_name}_meta.json")
 
+
 def get_previous_model_path(model_name: str) -> str:
     os.makedirs(MODEL_STORAGE_DIR, exist_ok=True)
     return os.path.join(MODEL_STORAGE_DIR, f"{model_name}_previous.pkl")
+
 
 def get_previous_meta_path(model_name: str) -> str:
     os.makedirs(MODEL_STORAGE_DIR, exist_ok=True)
@@ -127,12 +218,11 @@ def save_model(model: Any, model_name: str, metrics: Optional[dict] = None, trai
     logger.info("Model '%s' saved to %s (previous version preserved)", model_name, path)
 
 def restore_previous_model(model_name: str) -> bool:
-    """Roll back *model_name* to its previously-saved version.
+    """Roll back *model_name* to its previously-published generation.
 
-    Swaps the current production model file/meta with the "_previous"
-    copy kept by save_model(). Returns False (no-op) if there is no
-    previous version to restore, so callers can distinguish a real
-    rollback from a rollback attempted with nothing to roll back to.
+    The active and previous pointers are swapped so the rollback itself is
+    reversible (mirroring the old flat-file semantics). Returns False (no-op)
+    when there is no previous generation to restore.
     """
     prev_path = get_previous_model_path(model_name)
     prev_meta_path = get_previous_meta_path(model_name)
@@ -154,21 +244,51 @@ def restore_previous_model(model_name: str) -> bool:
     meta_path = get_meta_path(model_name)
     hash_path = get_model_hash_path(model_name)
 
-    # Swap current <-> previous so the rollback itself is also reversible.
-    # Uses a ".swap" suffix (not ".tmp") since these files are only ever
-    # transient mid-function, not leftover atomic-write artifacts.
-    if os.path.exists(path):
-        os.replace(path, path + ".swap")
-    os.replace(prev_path, path)
-    if os.path.exists(path + ".swap"):
-        os.replace(path + ".swap", prev_path)
+        _atomic_write_json(active_path, {"generation": previous})
+        if current is not None and _generation_exists(model_name, current):
+            _atomic_write_json(previous_path, {"generation": current})
+        else:
+            try:
+                os.remove(previous_path)
+            except OSError:
+                pass
 
-    if os.path.exists(meta_path):
-        os.replace(meta_path, meta_path + ".swap")
-    if os.path.exists(prev_meta_path):
-        os.replace(prev_meta_path, meta_path)
-    if os.path.exists(meta_path + ".swap"):
-        os.replace(meta_path + ".swap", prev_meta_path)
+        _mirror_to_flat(
+            model_name,
+            _generation_model_path(model_name, previous),
+            _generation_meta_path(model_name, previous),
+        )
+        logger.warning("Model '%s' rolled back to generation %s", model_name, previous)
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Readers
+# ---------------------------------------------------------------------------
+
+def _generation_candidates(model_name: str):
+    """Active generation first, then the previous one (for crash recovery),
+    then the legacy flat file path.
+
+    A generation is only considered readable when its model artifact exists, so
+    a crash that leaves an incomplete generation never surfaces as a
+    model/metadata mix: both readers fall back to the previous valid generation.
+    """
+    seen = set()
+    for gen in (get_active_generation(model_name), get_previous_generation(model_name)):
+        if not gen or gen in seen:
+            continue
+        seen.add(gen)
+        model_path = _generation_model_path(model_name, gen)
+        if not os.path.exists(model_path):
+            logger.warning(
+                "Generation %s of model '%s' has no model artifact; skipping",
+                gen,
+                model_name,
+            )
+            continue
+        yield model_path, _generation_meta_path(model_name, gen)
+    yield get_model_path(model_name), get_meta_path(model_name)
 
     if os.path.exists(hash_path):
         os.replace(hash_path, hash_path + ".swap")
@@ -196,22 +316,74 @@ def load_model(model_name: str) -> Optional[Any]:
         return pickle.load(f)
 
 def model_exists(model_name: str) -> bool:
-    return os.path.exists(get_model_path(model_name))
+    for model_path, _ in _generation_candidates(model_name):
+        if os.path.exists(model_path):
+            return True
+    return False
+
 
 def get_model_meta(model_name: str) -> Optional[dict]:
-    """Return the persisted metadata dict for a model, or None."""
-    path = get_meta_path(model_name)
+    """Return the persisted metadata dict for the active model, or None."""
+    for _, meta_path in _generation_candidates(model_name):
+        if not os.path.exists(meta_path):
+            continue
+        try:
+            with open(meta_path, "r") as f:
+                return json.load(f)
+        except Exception:
+            logger.warning("Failed to read metadata for model '%s'", model_name)
+            continue
+    return None
+
+
+def get_generation_meta(model_name: str, generation: str) -> Optional[dict]:
+    """Return the metadata for a specific (already persisted) generation."""
+    path = _generation_meta_path(model_name, generation)
     if not os.path.exists(path):
         return None
     try:
         with open(path, "r") as f:
             return json.load(f)
     except Exception:
-        logger.warning("Failed to read metadata for model '%s'", model_name)
+        logger.warning("Failed to read metadata for model '%s' generation %s", model_name, generation)
         return None
 
-import inspect
-from typing import Any, Optional
+
+# ---------------------------------------------------------------------------
+# Startup / lazy loading
+# ---------------------------------------------------------------------------
+
+def cleanup_stale_training_artifacts(model_name: Optional[str] = None) -> None:
+    """Remove temporary artifacts left behind by crashed or cancelled runs.
+
+    Only files matching the unique-temp pattern are removed; active and
+    previous generations are never touched. When *model_name* is None all
+    models under MODEL_STORAGE_DIR are swept.
+    """
+    if model_name is not None:
+        names = [model_name]
+    else:
+        root = os.path.join(MODEL_STORAGE_DIR, "generations")
+        if os.path.isdir(root):
+            names = os.listdir(root)
+        else:
+            names = []
+        names = [n for n in names if os.path.isdir(os.path.join(root, n))]
+
+    for name in names:
+        gen_root = _generations_root(name)
+        if os.path.isdir(gen_root):
+            for gen in os.listdir(gen_root):
+                _cleanup_generation_temps(name, gen)
+        for entry in os.listdir(MODEL_STORAGE_DIR):
+            if entry.endswith(".tmp") and (
+                entry.startswith(f"{name}_") or entry.startswith(f"{name}.")
+            ):
+                try:
+                    os.remove(os.path.join(MODEL_STORAGE_DIR, entry))
+                except OSError:
+                    pass
+
 
 async def ensure_model_loaded(model_name: str, train_fn, *args, **kwargs) -> Optional[Any]:
     async with _get_lock(model_name):
@@ -242,6 +414,7 @@ async def preload_all_models() -> set[str]:
     Returns the set of model names found on disk so the caller can
     populate runtime tracking without hardcoding.
     """
+    cleanup_stale_training_artifacts()
     available = set()
     for name in SUPPORTED_MODELS:
         if model_exists(name):

@@ -10,16 +10,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from main import app
 from app.models import price_prediction as pp
-from app.models.base import MODEL_STORAGE_DIR
+from app.models.base import MODEL_STORAGE_DIR, delete_model
 
 client = TestClient(app, headers={'X-API-Key': 'test_key'})
 
 
 def _cleanup_price_model():
-    for filename in ("price_forecast.pkl", "price_forecast_meta.json"):
-        path = os.path.join(MODEL_STORAGE_DIR, filename)
-        if os.path.exists(path):
-            os.remove(path)
+    delete_model("price_forecast")
 
 
 @pytest.fixture(autouse=True)
