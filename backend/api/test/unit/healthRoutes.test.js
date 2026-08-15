@@ -29,7 +29,7 @@ vi.mock('../../../src/config/sentry.js', () => ({
   },
 }));
 
-import healthRoutes from '../../../src/routes/healthRoutes.js';
+import healthRoutes from '../../src/routes/healthRoutes.js';
 
 function makeApp() {
   const app = express();
