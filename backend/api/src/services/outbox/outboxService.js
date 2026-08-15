@@ -112,7 +112,6 @@ export class OutboxService {
         last_attempted_at: new Date().toISOString(),
       })
       .eq('id', eventId);
-
     if (error) {
       logger.error('[OutboxService] Failed to mark event failed:', error.message, { eventId });
     }
