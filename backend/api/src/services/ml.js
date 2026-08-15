@@ -76,14 +76,16 @@ function parseDimensions(dimensions) {
 }
 
 /**
- * Utility: build headers with optional API key
+ * Returns standard headers including API key authentication.
  */
 function getHeaders() {
-    const headers = { 'Content-Type': 'application/json' };
-    if (process.env.ML_API_KEY) {
-        headers['X-API-Key'] = process.env.ML_API_KEY;
-    }
-    return headers;
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  if (process.env.ML_API_KEY) {
+    headers['X-API-Key'] = process.env.ML_API_KEY;
+  }
+  return headers;
 }
 
 /**
@@ -107,15 +109,8 @@ async function handleResponse(response, url = '', method = 'GET') {
     }
 }
 
-/**
- * Utility: resolve base URL for ML engine
- */
 function getBaseUrl() {
-    return (
-        process.env.ML_ENGINE_URL ||
-        process.env.ML_SERVICE_URL ||
-        DEFAULT_ML_ENGINE_URL
-    );
+  return process.env.ML_ENGINE_URL || process.env.ML_SERVICE_URL || DEFAULT_ML_ENGINE_URL;
 }
 
 /**
@@ -440,6 +435,7 @@ export async function matchDeadhead({ driverDestination, truckSpecs, arrivalTime
     }),
     signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS_HEAVY),
   });
+
   return handleResponse(response);
 }
 
