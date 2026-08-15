@@ -37,6 +37,15 @@ function buildSupabaseMock() {
     lt: vi.fn(function () {
       return this;
     }),
+    gte: vi.fn(function () {
+      return Promise.resolve({ data: this.data, error: this.error });
+    }),
+    in: vi.fn(function () {
+      return this;
+    }),
+    delete: vi.fn(function () {
+      return this;
+    }),
     order: vi.fn(function () {
       return this;
     }),
@@ -202,6 +211,82 @@ describe('OutboxService', () => {
       await outboxService.requeueFailedEvents(7);
       expect(mocks.chain.lastEq).toEqual(['status', 'failed']);
       expect(ltValues.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('deadLetterExhaustedEvents', () => {
+    it('moves exhausted events to outbox_dlq and removes them from outbox_events', async () => {
+      mocks.chain.error = null;
+      mocks.chain.data = [
+        {
+          id: 'evt-x',
+          aggregate_id: 'order-x',
+          aggregate_type: 'order',
+          event_type: 'order.created',
+          payload: { a: 1 },
+          last_error: 'kafka down',
+          retry_count: 5,
+          last_attempted_at: '2026-08-11T00:00:00.000Z',
+          created_at: '2026-08-10T00:00:00.000Z',
+        },
+      ];
+
+      await outboxService.deadLetterExhaustedEvents(5);
+
+      // A DLQ row is written with status 'pending' for replay.
+      expect(mocks.supabase.from).toHaveBeenCalledWith('outbox_dlq');
+      expect(Array.isArray(mocks.chain.lastInsert)).toBe(true);
+      expect(mocks.chain.lastInsert[0]).toMatchObject({
+        original_id: 'evt-x',
+        aggregate_id: 'order-x',
+        event_type: 'order.created',
+        status: 'pending',
+      });
+      // The source row is removed from outbox_events via delete().in().
+      expect(mocks.chain.delete).toHaveBeenCalled();
+      expect(mocks.chain.in).toHaveBeenCalledWith('id', ['evt-x']);
+      // An alert is emitted for operators to replay.
+      expect(mockLogger.error).toHaveBeenCalled();
+    });
+
+    it('is a no-op when there are no exhausted events', async () => {
+      mocks.chain.error = null;
+      mocks.chain.data = [];
+      await outboxService.deadLetterExhaustedEvents(5);
+
+      expect(mocks.supabase.from).not.toHaveBeenCalledWith('outbox_dlq');
+    });
+  });
+
+  describe('replayDeadLetter', () => {
+    it('reinserts a DLQ row into outbox_events as pending and marks it replayed', async () => {
+      mocks.chain.error = null;
+      mocks.chain.data = {
+        id: 'dlq-1',
+        original_id: 'evt-x',
+        aggregate_id: 'order-x',
+        aggregate_type: 'order',
+        event_type: 'order.created',
+        payload: { a: 1 },
+      };
+
+      const replayedId = await outboxService.replayDeadLetter('dlq-1');
+
+      expect(replayedId).toBe('evt-x');
+      expect(mocks.chain.lastInsert).toMatchObject({
+        id: 'evt-x',
+        aggregate_id: 'order-x',
+        event_type: 'order.created',
+        status: 'pending',
+        retry_count: 0,
+      });
+      expect(mocks.chain.lastUpdate).toMatchObject({ status: 'replayed' });
+    });
+
+    it('returns null when the DLQ id is missing', async () => {
+      const replayedId = await outboxService.replayDeadLetter(null);
+      expect(replayedId).toBeNull();
+      expect(mocks.supabase.from).not.toHaveBeenCalled();
     });
   });
 });

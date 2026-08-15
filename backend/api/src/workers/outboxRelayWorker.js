@@ -15,6 +15,7 @@ async function relayOnce() {
   _running = true;
 
   try {
+    await outboxService.deadLetterExhaustedEvents(MAX_RETRIES);
     await outboxService.requeueFailedEvents(MAX_RETRIES);
     const events = await outboxService.fetchPendingEvents(50);
 

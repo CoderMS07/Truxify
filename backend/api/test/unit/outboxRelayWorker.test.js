@@ -12,6 +12,7 @@ vi.mock('../../src/middleware/logger.js', () => ({
 }));
 
 const mockOutboxService = vi.hoisted(() => ({
+  deadLetterExhaustedEvents: vi.fn(),
   requeueFailedEvents: vi.fn(),
   fetchPendingEvents: vi.fn(),
   markPublished: vi.fn(),
