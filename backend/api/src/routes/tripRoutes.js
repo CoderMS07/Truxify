@@ -546,6 +546,8 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
   const offset = (page - 1) * limit;
 
   try {
+    const normalizedTripId = typeof tripId === 'string' && tripId.startsWith('TX-') ? tripId.slice(3) : tripId;
+
     const { data: order, error: orderErr } = await supabaseAdmin
       .from('orders')
       .select('id, order_display_id, driver_id, customer_id')
