@@ -12,12 +12,6 @@ export const tripValidator = {
         return res.status(400).json({ error: 'Invalid tripId' });
       }
     }
-    const tripId = req.params?.tripId;
-    if (tripId !== undefined && tripId !== null) {
-      if (typeof tripId !== 'string' || tripId.trim().length === 0) {
-        return res.status(400).json({ error: 'Invalid tripId' });
-      }
-    }
     next();
   }
 };
