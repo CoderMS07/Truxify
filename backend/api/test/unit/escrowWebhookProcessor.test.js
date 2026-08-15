@@ -29,6 +29,7 @@ const mockQuery = {
 
 const mockSupabaseAdmin = {
   from: vi.fn(() => mockQuery),
+  rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
 };
 
 vi.mock('../../src/config/db.js', () => ({

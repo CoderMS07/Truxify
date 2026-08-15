@@ -21,7 +21,7 @@ async function findOrderByIdOrDisplayId(orderId) {
   if (!orderId) {
     throw new Error('Missing orderId in escrow webhook payload');
   }
-  const columns = 'id, order_display_id, driver_id, escrow_status, release_tx_hash, refund_tx_hash, escrow_amount_wei, escrow_booking_id';
+  const columns = 'id, order_display_id, driver_id, escrow_status, release_tx_hash, refund_tx_hash, escrow_amount_wei, escrow_booking_id, bid_amount, total_amount';
 
   if (UUID_REGEX.test(orderId)) {
     const { data, error } = await db
@@ -68,10 +68,33 @@ async function reconcileWalletLedger(order, txHash) {
     throw new Error(`Failed to reconcile wallet ledger for ${order.order_display_id}: ${error.message}`);
   }
 
-  if (!data || data.length === 0) {
+  // The authoritative finalize (`complete_trip_tx`, invoked by `creditDriverWallet`
+  // and by the reconciliation worker) inserts the credit directly as 'confirmed',
+  // so there is often no 'pending' credit row to reconcile. Do NOT treat a missing
+  // pending credit as an error — the driver payout is already confirmed. Only a
+  // genuine DB failure above should surface (issue #14685).
+  return;
+}
+
+// Authoritative driver payout for a verified on-chain release. Runs
+// `complete_trip_tx` (service_role, no OTP) which is idempotent on
+// `status = 'payment_released'`: it increments `driver_details.wallet_confirmed`
+// / `wallet_total` and inserts the confirmed `wallet_transactions` credit row
+// exactly once. The webhook has already verified the Polygon release receipt, so
+// the supplied release hash is trustworthy (issue #14685).
+async function creditDriverWallet(order, txHash) {
+  if (!order.driver_id) {
+    return;
+  }
+  const { error } = await requireDb().rpc('complete_trip_tx', {
+    p_order_id: order.id,
+    p_otp_id: null,
+    p_release_tx_hash: txHash || null,
+  });
+
+  if (error) {
     throw new Error(
-      `Wallet ledger reconciliation matched no credit transaction for order ${order.order_display_id} ` +
-        `(driver ${order.driver_id}) — driver payout may be unconfirmed`
+      `Failed to finalize trip and credit driver wallet for ${order.order_display_id}: ${error.message}`
     );
   }
 }
@@ -172,6 +195,7 @@ async function handlePaymentReleased(payload) {
   // the (idempotent) wallet ledger so a crash between the order update and the
   // wallet update is healed, then short-circuit without re-applying effects.
   if (order.escrow_status === 'released') {
+    await creditDriverWallet(order, payload.txHash || order.release_tx_hash);
     await reconcileWalletLedger(order, payload.txHash || order.release_tx_hash);
     logger.info(`[Webhook] Order ${order.order_display_id} already released — duplicate delivery ignored.`);
     return;
@@ -201,6 +225,7 @@ async function handlePaymentReleased(payload) {
     );
   }
 
+  await creditDriverWallet(order, payload.txHash);
   await reconcileWalletLedger(order, payload.txHash);
   logger.info(`[Webhook] Order ${order.order_display_id} marked escrow released (tx: ${payload.txHash})`);
 }
@@ -264,6 +289,7 @@ async function handleWithdrawalSettled(payload) {
       }
     }
     if (!isRefund) {
+      await creditDriverWallet(order, txHash);
       await reconcileWalletLedger(order, txHash);
     }
     logger.info(`[Webhook] Order ${order.order_display_id} already ${targetStatus} — duplicate delivery ignored.`);
@@ -301,6 +327,7 @@ async function handleWithdrawalSettled(payload) {
   }
 
   if (!isRefund) {
+    await creditDriverWallet(order, txHash);
     await reconcileWalletLedger(order, txHash);
   }
 
