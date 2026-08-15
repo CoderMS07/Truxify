@@ -703,6 +703,9 @@ export async function submitEscrowRefund (orderDisplayId) {
     logger.error(`[escrow] refundFunds failed for booking ${orderDisplayId}: ${err?.message ?? String(err)}`)
     return { txHash: null, bookingId, error: err?.message ?? String(err) }
   }
+
+  const tx = await escrowContract.refundFunds(bookingId);
+  logger.info(`[escrow] refundFunds tx submitted: ${tx.hash} for booking ${orderDisplayId}`);
   return {
     txHash: tx.hash,
     bookingId,
