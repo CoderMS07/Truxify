@@ -121,6 +121,7 @@ class OrderConsumer {
           eventType: message?.eventType,
           payload: message?.payload,
           version: message?.version,
+          consumerGroup: groupId,
         });
 
         if (!applied) {
@@ -140,7 +141,8 @@ class OrderConsumer {
           const isNew = await processedEventRepository.claimProcessing(
             topic,
             eventId,
-            message?.orderId || message?.payload?.orderId || null
+            message?.orderId || message?.payload?.orderId || null,
+            groupId
           );
           if (!isNew) {
             logger.info(`[OrderConsumer] Skipping duplicate event ${eventId} on ${topic}`);
@@ -191,9 +193,9 @@ class OrderConsumer {
       // re-claim and retry it (issue #11192).
       if (claimedEventId) {
         if (handlerFailed) {
-          await processedEventRepository.markFailed(topic, claimedEventId);
+          await processedEventRepository.markFailed(topic, claimedEventId, groupId);
         } else {
-          await processedEventRepository.markCompleted(topic, claimedEventId);
+          await processedEventRepository.markCompleted(topic, claimedEventId, groupId);
         }
       }
     };

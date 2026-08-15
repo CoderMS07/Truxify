@@ -241,7 +241,8 @@ create or replace function public.apply_order_event(
   p_event_type text,
   p_version bigint,
   p_topic text,
-  p_event_id text
+  p_event_id text,
+  p_consumer_group text
 )
 returns jsonb
 language plpgsql
