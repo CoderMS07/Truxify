@@ -80,6 +80,7 @@ describe('sanitizeUploadFilename', () => {
     expect(sanitizeUploadFilename('FILE123.TXT')).toBe('FILE123.TXT');
     expect(sanitizeUploadFilename('Report_2024_V2.PDF')).toBe('Report_2024_V2.PDF');
   });
+});
 
   it('handles filenames with only extension', () => {
     // Leading dots are stripped, so .pdf becomes pdf which is not reserved
