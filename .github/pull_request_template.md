@@ -17,7 +17,7 @@
 
 ### Test Environment
 - [ ] Local manual testing
-- [ ] Unit / Integration tests (`npm test`, `flutter test`, etc.)
+- [ ] Unit / Integration tests (`npm test`, `flutter test`, `pytest`)
 - [ ] Tested via Docker Compose
 
 ## Related Issues
@@ -26,9 +26,9 @@
 Closes #
 
 ## PR Checklist
-- [ ] My code follows the code style guidelines of this project.
+- [ ] My code follows the code style guidelines of this project (`flutter analyze`, `npm run lint`).
 - [ ] I have performed a self-review of my own code.
 - [ ] I have commented my code, particularly in hard-to-understand areas.
 - [ ] I have updated corresponding documentation if applicable.
 - [ ] My changes generate no new warnings or console errors.
-
+- [ ] All automated integration & unit tests pass cleanly.
