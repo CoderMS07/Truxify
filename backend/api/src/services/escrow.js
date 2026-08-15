@@ -46,6 +46,17 @@ import { measureExecution } from '../core/performanceMetrics.js'
 import { isEscrowPaused, escrowPausedResult } from './escrowCircuitBreaker.js'
 import { supabaseAdmin } from '../config/db.js'
 
+const RPC_TIMEOUT_MS = 30_000;
+
+function withTimeout(promise, ms = RPC_TIMEOUT_MS) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Blockchain RPC timeout')), ms)
+    ),
+  ]);
+}
+
 const ESCROW_ABI = [
   'function createBooking(uint256 bookingId, address payable driver, bytes signature) external payable',
   'function lockPayment(uint256 bookingId, address payable customer, address payable driver) external payable',
@@ -704,7 +715,7 @@ export async function submitEscrowRefund (orderDisplayId) {
     return { txHash: null, bookingId, error: err?.message ?? String(err) }
   }
 
-  const tx = await escrowContract.refundFunds(bookingId);
+  const tx = await withTimeout(escrowContract.refundFunds(bookingId));
   logger.info(`[escrow] refundFunds tx submitted: ${tx.hash} for booking ${orderDisplayId}`);
   return {
     txHash: tx.hash,
