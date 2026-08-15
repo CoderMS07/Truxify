@@ -96,7 +96,7 @@ import { FuelAdvisorService } from '../services/fuelAdvisorService.js';
 import { WeatherService } from '../services/weatherService.js';
 
 const weatherService = new WeatherService({ logger });
-const fuelAdvisorService = new FuelAdvisorService({ supabase: supabaseAdmin, weatherService, logger });
+const fuelAdvisorService = new FuelAdvisorService({ supabase, weatherService, logger });
 
 const DEFAULT_TRUCK_TYPES = ['Open Body', 'Closed Body', 'Container', 'Refrigerated'];
 
@@ -112,11 +112,6 @@ function sanitizeTruckName(name) {
     .replace(/script/gi, '')
     .replace(/javascript/gi, '')
     .replace(/on\w+=/gi, '');
-}
-
-function validateCapacity(capacity) {
-  const num = Number(capacity);
-  return Number.isFinite(num) && num > 0 && num <= 100 ? num : null;
 }
 
 const router = express.Router();
@@ -216,7 +211,7 @@ router.post('/', authenticate, requirePolicy('truck:register'), userLimiter, val
 
     const { data: truck, error: insertErr } = await supabase
       .from('trucks')
-      .insert({ name, truck_type, number_plate: normalizedNumberPlate, max_capacity_tons, driver_id: req.user.id })
+      .insert({ name: sanitizeTruckName(name), truck_type, number_plate: normalizedNumberPlate, max_capacity_tons, driver_id: req.user.id })
       .select('id, name, truck_type, number_plate, max_capacity_tons, created_at')
       .single();
 
@@ -229,7 +224,7 @@ router.post('/', authenticate, requirePolicy('truck:register'), userLimiter, val
 
     return res.status(201).json({ message: 'Truck registered successfully.', truck });
   } catch (err) {
-    return res.status(500).json({ error: 'Internal Server Error', details: err.message });
+    return res.status(500).json({ error: 'Internal Server Error', details: err?.message });
   }
 });
 
@@ -321,7 +316,7 @@ router.get('/', authenticate, requirePolicy('truck:list-own'), userLimiter, asyn
 
     return res.json({ trucks: trucks || [] });
   } catch (err) {
-    return res.status(500).json({ error: 'Internal Server Error', details: err.message });
+    return res.status(500).json({ error: 'Internal Server Error', details: err?.message });
   }
 });
 
@@ -577,7 +572,6 @@ router.get(
     let finalTollEstimate = pricing.tollEstimate;
     let finalPlatformFee = pricing.platformFee;
     let finalTotalAmount = pricing.totalAmount;
-    let estimatedPrice = null;
     let isAiEstimate = false;
 
     try {
@@ -590,7 +584,12 @@ router.get(
         trafficMultiplier,
       });
       if (mlResult && mlResult.estimatedPricePaisa > 0) {
-        estimatedPrice = mlResult.estimatedPricePaisa;
+        finalTotalAmount = mlResult.estimatedPricePaisa;
+        finalPlatformFee = Math.round(mlResult.estimatedPricePaisa * 0.05);
+        finalBaseFreight = Math.max(0, mlResult.estimatedPricePaisa - finalPlatformFee - finalTollEstimate);
+        if (finalBaseFreight === 0) {
+          finalTollEstimate = Math.max(0, mlResult.estimatedPricePaisa - finalPlatformFee);
+        }
         isAiEstimate = true;
       } else {
         logger.warn({ mlResult }, 'Invalid price prediction response during search');
@@ -648,7 +647,7 @@ router.get(
     const driverIds = drivers.map(d => d.user_id);
 
     const [trucksRes, profilesRes] = await Promise.all([
-      supabaseAdmin.from('trucks').select('id, name, truck_type, number_plate, max_capacity_tons').in('id', truckIds),
+      supabaseAdmin.from('trucks').select('id, driver_id, name, truck_type, number_plate, max_capacity_tons').in('id', truckIds),
       supabaseAdmin.from('profiles').select('id, full_name, avatar_url, is_digilocker_verified').in('id', driverIds),
     ]);
 
@@ -669,25 +668,25 @@ router.get(
       ? Math.round(routeEstimate.durationSeconds / 60)
       : null;
 
-    let results = drivers.map(d => {
+    const results = await Promise.all(drivers.map(async (d) => {
       const profile = profileMap[d.user_id] || {};
       const truck = truckMap[d.truck_id] || {};
-      const supportedCargo = Array.isArray(truck.supported_cargo_types)
-        ? truck.supported_cargo_types
-        : ['General', 'Fragile', 'Solid'];
-
+      let truckNumber = '';
+      if (truck.id) {
+        const access = await canViewTruckNumber(req.user, truck);
+        truckNumber = access.allowed ? (truck.number_plate || '') : '';
+      }
       return {
         driver: profile.full_name || 'Unknown Driver',
         driverId: d.user_id,
         rating: d.rating || 0,
         truck: truck.name || 'Unknown Truck',
-        truckNumber: truck.number_plate || '',
+        truckNumber,
         capacity: truck.max_capacity_tons ? `${truck.max_capacity_tons} tonnes` : '',
         capacityTons: truck.max_capacity_tons || 0,
         truckType: truck.truck_type || 'Open Body',
         supportedCargoTypes: supportedCargo,
         price: finalTotalAmount,
-        estimatedPrice,
         baseFreight: finalBaseFreight,
         tollEstimate: finalTollEstimate,
         platformFee: finalPlatformFee,
@@ -695,7 +694,7 @@ router.get(
         etaMinutes,
         isDigilockerVerified: profile.is_digilocker_verified || false,
       };
-    });
+    }));
 
     if (parsedTruckTypes.length > 0) {
       const normalizedTypes = parsedTruckTypes.map(t => t.toLowerCase());
@@ -798,7 +797,7 @@ router.get('/:id/number', authenticate, userLimiter, validateParams(uuidParamSch
   }
 });
 
-export default router;
+// export default moved to end
 
 // ============================================================================
 // INTELLIGENT FUEL ADVISOR
@@ -854,7 +853,7 @@ router.get('/:id/fuel-advisor', authenticate, userLimiter, validateParams(uuidPa
       .select('id')
       .eq('id', truckId)
       .eq('driver_id', req.user.id)
-      .single();
+      .maybeSingle();
 
     if (truckErr || !truck) {
       return res.status(403).json({ error: 'Forbidden: Truck does not belong to you or does not exist' });
@@ -871,3 +870,5 @@ router.get('/:id/fuel-advisor', authenticate, userLimiter, validateParams(uuidPa
 });
 
 // Resolves #2053: Prevent race conditions in truck allocation
+
+export default router;
