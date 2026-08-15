@@ -1,7 +1,7 @@
 import { redisClient, supabaseAdmin } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { submitEscrowRefund, getEscrowBooking } from './escrow.js';
-import { acquireLock, renewLock, releaseLock } from '../lib/redisLock.js';
+import { acquireLock, renewLock, releaseLock, withLockRenewal } from '../lib/redisLock.js';
 import { sendPushNotification } from './notificationService.js';
 
 // Two-phase acceptance sweeper (#5724): orders that reached escrow_status
@@ -33,7 +33,7 @@ function dueForRetry(order) {
 
 async function finalizeOrRevert(order, orderRepository) {
   const lockKey = `escrow_lock:${order.id}`;
-  const lockValue = await acquireLock(lockKey, 30000);
+  const lockValue = await acquireLock(lockKey, 120000);
   if (!lockValue) {
     logger.info(`[escrow-funding] Order ${order.order_display_id} locked by another process, skipping.`);
     return;
@@ -159,7 +159,12 @@ async function finalizeOrRevert(order, orderRepository) {
     }
 
     try {
-      await refundResult.waitForConfirmation();
+      // Keep the per-order lock alive while the on-chain confirmation runs so
+      // the TTL cannot lapse and let a concurrent sweep double-submit the
+      // refund (issue #14681).
+      await withLockRenewal(lockKey, lockValue, 120000, async () => {
+        await refundResult.waitForConfirmation();
+      });
     } catch (err) {
       logger.error(
         `[escrow-funding] Refund confirmation failed for ${order.order_display_id}: ${err.message}`

@@ -101,6 +101,55 @@ export async function renewLock(resourceKey, lockValue, ttlMs = 30_000) {
 }
 
 /**
+ * Renews the lock on a fixed interval while a long-running async task holds
+ * the critical section, so the lock cannot silently lapse mid-operation (e.g.
+ * while awaiting a slow on-chain `waitForConfirmation()`).
+ *
+ * This is the fix for concurrency issue #14681: per-order escrow locks were
+ * acquired with a fixed TTL but never renewed, so a blockchain confirmation
+ * that outlived the TTL let a second sweep re-lock and double-submit a payout.
+ *
+ * The renewal runs on `intervalMs` (default 10 s, always clamped to be shorter
+ * than `ttlMs`). Each renewal only succeeds if we still own the lock; if the
+ * lock is lost the timer keeps firing harmlessly (renewLock returns false) and
+ * the task itself must detect the lost lock. The timer is always cleared in a
+ * `finally` so it never outlives the task.
+ *
+ * @param {string}      resourceKey
+ * @param {string|null} lockValue   The UUID returned by acquireLock; if falsy, no renewal (pass-through)
+ * @param {number}      ttlMs       TTL to extend to on each renewal
+ * @param {() => Promise<T>} asyncFn  The critical-section task
+ * @param {number}      [intervalMs] Renewal cadence (default 10 000 ms)
+ * @returns {Promise<T>} the task's result
+ * @template T
+ */
+export const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;
+
+export async function withLockRenewal(resourceKey, lockValue, ttlMs, asyncFn, intervalMs = DEFAULT_LOCK_RENEWAL_INTERVAL_MS) {
+  if (!resourceKey || !lockValue || typeof asyncFn !== 'function') {
+    return asyncFn();
+  }
+
+  // Never renew less often than half the TTL, so at least one renewal lands
+  // before the lock could expire even if a tick is delayed.
+  const renewalIntervalMs = Math.max(Math.min(intervalMs, Math.floor(ttlMs / 2)), 1_000);
+
+  const timer = setInterval(() => {
+    // Fire-and-forget: renewLock logs and returns false on failure; a missed
+    // tick does not abort the task, it only risks the lock lapsing.
+    void renewLock(resourceKey, lockValue, ttlMs);
+  }, renewalIntervalMs);
+  // Don't keep the event loop alive solely for lock renewal.
+  timer.unref?.();
+
+  try {
+    return await asyncFn();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
+/**
  * Releases a distributed lock **only if** we still own it.
  *
  * Uses an atomic Lua script (GET + DEL) so a slow holder cannot accidentally
