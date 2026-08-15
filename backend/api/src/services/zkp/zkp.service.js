@@ -1,4 +1,4 @@
-import { ethers } from 'ethers';
+﻿import { ethers } from 'ethers';
 import crypto from 'crypto';
 import logger from '../../middleware/logger.js';
 import { supabase, supabaseAdmin } from '../../config/db.js';
@@ -235,14 +235,14 @@ class ZKPService {
    *   before any processing begins. This guarantees at-most-one execution
    *   even under concurrent duplicate requests:
    *
-   *   - LockAcquisitionError (Redis unavailable) → propagated to caller → 503
-   *   - lockValue === null (lock held by another request) → propagated → 409
+   *   - LockAcquisitionError (Redis unavailable) â†’ propagated to caller â†’ 503
+   *   - lockValue === null (lock held by another request) â†’ propagated â†’ 409
    *   - After acquiring the lock, re-check `kyc_verified` in the DB; if the
    *     first request already completed, return early without re-running the
    *     blockchain transaction or inserting duplicate audit rows.
    *
    * @param {object} driverData
-   * @throws {LockAcquisitionError} When Redis is unavailable — caller must return 503.
+   * @throws {LockAcquisitionError} When Redis is unavailable â€” caller must return 503.
    * @returns {{ success: boolean, alreadyVerified?: boolean, proof?, onChain?, verified? }}
    */
   async verifyDriver(driverData) {
@@ -268,7 +268,7 @@ class ZKPService {
       // exits without re-running the expensive blockchain transaction.
       const alreadyVerified = await this.isVerifiedInDb(driverData.userId);
       if (alreadyVerified) {
-        logger.info(`[ZKP] User ${driverData.userId} is already KYC-verified — skipping duplicate processing`);
+        logger.info(`[ZKP] User ${driverData.userId} is already KYC-verified â€” skipping duplicate processing`);
         return {
           success: true,
           alreadyVerified: true,
