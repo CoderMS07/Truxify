@@ -786,7 +786,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       .onError((_, __) => routePoints);
             });
           }
-        }
       } else {
         final prefs = await SharedPreferences.getInstance();
         await prefs.remove('cached_trip_id');
