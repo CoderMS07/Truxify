@@ -101,8 +101,22 @@ describe('OracleService', () => {
   });
 
   describe('_verifyOTP', () => {
+    it('returns already verified when orders.otp_verified is true', async () => {
+      // First query returns order with otp_verified=true.
+      chain.orderRecord = { id: 'order-1', otp_verified: true };
+      chain.otpRecord = null;
+      const result = await service._verifyOTP('order-1', '123456');
+      expect(result.confirmed).toBe(true);
+      expect(result.reason).toBe('Already verified');
+      // Should not query delivery_otps when already verified.
+      const fromCalls = chain.from.mock.calls;
+      expect(fromCalls.length).toBe(1);
+      expect(fromCalls[0][0]).toBe('orders');
+    });
+
     it('fails when no OTP record exists', async () => {
       chain.otpRecord = null;
+      chain.orderRecord = null;
       const result = await service._verifyOTP('order-1', '123456');
       expect(result.confirmed).toBe(false);
       expect(result.reason).toContain('No OTP record');
@@ -114,6 +128,7 @@ describe('OracleService', () => {
         otp_hash: 'x',
         expires_at: new Date(Date.now() - 60000).toISOString(),
       };
+      chain.orderRecord = null;
       const result = await service._verifyOTP('order-1', '123456');
       expect(result.confirmed).toBe(false);
       expect(result.reason).toContain('expired');
