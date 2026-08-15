@@ -6,7 +6,7 @@ describe('KeyRotationService', () => {
     expect(mod).toBeDefined();
   });
   it('exports KeyRotationService class', async () => {
-    const { KeyRotationService } = await import('../../../../src/services/security/keyRotationService.js');
+    const KeyRotationService = (await import('../../../../src/services/security/keyRotationService.js')).default;
     expect(KeyRotationService).toBeDefined();
     const svc = new KeyRotationService(); expect(svc).toBeDefined();
   });
