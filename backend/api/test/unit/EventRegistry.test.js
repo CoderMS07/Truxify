@@ -39,6 +39,7 @@ describe("EventRegistry", () => {
     const result = reg.validate("unknown.event", {});
     expect(result.valid).toBe(false);
     expect(result.error).toContain("Unknown event type");
+    expect(result.error).toContain("Unknown event type");
   });
 
   it("getRegisteredTypes returns all registered type names", () => {
