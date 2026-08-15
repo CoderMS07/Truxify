@@ -40,6 +40,11 @@ function makeSupabaseMock() {
         })),
       })),
       delete: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          select: vi.fn(() => Promise.resolve({ data: [{ id: 'x' }], error: null })),
+        })),
+      })),
+      update: vi.fn(() => ({
         eq: vi.fn(() => Promise.resolve({ error: null })),
       })),
       upsert: vi.fn(() => Promise.resolve({ error: null })),
@@ -91,6 +96,11 @@ describe('reputationReconciliation', () => {
         })),
       })),
       delete: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          select: vi.fn(() => Promise.resolve({ data: [{ id: 'row-id' }], error: null })),
+        })),
+      })),
+      update: vi.fn(() => ({
         eq: vi.fn(() => Promise.resolve({ error: null })),
       })),
       upsert: vi.fn(() => Promise.resolve({ error: null })),
@@ -173,7 +183,29 @@ describe('reputationReconciliation', () => {
     await reconcileFailedReputationUpdates();
 
     expect(mockLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('Retry 3/10 failed for 0xwallet2')
+      expect.stringContaining('Award failed for 0xwallet2 after removing pending row')
+    );
+  });
+
+  it('does NOT award on-chain points when the delete fails (#14692)', async () => {
+    mockRedisClient.set.mockResolvedValue('lock-value');
+    mockRedisClient.del.mockResolvedValue(1);
+    const row = { id: 'row-5', driver_wallet: '0xwallet5', stars: 4, retry_count: 0 };
+    const queryBuilder = withFailedReputations([row]);
+    // Simulate a delete failure: delete resolves but reports an error and no
+    // deleted rows, so the row remains and must NOT be re-awarded.
+    queryBuilder.delete.mockReturnValue({
+      eq: vi.fn(() => ({
+        select: vi.fn(() => Promise.resolve({ data: null, error: new Error('deadlock') })),
+      })),
+    });
+    mockAwardReputationPoints.mockResolvedValueOnce({ txHash: '0xtxhash' });
+
+    await reconcileFailedReputationUpdates();
+
+    expect(mockAwardReputationPoints).not.toHaveBeenCalled();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not remove pending row row-5 before award')
     );
   });
 

@@ -78,31 +78,44 @@ export async function reconcileFailedReputationUpdates() {
       }
 
       try {
-        // Award first, then delete. Deleting before the award leaves a crash
-        // window where the pending row is gone and the driver never receives
-        // the points. Only remove the row once the award succeeded; if the
-        // delete fails after a successful award it is only logged (never
-        // re-queued) so the points cannot be awarded twice from the same row.
+        // Delete-then-award to prevent double-awarding on-chain points (#14692).
+        // awardReputationPoints is an irreversible on-chain action, so we only
+        // credit the driver AFTER the pending row has been removed from
+        // reputation_failures. If the delete fails, the row stays and is retried
+        // on the next cycle WITHOUT any points being credited — the safer failure
+        // mode versus an irreversible double-credit.
+        const { data: deletedRows, error: deleteError } = await supabaseAdmin
+          .from('reputation_failures')
+          .delete()
+          .eq('id', row.id)
+          .select('id');
+
+        if (deleteError || !deletedRows || deletedRows.length === 0) {
+          // Could not remove the pending row: do NOT award points. Bump
+          // retry_count so repeated delete failures eventually stop retrying.
+          const newRetryCount = (row.retry_count ?? 0) + 1;
+          await supabaseAdmin
+            .from('reputation_failures')
+            .update({
+              retry_count: newRetryCount,
+              last_error: `delete-failed-before-award: ${deleteError?.message ?? 'row not found'}`,
+              last_attempt_at: new Date().toISOString(),
+            })
+            .eq('id', row.id);
+          logger.warn(
+            `[reputation-reconciliation] Could not remove pending row ${row.id} before award; skipping to avoid double-award: ${deleteError?.message ?? 'row not found'}`
+          );
+          continue;
+        }
+
+        // Pending row removed successfully — safe to credit on-chain points
+        // exactly once.
         await awardReputationPoints(row.driver_wallet, row.stars);
         logger.info(`[reputation-reconciliation] Successfully retried reputation update for ${row.driver_wallet}`);
-
-        const { error: deleteError } = await supabaseAdmin.from('reputation_failures').delete().eq('id', row.id);
-        if (deleteError) {
-          // The award already succeeded but the pending row could not be removed.
-          // Bump retry_count so the row is eventually excluded from selection and is
-          // not re-awarded indefinitely if the delete keeps failing (issue #12332).
-          const newRetryCount = (row.retry_count ?? 0) + 1;
-          await supabaseAdmin.from('reputation_failures').upsert({
-            id: row.id,
-            driver_wallet: row.driver_wallet,
-            stars: row.stars,
-            retry_count: newRetryCount,
-            last_error: `delete-failed: ${deleteError.message}`,
-            last_attempt_at: new Date().toISOString(),
-          });
-          logger.warn(`[reputation-reconciliation] Award succeeded but failed to remove pending row ${row.id}: ${deleteError.message}`);
-        }
       } catch (err) {
+        // The award threw after the pending row was already deleted. Re-insert
+        // the pending row so the points can be retried. No points have been
+        // credited yet, so this cannot double-award.
         const newRetryCount = (row.retry_count ?? 0) + 1;
         await supabaseAdmin.from('reputation_failures').upsert({
           id: row.id,
@@ -112,7 +125,7 @@ export async function reconcileFailedReputationUpdates() {
           last_error: err.message,
           last_attempt_at: new Date().toISOString(),
         });
-        logger.warn(`[reputation-reconciliation] Retry ${newRetryCount}/${MAX_RETRIES} failed for ${row.driver_wallet}: ${err.message}`);
+        logger.warn(`[reputation-reconciliation] Award failed for ${row.driver_wallet} after removing pending row; re-queued for retry: ${err.message}`);
       } finally {
         // Release the per-row claim so a re-queued failure can be retried on
         // the next cycle instead of waiting for the 300s claim TTL to expire.
