@@ -197,6 +197,9 @@ abstract class AppLocalizations {
   /// Success message after biometric authentication
   String get biometricAuthSuccessful;
 
+  /// Message shown when biometric success has no cached session to re-authenticate
+  String get biometricAuthRequiresSession;
+
   /// Validation message when phone number field is empty
   String get pleaseEnterPhone;
 

@@ -128,9 +128,40 @@ fn is_path_allowed(path: &str) -> bool {
     };
 
     let allowed_prefixes = ["/tmp/truxify/", "./data/", "/var/truxify/"];
+    let mut lexically_ok = false;
     for prefix in allowed_prefixes {
         if let Some(root) = resolve_lexically(prefix) {
             if resolved == root || resolved.starts_with(&format!("{}/", root)) {
+                lexically_ok = true;
+                break;
+            }
+        }
+    }
+    if !lexically_ok {
+        return false;
+    }
+
+    // The lexical check above is necessary but not sufficient: a symlink placed
+    // inside the sandbox still resolves to a target outside it, and the real
+    // `std::fs` operations follow that symlink. Re-verify the canonical
+    // (symlink-resolved) form of the path against the canonical sandbox roots.
+    // If the path does not exist yet (so it cannot be a symlink escape of an
+    // existing target) we trust the lexical result.
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        return canonical_target_allowed(&canon.to_string_lossy(), allowed_prefixes);
+    }
+    true
+}
+
+// Returns true only when `canon` (a symlink-resolved absolute path) equals or
+// lies beneath one of the canonicalized sandbox roots.
+fn canonical_target_allowed(canon: &str, allowed_prefixes: [&str; 3]) -> bool {
+    for prefix in allowed_prefixes {
+        if let Some(root) = std::fs::canonicalize(resolve_lexically(prefix).unwrap_or_default())
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+        {
+            if canon == root || canon.starts_with(&format!("{}/", root)) {
                 return true;
             }
         }
@@ -338,4 +369,40 @@ pub fn wasi_allocate_memory(size: usize) -> Result<String, String> {
     // Allocate memory (for testing)
     let vec = vec![0u8; size];
     Ok(format!("Allocated {} bytes", vec.len()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allows_exact_allowed_host() {
+        assert!(is_url_allowed("http://api.truxify.com/v1/orders"));
+        assert!(is_url_allowed("http://localhost:8080/health"));
+        assert!(is_url_allowed("http://127.0.0.1:5432/"));
+    }
+
+    #[test]
+    fn allows_subdomain_of_allowed_host() {
+        assert!(is_url_allowed("https://api.eu.api.truxify.com/x"));
+    }
+
+    #[test]
+    fn blocks_host_containing_allowed_as_suffix() {
+        // Attacker uses the allowed string as a *suffix* of their domain.
+        assert!(!is_url_allowed("http://api.truxify.com.attacker.net/x"));
+        assert!(!is_url_allowed("http://127.0.0.1.evil/"));
+    }
+
+    #[test]
+    fn blocks_host_with_allowed_string_in_query() {
+        assert!(!is_url_allowed("http://evil.com/?x=localhost"));
+    }
+
+    #[test]
+    fn blocks_unrelated_and_internal_hosts() {
+        assert!(!is_url_allowed("http://evil.com/"));
+        assert!(!is_url_allowed("http://169.254.169.254/latest/meta-data/"));
+        assert!(!is_url_allowed("not a url"));
+    }
 }

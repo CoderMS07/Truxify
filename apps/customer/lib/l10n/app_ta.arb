@@ -178,6 +178,11 @@
     "description": "Success message after biometric authentication"
   },
 
+  "biometricAuthRequiresSession": "சேமிக்கப்பட்ட அமர்வு எதுவும் கிடைக்கவில்லை. முதலில் உங்கள் தொலைபேசி எண்ணுடன் உள்நுழையவும்.",
+  "@biometricAuthRequiresSession": {
+    "description": "Message shown when biometric success has no cached session to re-authenticate"
+  },
+
   "pleaseEnterPhone": "உங்கள் தொலைபேசி எண்ணை உள்ளிடவும்",
   "@pleaseEnterPhone": {
     "description": "Validation message when phone number field is empty"

@@ -19,23 +19,25 @@ class ProcessedEventRepository {
    * @param {string} topic Kafka topic the event arrived on.
    * @param {string} eventId The event's natural idempotency key.
    * @param {string|null} orderId orders.id when derivable from the event.
+   * @param {string} consumerGroup The consumer group claiming the event.
    * @param {{ staleProcessingAfterMs?: number }} [options]
    * @returns {Promise<boolean>} true when the event was claimed for
    *          (re)processing, false when it is already completed or actively
    *          being processed elsewhere.
    */
-  async claimProcessing(topic, eventId, orderId = null, { staleProcessingAfterMs = DEFAULT_STALE_PROCESSING_MS } = {}) {
+  async claimProcessing(topic, eventId, orderId = null, consumerGroup, { staleProcessingAfterMs = DEFAULT_STALE_PROCESSING_MS } = {}) {
     try {
       const { data, error } = await supabaseAdmin
         .from('kafka_processed_events')
         .upsert({
+          consumer_group: consumerGroup,
           topic,
           event_id: eventId,
           order_id: orderId || null,
           status: 'processing',
           started_at: new Date().toISOString(),
         }, {
-          onConflict: 'topic,event_id',
+          onConflict: 'consumer_group,topic,event_id',
           ignoreDuplicates: true,
         })
         .select('event_id');
@@ -50,6 +52,7 @@ class ProcessedEventRepository {
       const { data: existing, error: fetchError } = await supabaseAdmin
         .from('kafka_processed_events')
         .select('status, started_at')
+        .eq('consumer_group', consumerGroup)
         .eq('topic', topic)
         .eq('event_id', eventId)
         .maybeSingle();
@@ -78,6 +81,7 @@ class ProcessedEventRepository {
           started_at: new Date().toISOString(),
           order_id: orderId || null,
         })
+        .eq('consumer_group', consumerGroup)
         .eq('topic', topic)
         .eq('event_id', eventId)
         .eq('status', existing.status)
@@ -86,7 +90,7 @@ class ProcessedEventRepository {
       if (updateError) throw updateError;
       return Array.isArray(updated) ? updated.length > 0 : updated !== null;
     } catch (error) {
-      logger.error(`Failed to claim processed event ${eventId} on ${topic}:`, error);
+      logger.error(`Failed to claim processed event ${eventId} on ${topic} (group ${consumerGroup}):`, error);
       throw error;
     }
   }
@@ -94,11 +98,12 @@ class ProcessedEventRepository {
   /**
    * Mark a claimed event as fully processed after its handlers succeeded.
    */
-  async markCompleted(topic, eventId) {
+  async markCompleted(topic, eventId, consumerGroup) {
     try {
       const { error } = await supabaseAdmin
         .from('kafka_processed_events')
         .update({ status: 'completed' })
+        .eq('consumer_group', consumerGroup)
         .eq('topic', topic)
         .eq('event_id', eventId)
         .eq('status', 'processing');
@@ -113,11 +118,12 @@ class ProcessedEventRepository {
    * Mark a claimed event as failed after a handler threw, so a later
    * delivery can re-claim and retry it.
    */
-  async markFailed(topic, eventId) {
+  async markFailed(topic, eventId, consumerGroup) {
     try {
       const { error } = await supabaseAdmin
         .from('kafka_processed_events')
         .update({ status: 'failed' })
+        .eq('consumer_group', consumerGroup)
         .eq('topic', topic)
         .eq('event_id', eventId)
         .eq('status', 'processing');

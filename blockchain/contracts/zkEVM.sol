@@ -126,8 +126,8 @@ contract zkEVM is Ownable, ReentrancyGuard, Pausable {
             require(!usedNonces[from][nonce], "Nonce already used");
             require(currentState.balances[from] >= value + gasPrice * gasLimit, "Insufficient balance");
 
-            // Verify signature (same digest as executeTransaction)
-            bytes32 txHashForSig = keccak256(abi.encodePacked(from, to, value, data, nonce, gasPrice, gasLimit));
+            // Verify signature (same bound digest as executeTransaction)
+            bytes32 txHashForSig = _txHash(from, to, value, data, nonce, gasPrice, gasLimit);
             require(_verifySignature(txHashForSig, signature, from), "Invalid signature");
 
             processedTxHashes[txHash] = true;
@@ -262,6 +262,7 @@ contract zkEVM is Ownable, ReentrancyGuard, Pausable {
     ) internal returns (uint256 txId, bytes32 txHash) {
         // CHECKS
         require(to != address(0), "Invalid address");
+        require(nonce == currentState.nonces[from], "bad nonce");
         require(!usedNonces[from][nonce], "Nonce already used");
         require(currentState.balances[from] >= value + gasPrice * gasLimit, "Insufficient balance");
 
@@ -311,8 +312,8 @@ contract zkEVM is Ownable, ReentrancyGuard, Pausable {
         uint256 nonce,
         uint256 gasPrice,
         uint256 gasLimit
-    ) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(from, to, value, data, nonce, gasPrice, gasLimit));
+    ) internal view returns (bytes32) {
+        return keccak256(abi.encodePacked(block.chainid, address(this), from, to, value, data, nonce, gasPrice, gasLimit));
     }
 
     function _verifyProof(bytes calldata proof) internal view returns (bool) {

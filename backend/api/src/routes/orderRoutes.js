@@ -430,12 +430,6 @@ router.get('/history', authenticate, userLimiter, requireRole(['customer']), get
 // 6. FETCH SPECIFIC ORDER DETAILS AND TIMELINE (CUSTOMER OR DRIVER)
 router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), getOrderDetails);
 
-// 7. FETCH ORDER TIMELINE (CUSTOMER OR DRIVER)
-// ============================================================================
-router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSchema), async (req, res) => {
-  const orderId = req.params.id;
-
-// ============================================================================
 // 13b. FETCH EN-ROUTE LOAD OFFERS (DRIVER) — GET /api/orders/load-offers/en-route
 // ============================================================================
 /**
@@ -516,37 +510,12 @@ router.get('/load-offers/en-route', authenticate, userLimiter, requirePolicy('lo
       });
     }
 
-    return res.json({ loads });
+    return res.json(loads);
   } catch (err) {
     logger.error('Internal Server Error in GET /api/orders/load-offers/en-route:', err?.message);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 });
-
-// ============================================================================
-// 13c. DRIVER OTP CONFIRM ALIAS — POST /api/orders/:id/confirm-otp
-// ============================================================================
-/**
- * Friendly alias of /:id/verify-delivery for the driver app.
- * Accepts the same body { otp } and delegates to the same pipeline.
- * Registered on the orders router as /:id/confirm-otp, exposed to the driver
- * app at /api/orders/:id/confirm-otp via the /api/orders mount in index.js.
- *
- * This keeps the driver app URL surface clean while reusing identical logic.
- */
-const handleDeliveryVerification = async (req, res) => {
-  try {
-    let order = null;
-    if (UUID_RE.test(orderId)) {
-      const { data: orderById } = await orderRepository.findOrderForTimeline(orderId);
-      order = orderById;
-    }
-    if (!order) {
-      const { data: orderByDisplay } = await orderRepository.findOrderByDisplayForTimeline(orderId);
-      order = orderByDisplay;
-    }
-
-    if (!order) return res.status(404).json({ error: 'Order not found.' });
 
 // 8. SUBMIT BID FOR LOAD OFFER (DRIVER)
 router.post('/:id/bids', authenticate, userLimiter, requireRole(['driver']), bidLimiter, validateParams(paramIdSchema), validateBody(submitBidSchema), submitBid);
@@ -565,6 +534,12 @@ router.put('/:id/milestones', authenticate, userLimiter, requireRole(['driver'])
 
 // 13. VERIFY DELIVERY OTP AND RELEASE FUNDS (DRIVER)
 router.post('/:id/verify-delivery', authenticate, userLimiter, requireRole(['driver']), verifyDeliveryLimiter, requireIdempotency(86400), validateParams(paramIdSchema), validateBody(verifyDeliverySchema), verifyDeliveryController);
+
+// 13c. DRIVER OTP CONFIRM ALIAS — POST /api/orders/:id/confirm-otp
+// Friendly alias of /:id/verify-delivery for the driver app. It accepts the
+// same body { otp } and delegates to the identical pipeline so the driver's
+// Confirm Delivery flow can release the escrow and credit the wallet.
+router.post('/:id/confirm-otp', authenticate, userLimiter, requireRole(['driver']), verifyDeliveryLimiter, requireIdempotency(86400), validateParams(paramIdSchema), validateBody(verifyDeliverySchema), verifyDeliveryController);
 
 // 14. RESEND DELIVERY OTP (DRIVER)
 router.post('/:id/resend-otp', authenticate, userLimiter, resendOtpLimiter, requireRole(['driver']), validateParams(paramIdSchema), resendOtp);
@@ -948,7 +923,10 @@ router.post('/predict-demand', authenticate, userLimiter, requireRole(['customer
  *             schema:
  *               $ref: '#/components/schemas/DriverLocationResponse'
  */
-router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-driver-location'), validateParams(paramIdSchema), async (req, res) => {
+router.get('/:id/driver-location', authenticate, userLimiter, telemetryLimiter, requirePolicy('order:view-driver-location', async (req) => {
+  const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id, status');
+  return { order };
+}), validateParams(paramIdSchema), async (req, res) => {
   const orderId = req.params.id;
   try {
     const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, customer_id, driver_id, status');
@@ -1160,7 +1138,7 @@ router.get('/my/history', authenticate, userLimiter, requirePolicy('order:view-h
 router.get('/:id/timeline', authenticate, userLimiter, requirePolicy('order:view-timeline', async (req) => {
   const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id');
   return { order };
-}), validateParams(paramIdSchema), async (req, res) => {
+})), validateParams(paramIdSchema), async (req, res) => {
   try {
     const timeline = await orderLifecycleService.getOrderTimeline(req.params.id, req.user.id);
     return res.json(timeline);
@@ -1177,7 +1155,7 @@ router.get('/:id/timeline', authenticate, userLimiter, requirePolicy('order:view
 router.get('/:id', authenticate, userLimiter, requirePolicy('order:view', async (req) => {
   const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id, driver_id');
   return { order };
-}), validateParams(paramIdSchema), async (req, res) => {
+})), validateParams(paramIdSchema), async (req, res) => {
   try {
     const detail = await orderLifecycleService.getOrderDetail(req.params.id, req.user.id);
     return res.json(detail);
@@ -1194,7 +1172,7 @@ router.get('/:id', authenticate, userLimiter, requirePolicy('order:view', async 
 router.get('/:id/bids', authenticate, userLimiter, requirePolicy('order:view', async (req) => {
   const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id');
   return { order };
-}), validateParams(paramIdSchema), async (req, res) => {
+})), validateParams(paramIdSchema), async (req, res) => {
   try {
     const bids = await orderLifecycleService.getBidsForOrder(req.params.id, req.user.id);
     return res.json({ bids });
@@ -1211,7 +1189,7 @@ router.get('/:id/bids', authenticate, userLimiter, requirePolicy('order:view', a
 router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requirePolicy('order:view', async (req) => {
   const order = await orderValidationService.findOrderByIdOrDisplayId(req.params.id, 'id, customer_id');
   return { order };
-}), validateParams(paramIdSchema), async (req, res) => {
+})), validateParams(paramIdSchema), async (req, res) => {
   try {
     const result = await orderLifecycleService.acceptBid(req.params.id, req.params.bidId, req.user.id);
     return res.json(result);
@@ -1225,7 +1203,7 @@ router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requirePolicy(
 });
 
 // POST /api/orders/:id/ratings - customer submits rating for a driver
-router.post('/:id/ratings', authenticate, userLimiter, validateParams(paramIdSchema), validateBody(submitRatingSchema), async (req, res) => {
+router.post('/:id/ratings', authenticate, userLimiter, requirePolicy('order:submit-rating'), validateParams(paramIdSchema), validateBody(submitRatingSchema), async (req, res) => {
   try {
     const { stars, comment } = req.body;
     const result = await orderLifecycleService.submitRating(req.params.id, req.user.id, stars, comment, createUserClient(req.token));
@@ -1236,21 +1214,6 @@ router.post('/:id/ratings', authenticate, userLimiter, validateParams(paramIdSch
     }
     logger.error('Rating submission error:', err);
     return res.status(500).json({ error: 'Failed to submit rating.' });
-  }
-});
-
-// POST /api/orders/:id/bids - driver submits bid on a load offer
-router.post('/:id/bids', authenticate, requireRole(['driver']), bidLimiter, validateParams(paramIdSchema), validateBody(submitBidSchema), async (req, res) => {
-  try {
-    const { bid_amount } = req.body;
-    const result = await orderLifecycleService.submitBid(req.params.id, req.user.id, bid_amount);
-    return res.json(result);
-  } catch (err) {
-    if (err instanceof DomainError) {
-      return res.status(err.status).json(err.payload);
-    }
-    logger.error('Bid submission error:', err);
-    return res.status(500).json({ error: 'Failed to submit bid.' });
   }
 });
 

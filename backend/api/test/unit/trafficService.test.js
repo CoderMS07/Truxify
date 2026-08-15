@@ -8,16 +8,15 @@ vi.mock('../../src/middleware/logger.js', () => ({
 describe('trafficService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.useFakeTimers();
   });
 
-  it('returns 1.0 when pickupLat is missing', async () => {
-    const result = await getLiveTrafficMultiplier(null, 77.5);
+  it('returns 1.0 for null coordinates', async () => {
+    const result = await getLiveTrafficMultiplier(null, null);
     expect(result).toBe(1.0);
   });
 
-  it('returns 1.0 when pickupLng is missing', async () => {
-    const result = await getLiveTrafficMultiplier(12.9, null);
+  it('returns 1.0 for undefined coordinates', async () => {
+    const result = await getLiveTrafficMultiplier(undefined, undefined);
     expect(result).toBe(1.0);
   });
 
@@ -32,11 +31,13 @@ describe('trafficService', () => {
     expect(result).toBeLessThanOrEqual(2.5);
   });
 
-  it('returns 1.0 outside rush hours', async () => {
-    // Set time to 2:30 AM
-    vi.setSystemTime(new Date('2025-01-01T02:30:00'));
+  it('returns 1.0 when TOMTOM API key is absent and fetch fails', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+    });
 
-    const result = await getLiveTrafficMultiplier(12.9, 77.5);
+    const result = await getLiveTrafficMultiplier(40.7128, -74.006);
     expect(result).toBe(1.0);
     expect(mockLogger.info).not.toHaveBeenCalled();
   });

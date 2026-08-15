@@ -53,7 +53,6 @@ import supportRoutes from './routes/supportRoutes.js'
 import profileRoutes from './routes/profileRoutes.js'
 import shipmentRoutes from './routes/shipmentRoutes.js'
 import loadRoutes from './routes/loadRoutes.js'
-import iotRoutes from './routes/iotRoutes.js'
 import deadheadRoutes from './routes/deadheadRoutes.js'
 import truckRoutes from './routes/truckRoutes.js'
 import authRoutes from './routes/authRoutes.js'
@@ -68,7 +67,6 @@ import paymentRoutes from './routes/paymentRoutes.js'
 import userRoutes from './routes/userRoutes.js'
 import voiceRoutes from './routes/voiceRoutes.js'
 import voiceAssistantRoutes from './routes/voice.routes.js'
-import demandRoutes from './routes/demandRoutes.js'
 import roadConditionRoutes from './routes/roadConditionRoutes.js'
 import escortWalletRoutes from './routes/escortWalletRoutes.js'
 import mlRoutes from './routes/mlRoutes.js'
@@ -519,8 +517,6 @@ app.use('/api/users', userRoutes)
 app.use('/api/devices', deviceRoutes)
 app.use('/api/driver/documents', documentRoutes)
 app.use('/api/maintenance', maintenancePhotoRoutes)
-app.use('/api/iot', iotRoutes)
-app.use('/api/demand-heatmap', demandRoutes)
 app.use('/api/webhooks', webhookRoutes)
 app.use('/api/trucks', truckRoutes)
 app.use('/api/v1', lookupRoutes)

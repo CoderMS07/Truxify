@@ -22,8 +22,11 @@ import { supabaseAdmin } from '../../config/db.js';
 import { DomainError } from './domainError.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 import { hashOtp, verifyOtpHash } from '../../lib/otpHashing.js';
+import { haversineKm } from '../../lib/pricing.js';
 import logger from '../../middleware/logger.js';
 import { sendPushNotification } from '../notificationService.js';
+
+export { haversineKm } from '../../lib/pricing.js';
 
 export { DomainError } from './domainError.js';
 

@@ -3,12 +3,22 @@ import logger from "../middleware/logger.js";
 import {
   dispatchPayout,
   isPayoutProviderConfigured,
+  recoverSettlementRef,
 } from "../services/wallet/payoutProvider.js";
 import { WorkerTracer } from "../core/telemetry/WorkerTracer.js";
 
 const BATCH_LIMIT = 50;
 const SETTLE_RETRY_ATTEMPTS = 3;
 const SETTLE_RETRY_DELAYS_MS = [500, 1500, 3000];
+
+// Persisting the settlement_ref is what guarantees a dispatched payout is
+// never orphaned, so we retry harder (and longer) than the settle RPC itself.
+const RECORD_PERSIST_ATTEMPTS = 6;
+const RECORD_PERSIST_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000];
+
+// A row that has been claimed (payout_attempted_at set) but is still missing a
+// settlement_ref this long is almost certainly stuck and must be escalated.
+const RECONCILE_STUCK_AFTER_MS = 60 * 60 * 1000;
 
 let intervalId = null;
 
@@ -67,7 +77,7 @@ async function claimWithdrawal(withdrawalId) {
  */
 async function recordDispatchOutcome(withdrawalId, settlementRef) {
   let lastError = null;
-  for (let attempt = 1; attempt <= SETTLE_RETRY_ATTEMPTS; attempt += 1) {
+  for (let attempt = 1; attempt <= RECORD_PERSIST_ATTEMPTS; attempt += 1) {
     const { error } = await supabaseAdmin
       .from("wallet_transactions")
       .update({ settlement_ref: settlementRef })
@@ -78,8 +88,8 @@ async function recordDispatchOutcome(withdrawalId, settlementRef) {
       return;
     }
     lastError = error;
-    if (attempt < SETTLE_RETRY_ATTEMPTS) {
-      await sleep(SETTLE_RETRY_DELAYS_MS[attempt - 1]);
+    if (attempt < RECORD_PERSIST_ATTEMPTS) {
+      await sleep(RECORD_PERSIST_DELAYS_MS[attempt - 1]);
     }
   }
   // Even after retries the outcome could not be persisted. The in-memory
@@ -124,6 +134,22 @@ async function settleWithRetry(withdrawalId, settlementRef) {
 }
 
 /**
+ * Escalates a withdrawal that was claimed (payout_attempted_at set) but is
+ * stuck without a settlement_ref and cannot be re-derived from the provider
+ * (Issue #14686). The row is NOT restored to wallet_confirmed — the payout may
+ * already have left the platform, so restoring would double-pay the driver.
+ * Instead we raise a reconciliation/DLQ alert so an operator can confirm the
+ * payout status against the provider and manually settle or fail the row.
+ * Silently `continue`-ing here is what previously orphaned the driver forever.
+ */
+async function flagForReconciliation(withdrawalId) {
+  logger.error(
+    `[WithdrawalSettlementWorker][RECONCILIATION-DLQ] Withdrawal ${withdrawalId} is stuck: payout was attempted but no settlement_ref could be recorded or re-derived. ` +
+      `Manual reconciliation required — do NOT restore reserved funds until the provider payout status is confirmed.`,
+  );
+}
+
+/**
  * Settles 'pending' withdrawal wallet_transactions:
  *   1. loads the oldest un-settled pending withdrawals;
  *   2. atomically claims each unclaimed row (payout_attempted_at IS NULL) so
@@ -157,7 +183,9 @@ export async function settlePendingWithdrawals() {
 
   const { data: withdrawals, error } = await supabaseAdmin
     .from("wallet_transactions")
-    .select("id, driver_id, amount, payout_attempted_at, settlement_ref")
+    .select(
+      "id, driver_id, amount, payout_attempted_at, settlement_ref, settle_attempts",
+    )
     .eq("txn_type", "withdrawal")
     .eq("status", "pending")
     .is("settled_at", null)
@@ -250,14 +278,44 @@ export async function settlePendingWithdrawals() {
     // never call fail_withdrawal_tx here — restoring wallet_confirmed would
     // double-pay the driver. Keep the row 'pending' and let the next sweep
     // retry the idempotent settle call. If the settlement reference is still
-    // missing, the row may have been claimed but the dispatch never produced a
-    // payout reference (crash window) — refuse to settle so the withdrawal is
-    // not falsely marked completed with no payout having left the platform.
+    // missing, the row may have been claimed but the settlement_ref persist
+    // failed on a previous sweep (Issue #14686). We must NOT silently skip it
+    // — that permanently orphans the driver's funds. Instead, re-derive the
+    // reference from the provider, and only escalate to reconciliation/DLQ when
+    // it genuinely cannot be recovered.
     if (!settlementRef) {
-      logger.warn(
-        `[WithdrawalSettlementWorker] Withdrawal ${withdrawal.id} was claimed but no payout settlement reference was recorded - refusing to settle, keeping funds reserved.`,
-      );
-      continue;
+      const attemptedAt = withdrawal.payout_attempted_at
+        ? Date.parse(withdrawal.payout_attempted_at)
+        : null;
+      const stuckMs = attemptedAt ? Date.now() - attemptedAt : Infinity;
+
+      if (stuckMs >= RECONCILE_STUCK_AFTER_MS) {
+        await flagForReconciliation(withdrawal.id);
+        continue;
+      }
+
+      const recovered = await recoverSettlementRef({
+        withdrawalId: withdrawal.id,
+      });
+
+      if (recovered) {
+        settlementRef = recovered;
+        logger.warn(
+          `[WithdrawalSettlementWorker] Withdrawal ${withdrawal.id} settlement_ref re-derived from provider (ref: ${recovered}) — persisting and settling.`,
+        );
+        try {
+          await recordDispatchOutcome(withdrawal.id, recovered);
+        } catch (recordErr) {
+          logger.error(
+            `[WithdrawalSettlementWorker] Withdrawal ${withdrawal.id} re-derived settlement_ref could not be persisted: ${recordErr.message}`,
+          );
+        }
+      } else {
+        logger.warn(
+          `[WithdrawalSettlementWorker] Withdrawal ${withdrawal.id} claimed but settlement_ref still unrecorded — retrying reconciliation on next sweep.`,
+        );
+        continue;
+      }
     }
 
     try {
@@ -266,9 +324,48 @@ export async function settlePendingWithdrawals() {
         `[WithdrawalSettlementWorker] Settled withdrawal ${withdrawal.id} (ref: ${settlementRef}).`,
       );
     } catch (err) {
-      logger.error(
-        `[WithdrawalSettlementWorker] Settlement of withdrawal ${withdrawal.id} deferred — payout already dispatched, funds NOT restored: ${err.message}`,
-      );
+      // The payout already left the platform, so funds must NEVER be restored.
+      // Record the settle failure and, once the bounded settle-retry budget is
+      // exhausted, transition the row to the terminal `settlement_failed`
+      // status (record_settle_failure with p_terminal => true) so the sweep
+      // predicate (status='pending') stops selecting it. The migration
+      // increments settle_attempts on every call, so the persisted counter is
+      // the source of truth for how many settle cycles have failed.
+      const attempts = (withdrawal.settle_attempts || 0) + 1;
+      const terminal = attempts >= SETTLE_RETRY_ATTEMPTS;
+      const errorMsg = String(err.message || "Unknown error").slice(0, 1000);
+
+      try {
+        const { error: rpcErr } = await supabaseAdmin.rpc(
+          "record_settle_failure",
+          {
+            p_withdrawal_id: withdrawal.id,
+            p_error: errorMsg,
+            p_terminal: terminal,
+          },
+        );
+        if (rpcErr) {
+          logger.error(
+            `[WithdrawalSettlementWorker] Failed to record settlement failure for ${withdrawal.id}: ${rpcErr.message}`,
+          );
+        }
+      } catch (rpcErr) {
+        logger.error(
+          `[WithdrawalSettlementWorker] Failed to record settlement failure for ${withdrawal.id}: ${rpcErr.message}`,
+        );
+      }
+
+      if (terminal) {
+        // One-time terminal alert: the row has moved to settlement_failed and
+        // will no longer be retried — manual reconciliation is required.
+        logger.error(
+          `[WithdrawalSettlementWorker] Withdrawal ${withdrawal.id} settlement permanently failed after ${attempts} attempts — moved to terminal settlement_failed status. ALERT: manual reconciliation required (funds NOT restored).`,
+        );
+      } else {
+        logger.error(
+          `[WithdrawalSettlementWorker] Settlement of withdrawal ${withdrawal.id} deferred (attempt ${attempts}/${SETTLE_RETRY_ATTEMPTS}) — payout already dispatched, funds NOT restored: ${err.message}`,
+        );
+      }
     }
   }
 }

@@ -15,7 +15,7 @@ describe('deliveryVerificationService', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.resetModules();
-    deliveryVerificationService = (await import('../../src/services/order/deliveryVerificationService.js')).default;
+    deliveryVerificationService = (await import('../../src/services/order/deliveryVerificationService.js')).DeliveryVerificationService;
   });
 
   describe('verifyDelivery', () => {

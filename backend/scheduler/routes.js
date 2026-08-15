@@ -89,7 +89,7 @@ router.delete('/scheduler/tasks', (req, res) => {
             }
             priorityValue = prioMap[upperPriority];
         }
-        
+
         const count = scheduler.cancelAll(priorityValue);
         
         res.json({
@@ -239,6 +239,8 @@ router.get('/scheduler/task/:taskId', (req, res) => {
 });
 
 // Get tasks
+const VALID_TASK_STATUSES = new Set(['pending', 'running', 'completed', 'failed', 'cancelled']);
+
 router.get('/scheduler/tasks', (req, res) => {
     try {
         const { status } = req.query;

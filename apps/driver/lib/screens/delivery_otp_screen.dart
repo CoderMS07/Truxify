@@ -244,7 +244,7 @@ class _DeliveryOtpScreenState extends State<DeliveryOtpScreen>
             : 'Location verified. Enter the customer OTP to release payment.';
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
       } else {
-        final dist = body is Map ? body['distanceM'] as int? : null;
+        final dist = body is Map ? (body['distanceM'] as num?)?.toInt() : null;
         setState(() => _errorMessage =
             'You are ${dist != null ? '${dist}m' : 'too far'} from the drop point. '
             'Geofence radius is ${_geofenceRadius.toInt()}m.');

@@ -14,6 +14,9 @@ const DELIVERY_IN_PROGRESS_STATUSES = new Set([
   'arriving',
 ]);
 
+export const ORACLE_PROVIDER_COUNT = 3;
+export const ORACLE_THRESHOLD = 2;
+
 class OracleService {
   constructor(deps = {}) {
     this.orderRepository = deps.orderRepository || null;
@@ -42,14 +45,14 @@ class OracleService {
 
     const confirmedCount = providerResults.filter(r => r.confirmed === true).length;
     const totalProviders = providerResults.length;
-    const hasConsensus = confirmedCount >= 2;
+    const hasConsensus = confirmedCount >= ORACLE_THRESHOLD;
 
     await this.logOracleResult(orderId, providerResults, hasConsensus);
 
     return {
       confirmed: hasConsensus,
       consensusCount: confirmedCount,
-      threshold: 2,
+      threshold: ORACLE_THRESHOLD,
       totalProviders,
       providerResults,
       timestamp: new Date().toISOString(),
@@ -211,13 +214,6 @@ class OracleService {
     return logEntry;
   }
 
-  getStatus() {
-    return {
-      providers: ['OTPVerifier', 'GPSVerifier', 'StatusVerifier'],
-      threshold: 2,
-    };
-  }
-
   async verifyCrossChain(orderId, blockchainHash) {
     try {
       const { data: order, error } = await this.supabase
@@ -254,6 +250,18 @@ class OracleService {
       logger.error('[OracleService] Cross-chain verification error:', err.message);
       return { verified: false, ipfsHash: null, blockchainHash, verificationUrl: null, error: err.message };
     }
+  }
+
+  /**
+   * Returns the current oracle service status including provider count and threshold.
+   * @returns {object}
+   */
+  getStatus() {
+    return {
+      providers: 3,
+      threshold: 2,
+      timestamp: new Date().toISOString(),
+    };
   }
 }
 

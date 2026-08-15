@@ -75,7 +75,7 @@ class EdgeRuntime {
                             return selected;
                         },
                         calculate_eta: (distance, speed, trafficFactor) =>
-                            distance / (speed * Math.max(1.0 - (trafficFactor || 0), 0.1)),
+                            distance / (Math.max(speed, 1e-6) * Math.max(1.0 - (trafficFactor || 0), 0.1)),
                         filter_drivers: (drivers, minRating) =>
                             (drivers || []).filter((d) => d.status !== 'offline' && d.rating >= (minRating || 0)),
                         aggregate_prices: (prices) =>
@@ -85,15 +85,20 @@ class EdgeRuntime {
                             if (!data || data.length === 0) return [];
                             const compressed = [];
                             let count = 1;
+                            const pushCount = (c) => {
+                                compressed.push(c & 0xff, (c >>> 8) & 0xff, (c >>> 16) & 0xff, (c >>> 24) & 0xff);
+                            };
                             for (let i = 1; i < data.length; i++) {
                                 if (data[i] === data[i - 1]) {
                                     count += 1;
                                 } else {
-                                    compressed.push(data[i - 1], count);
+                                    compressed.push(data[i - 1]);
+                                    pushCount(count);
                                     count = 1;
                                 }
                             }
-                            compressed.push(data[data.length - 1], count);
+                            compressed.push(data[data.length - 1]);
+                            pushCount(count);
                             return compressed;
                         },
                         get_stats: () => ({ memory_used_mb: 4.2, active_functions: 8 })

@@ -91,6 +91,9 @@ pub fn optimize_loads(loads: &[f64], capacity: f64) -> Vec<usize> {
     let mut remaining = capacity;
     
     for (i, &weight) in loads.iter().enumerate() {
+        if !weight.is_finite() || weight < 0.0 {
+            continue;
+        }
         if weight <= remaining {
             selected.push(i);
             remaining -= weight;
@@ -100,17 +103,53 @@ pub fn optimize_loads(loads: &[f64], capacity: f64) -> Vec<usize> {
     selected
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skips_negative_weight_to_avoid_capacity_inflate() {
+        let loads = [10.0, -5.0, 5.0];
+        let selected = optimize_loads(&loads, 12.0);
+        assert_eq!(selected, vec![0, 2]);
+    }
+
+    #[test]
+    fn skips_nan_weight_without_dropping_valid_loads() {
+        let loads = [4.0, f64::NAN, 3.0, 2.0];
+        let selected = optimize_loads(&loads, 10.0);
+        assert_eq!(selected, vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn skips_infinite_weight() {
+        let loads = [4.0, f64::INFINITY, 3.0];
+        let selected = optimize_loads(&loads, 10.0);
+        assert_eq!(selected, vec![0, 2]);
+    }
+}
+
 #[wasm_bindgen]
 pub fn calculate_eta(distance: f64, speed: f64, traffic_factor: f64) -> f64 {
     // Fast ETA calculation at edge
-    let effective_speed = speed * (1.0 - traffic_factor);
+    let factor = (1.0 - traffic_factor).max(0.1);
+    let effective_speed = speed.max(1e-6) * factor;
     distance / effective_speed
 }
 
 #[wasm_bindgen]
 pub fn validate_otp(input_otp: &str, correct_otp: &str) -> bool {
-    // Fast OTP validation at edge
-    input_otp == correct_otp
+    // Constant-time OTP validation at the edge to avoid timing side-channels.
+    let a = input_otp.as_bytes();
+    let b = correct_otp.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 // ============ Data Processing ============
@@ -125,6 +164,9 @@ pub fn filter_drivers(drivers: Vec<DriverData>, min_rating: f64) -> Vec<DriverDa
 
 #[wasm_bindgen]
 pub fn aggregate_prices(prices: Vec<f64>) -> f64 {
+    if prices.is_empty() {
+        return 0.0;
+    }
     prices.iter().sum::<f64>() / prices.len() as f64
 }
 
@@ -144,19 +186,19 @@ pub fn compress_data(data: &[u8]) -> Vec<u8> {
     }
 
     let mut compressed = Vec::new();
-    let mut count = 1;
-    
+    let mut count: u32 = 1;
+
     for i in 1..data.len() {
         if data[i] == data[i-1] {
             count += 1;
         } else {
             compressed.push(data[i-1]);
-            compressed.push(count);
+            compressed.extend_from_slice(&count.to_le_bytes());
             count = 1;
         }
     }
     compressed.push(data[data.len()-1]);
-    compressed.push(count);
-    
+    compressed.extend_from_slice(&count.to_le_bytes());
+
     compressed
 }

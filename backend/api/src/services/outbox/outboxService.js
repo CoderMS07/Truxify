@@ -4,13 +4,27 @@ import crypto from 'crypto';
 
 /**
  * Transactional Outbox Service
- * Inserts durable event records atomically with order mutations.
- * A separate relay picks them up and publishes to Kafka/event bus.
+ *
+ * Targets the authoritative `event_outbox` table created by the unified
+ * Supabase pipeline (supabase/migrations/20260810000000_event_outbox_and_read_model.sql).
+ * The legacy `outbox_events` table is only created by a migration in the LEGACY
+ * folder, which the Supabase pipeline does not apply — writing to it fails with
+ * 42P01 (relation does not exist) on a Supabase-backed deployment, which in turn
+ * flipped a successfully-committed order mutation into a 500 (#14703).
+ *
+ * Every write here is best-effort: a failed outbox write must NEVER turn a
+ * successfully-committed order mutation into a 500. `orderRepository.updateOrder`
+ * documents the outbox write as best-effort / never-throws, so `writeEvent`
+ * logs-and-swallows instead of rethrowing.
  */
 export class OutboxService {
   /**
    * Write an outbox event. Call this AFTER a successful order DB write
    * within the same logical operation so the event is always durable.
+   *
+   * Best-effort: on any failure we log and return null rather than throw,
+   * so the caller (e.g. updateOrder) never sees a 500 for an already-committed
+   * mutation.
    */
   async writeEvent({ aggregateId, aggregateType = 'order', eventType, payload }) {
     if (!aggregateId || !eventType) {
@@ -19,30 +33,30 @@ export class OutboxService {
     }
 
     const eventId = crypto.randomUUID();
-    const { data, error } = await supabaseAdmin
-      .from('outbox_events')
-      .insert({
-        id: eventId,
-        aggregate_id: aggregateId,
-        aggregate_type: aggregateType,
-        event_type: eventType,
-        payload: payload ?? {},
-        status: 'pending',
-        created_at: new Date().toISOString(),
-        retry_count: 0,
-      })
-      .select('id')
-      .single();
+    try {
+      const { data, error } = await supabaseAdmin
+        .from('event_outbox')
+        .insert({
+          event_id: eventId,
+          aggregate_id: aggregateId,
+          event_type: eventType,
+          payload: payload ?? {},
+          status: 'pending',
+        })
+        .select('event_id')
+        .single();
 
-    if (error) {
-      // Surface the failure so the caller can decide how to handle a
-      // non-atomic write (the order mutation may already have committed).
-      logger.error('[OutboxService] Failed to write outbox event:', error.message, { aggregateId, eventType });
-      throw error;
+      if (error) {
+        logger.error('[OutboxService] Failed to write outbox event:', error.message, { aggregateId, eventType });
+        return null;
+      }
+
+      logger.info('[OutboxService] Outbox event written:', { eventId, aggregateId, eventType });
+      return data?.event_id ?? null;
+    } catch (err) {
+      logger.error('[OutboxService] Exception writing outbox event:', err?.message, { aggregateId, eventType });
+      return null;
     }
-
-    logger.info('[OutboxService] Outbox event written:', { eventId, aggregateId, eventType });
-    return data?.id ?? null;
   }
 
   /**
@@ -50,7 +64,7 @@ export class OutboxService {
    */
   async fetchPendingEvents(limit = 50) {
     const { data, error } = await supabaseAdmin
-      .from('outbox_events')
+      .from('event_outbox')
       .select('*')
       .eq('status', 'pending')
       .order('created_at', { ascending: true })
@@ -68,22 +82,22 @@ export class OutboxService {
    */
   async markPublished(eventId) {
     const { error } = await supabaseAdmin
-      .from('outbox_events')
+      .from('event_outbox')
       .update({ status: 'published', published_at: new Date().toISOString() })
-      .eq('id', eventId);
+      .eq('event_id', eventId);
 
     if (error) {
       logger.error('[OutboxService] Failed to mark event published:', error.message, { eventId });
-      throw error;
     }
   }
 
   /**
-   * Mark an event as failed and increment retry_count.
+   * Mark an event as failed and increment the attempt counter.
    *
-   * The new retry_count is computed in JS: the previous implementation
-   * assigned an unawaited `supabase.rpc('increment', ...)` Promise to the
-   * column, so the counter never advanced and dead-lettering never triggered.
+   * `event_outbox` has no `failed` status (its check constraint only allows
+   * pending/publishing/published). A non-delivered event is returned to
+   * `pending` with `last_error` + `attempts` bumped so the relay reclaims it
+   * (next_attempt_at is already managed by the claim RPC).
    */
   async markFailed(eventId, errorMessage) {
     if (!eventId) {
@@ -92,24 +106,24 @@ export class OutboxService {
     }
 
     const { data: current, error: fetchError } = await supabaseAdmin
-      .from('outbox_events')
-      .select('retry_count')
-      .eq('id', eventId)
+      .from('event_outbox')
+      .select('attempts')
+      .eq('event_id', eventId)
       .single();
 
     if (fetchError) {
-      logger.warn('[OutboxService] Failed to read retry_count:', fetchError.message, { eventId });
+      logger.warn('[OutboxService] Failed to read attempts:', fetchError.message, { eventId });
     }
 
-    const currentRetryCount = Number.isFinite(current?.retry_count) ? current.retry_count : 0;
+    const currentAttempts = Number.isFinite(current?.attempts) ? current.attempts : 0;
 
     const { error } = await supabaseAdmin
-      .from('outbox_events')
+      .from('event_outbox')
       .update({
-        status: 'failed',
+        status: 'pending',
         last_error: String(errorMessage).slice(0, 1000),
-        retry_count: currentRetryCount + 1,
-        last_attempted_at: new Date().toISOString(),
+        attempts: currentAttempts + 1,
+        next_attempt_at: new Date().toISOString(),
       })
       .eq('id', eventId);
     if (error) {
@@ -118,18 +132,134 @@ export class OutboxService {
   }
 
   /**
+   * Move events that have exhausted their retry budget to the dead-letter
+   * store (outbox_dlq) so they are never silently lost. Events reaching
+   * retry_count >= maxRetries are copied to outbox_dlq and removed from
+   * outbox_events, and an alert is emitted so operators can replay them.
+   */
+  async deadLetterExhaustedEvents(maxRetries = 5) {
+    const { data: exhausted, error: fetchError } = await supabaseAdmin
+      .from('outbox_events')
+      .select('*')
+      .eq('status', 'failed')
+      .gte('retry_count', maxRetries);
+
+    if (fetchError) {
+      logger.error('[OutboxService] Failed to fetch exhausted events:', fetchError.message);
+      return;
+    }
+
+    if (!exhausted || exhausted.length === 0) return;
+
+    const now = new Date().toISOString();
+    const dlqRows = exhausted.map((e) => ({
+      original_id: e.id,
+      aggregate_id: e.aggregate_id,
+      aggregate_type: e.aggregate_type,
+      event_type: e.event_type,
+      payload: e.payload ?? {},
+      last_error: e.last_error,
+      retry_count: e.retry_count,
+      last_attempted_at: e.last_attempted_at,
+      created_at: e.created_at,
+      dead_lettered_at: now,
+      status: 'pending',
+    }));
+
+    const { error: insertError } = await supabaseAdmin
+      .from('outbox_dlq')
+      .insert(dlqRows);
+
+    if (insertError) {
+      logger.error('[OutboxService] Failed to write dead-letter rows:', insertError.message);
+      return;
+    }
+
+    const ids = exhausted.map((e) => e.id);
+    const { error: deleteError } = await supabaseAdmin
+      .from('outbox_events')
+      .delete()
+      .in('id', ids);
+
+    if (deleteError) {
+      logger.error('[OutboxService] Failed to clear dead-lettered events:', deleteError.message, { ids });
+      return;
+    }
+
+    // Alert: these events can no longer be retried automatically and require
+    // manual/automated replay via replayDeadLetter().
+    logger.error('[OutboxService] Dead-lettered exhausted outbox events for replay:', {
+      count: exhausted.length,
+      eventIds: ids,
+    });
+  }
+
+  /**
    * Reset failed events back to pending for retry (up to maxRetries).
    */
   async requeueFailedEvents(maxRetries = 5) {
     const { error } = await supabaseAdmin
-      .from('outbox_events')
+      .from('event_outbox')
       .update({ status: 'pending' })
-      .eq('status', 'failed')
-      .lt('retry_count', maxRetries);
+      .eq('status', 'publishing')
+      .lt('attempts', maxRetries);
 
     if (result?.error) {
       logger.error('[OutboxService] Failed to requeue failed events:', result.error.message);
     }
+  }
+
+  /**
+   * Replay a single dead-lettered event by re-inserting it into outbox_events
+   * (status='pending', retry_count=0) and marking the DLQ row replayed.
+   * Returns the original outbox event id, or null on failure.
+   */
+  async replayDeadLetter(dlqId) {
+    if (!dlqId) {
+      logger.warn('[OutboxService] Skipping replayDeadLetter — missing dlqId');
+      return null;
+    }
+
+    const { data: row, error: fetchError } = await supabaseAdmin
+      .from('outbox_dlq')
+      .select('*')
+      .eq('id', dlqId)
+      .single();
+
+    if (fetchError || !row) {
+      logger.error('[OutboxService] Failed to read dead-letter row:', fetchError?.message, { dlqId });
+      return null;
+    }
+
+    const { error: insertError } = await supabaseAdmin
+      .from('outbox_events')
+      .insert({
+        id: row.original_id,
+        aggregate_id: row.aggregate_id,
+        aggregate_type: row.aggregate_type,
+        event_type: row.event_type,
+        payload: row.payload ?? {},
+        status: 'pending',
+        retry_count: 0,
+        created_at: new Date().toISOString(),
+      });
+
+    if (insertError) {
+      logger.error('[OutboxService] Failed to reinsert dead-lettered event:', insertError.message, { dlqId });
+      return null;
+    }
+
+    const { error: updateError } = await supabaseAdmin
+      .from('outbox_dlq')
+      .update({ status: 'replayed', replayed_at: new Date().toISOString() })
+      .eq('id', dlqId);
+
+    if (updateError) {
+      logger.error('[OutboxService] Failed to mark dead-letter replayed:', updateError.message, { dlqId });
+    }
+
+    logger.info('[OutboxService] Replayed dead-letter event:', { dlqId, eventId: row.original_id });
+    return row.original_id;
   }
 }
 

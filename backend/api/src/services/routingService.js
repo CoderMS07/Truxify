@@ -164,14 +164,20 @@ export function optimizeLtlRoute(driverLat, driverLng, tasks) {
 
     for (const task of tasks) {
       if (visited.has(task.id)) continue;
-      
+
       // Enforce precedence: cannot visit dropoff if pickup is not completed
       if (task.type === 'dropoff' && !pickedUpOrders.has(task.orderId)) {
         continue;
       }
 
+      // Skip tasks with null or non-finite coordinates
+      if (!Number.isFinite(task.lat) || !Number.isFinite(task.lng)) {
+        continue;
+      }
+
       const dist = getHaversineDistance(currentLat, currentLng, task.lat, task.lng);
-      if (dist < minDistance) {
+      // dist can be null if driver coordinates are non-finite
+      if (dist !== null && dist < minDistance) {
         minDistance = dist;
         nearestTask = task;
       }

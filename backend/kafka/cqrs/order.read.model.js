@@ -69,7 +69,7 @@ class OrderReadModel {
    * `apply_order_event` RPC. Returns true when the event was applied, false
    * when the projection chose to skip it (e.g. a duplicate/replayed event).
    */
-  async applyEvent({ topic, eventId, orderId, eventType, payload, version }) {
+  async applyEvent({ topic, eventId, orderId, eventType, payload, version, consumerGroup }) {
     if (!orderId) throw new Error('applyEvent: missing orderId');
     if (!eventId) throw new Error('applyEvent: missing eventId');
 
@@ -80,6 +80,7 @@ class OrderReadModel {
       p_event_type: eventType,
       p_version: version,
       p_payload: payload,
+      p_consumer_group: consumerGroup,
     });
 
     if (error) throw error;

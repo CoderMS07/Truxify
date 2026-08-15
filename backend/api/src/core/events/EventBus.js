@@ -158,6 +158,7 @@ class EventBus extends EventEmitter {
       } catch (err) {
         logger.error({ event, err }, '[EventBus] Sync listener error');
         this._metrics.errors++;
+        syncErrors.push(err);
       }
     }
     // Return a promise that resolves when all async listeners have settled.

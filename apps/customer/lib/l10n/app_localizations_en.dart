@@ -108,6 +108,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get biometricAuthSuccessful => 'Biometric authentication successful';
 
   @override
+  String get biometricAuthRequiresSession =>
+      'No saved session found. Please sign in with your phone number first.';
+
+  @override
   String get pleaseEnterPhone => 'Please enter your phone number';
 
   @override

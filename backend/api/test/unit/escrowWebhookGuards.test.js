@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { dbMock } = vi.hoisted(() => ({
-  dbMock: { supabaseAdmin: { from: vi.fn() } },
+  dbMock: { supabaseAdmin: { from: vi.fn(), rpc: vi.fn().mockResolvedValue({ data: null, error: null }) } },
 }));
 
 vi.mock('../../src/config/db.js', () => ({
