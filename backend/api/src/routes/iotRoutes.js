@@ -168,7 +168,8 @@ router.post('/telemetry/:id', telemetryHistoryLimiter, authenticate, validatePar
           load_id: loadId,
           temperature,
           target_temperature_min: load.target_temperature_min,
-          target_temperature_max: load.target_temperature_max
+          target_temperature_max: load.target_temperature_max,
+          cold_chain_alert: true
         }
       }).catch(err => logger.error({ event: 'IOT_NOTIFICATION_ERROR', requestId: req.requestId || req.id, error: err && (err.message || String(err)) }, 'Failed to send temperature alert notification'));
     }
