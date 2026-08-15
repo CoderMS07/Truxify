@@ -14,6 +14,9 @@ import 'package:flutter_gen/gen_l10n/app_localizations.dart';
 import 'providers/language_provider.dart';
 import 'services/background_sync_service.dart';
 
+import 'package:provider/provider.dart';
+import 'providers/network_provider.dart';
+
 Future<void> main() async {
   // Ensure Flutter engine is initialized.
   WidgetsFlutterBinding.ensureInitialized();

@@ -19,6 +19,7 @@ import 'providers/text_scale_provider.dart';
 import 'models/app_models.dart';
 import 'theme/app_theme.dart';
 import 'widgets/app_page_route.dart';
+import 'widgets/offline_banner_overlay.dart';
 
 class TruxifyApp extends StatefulWidget {
   const TruxifyApp({super.key, this.languageProvider});
