@@ -20,10 +20,6 @@ spec:
     spec:
       containers:
       - name: api
-<<<<<<< HEAD
-        image: truxify/api:canary
-=======
         image: ghcr.io/kanishjebamathewm/truxify-api:canary
->>>>>>> upstream/main
         ports:
         - containerPort: 5000

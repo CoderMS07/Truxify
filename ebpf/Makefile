@@ -1,24 +1,3 @@
-<<<<<<< HEAD
-CLANG ?= clang
-LLC ?= llc
-BPFTOOL ?= bpftool
-
-TARGET := telemetry_filter
-SRC := $(TARGET).c
-OBJ := $(TARGET).o
-
-CFLAGS := -O2 -target bpf -D__KERNEL__
-
-all: $(OBJ)
-
-$(OBJ): $(SRC)
-	$(CLANG) $(CFLAGS) -c $< -o $@
-
-clean:
-	rm -f $(OBJ)
-
-.PHONY: all clean
-=======
 # Makefile for Truxify eBPF tools compilation
 CC := clang
 CFLAGS := -O2 -target bpf -Wall -g
@@ -39,4 +18,3 @@ kprobe_latency_tracer.o: kprobe_latency_tracer.c
 
 clean:
 	rm -f *.o
->>>>>>> upstream/main
