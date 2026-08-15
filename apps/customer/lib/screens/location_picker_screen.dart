@@ -96,7 +96,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
         _suggestions = suggestions;
       });
     } catch (e) {
-      debugPrint('LocationPickerScreen: $e');
+      debugPrint('LocationPickerScreen searchPlaces: $e');
       if (!mounted) {
         return;
       }
@@ -136,7 +136,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
         _selectedAddress = resolvedAddress;
       });
     } catch (e) {
-      debugPrint('LocationPickerScreen: $e');
+      debugPrint('LocationPickerScreen resolveAddress: $e');
       if (!mounted) {
         return;
       }
