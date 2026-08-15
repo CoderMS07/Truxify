@@ -67,7 +67,8 @@ class _PastTripsScreenState extends State<PastTripsScreen> {
 
     try {
       final result = await _tripService.fetchTripHistory(limit: 20, status: 'completed');
-      final tripsList = result['trips'] as List<Map<String, dynamic>>;
+      final tripsList =
+          (result['trips'] as List?)?.cast<Map<String, dynamic>>() ?? [];
 
       if (!mounted) return;
       setState(() {
@@ -99,7 +100,8 @@ class _PastTripsScreenState extends State<PastTripsScreen> {
         limit: 20,
         status: 'completed',
       );
-      final newTrips = result['trips'] as List<Map<String, dynamic>>;
+      final newTrips =
+          (result['trips'] as List?)?.cast<Map<String, dynamic>>() ?? [];
 
       if (!mounted) return;
       setState(() {
