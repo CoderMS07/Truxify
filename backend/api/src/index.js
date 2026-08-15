@@ -795,6 +795,7 @@ async function shutdown(signal) {
   stopDevicePruningWorker()
   stopWithdrawalSettlementWorker()
   stopOutboxRelayWorker()
+  stopDevicePruningWorker()
   fraudDetection.destroy()
   CacheManager.shutdown()
 
