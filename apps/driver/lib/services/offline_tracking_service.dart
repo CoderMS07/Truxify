@@ -11,7 +11,9 @@ class OfflineTrackingService {
 
   void recordLocation(double lat, double lon, double speedMph) {
     // Mock geohash generation (simplified for mock purposes)
-    final mockGeohash = 'dp3w${(lat * 100).toInt() % 100}'; 
+    final latPart = (lat * 10000).toInt() % 100000;
+    final lonPart = (lon * 10000).toInt() % 100000;
+    final mockGeohash = 'dp3w${latPart}_$lonPart';
     
     final loc = GeohashLocation(
       geohash: mockGeohash,
