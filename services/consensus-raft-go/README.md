@@ -9,6 +9,7 @@ This directory contains the **Go Raft Distributed Consensus Engine** designed fo
 - **Distributed State Machine**: Guarantees linearizable order state transitions (`CREATED` $\rightarrow$ `DISPATCHED` $\rightarrow$ `COMPLETED`) across multi-cloud regions.
 - **Leader Election & Heartbeats**: Nodes start as `FOLLOWER`, campaign for leadership via `RequestVote` RPCs, and keep leadership with `AppendEntries` heartbeats and term bumps (Raft paper §5).
 - **Atomic Log Replication**: Appends transactional state transition entries into an append-only WAL log and replicates them to a quorum of followers (AppendEntries + `nextIndex`/`matchIndex` tracking) before advancing `CommitIndex`. `/commit` returns success only once the entry is replicated to a quorum and committed.
+- **Durable State**: `currentTerm`, `votedFor`, and the log are persisted to an append-only state file (`RAFT_STATE_PATH`) and fsynced before any vote is granted or any entry is acknowledged as replicated, so a restart resumes exactly where the node left off instead of silently resetting consensus state (Raft §3.5).
 - **Quorum-Aware Health**: `/api/v1/raft/status` reports `HEALTHY_CLUSTER` only when a leader has a *live* quorum — a majority of peers that have acknowledged a recent AppendEntries round; `NO_LEADER`, `ELECTION_IN_PROGRESS`, and `UNHEALTHY_CLUSTER` are reported otherwise. `matchIndex` is never seeded optimistically after an election: it is learned only from real AppendEntries acknowledgements (Raft §5.3).
 
 ---
@@ -36,6 +37,7 @@ This directory contains the **Go Raft Distributed Consensus Engine** designed fo
 | `RAFT_ELECTION_TIMEOUT_MIN_MS` | `500` | Lower bound of the randomized election timeout. |
 | `RAFT_ELECTION_TIMEOUT_MAX_MS` | `1200` | Upper bound of the randomized election timeout. |
 | `RAFT_API_KEY` | — | Shared service-to-service API key required on every endpoint. When unset, authenticated requests are rejected (`503`). |
+| `RAFT_STATE_PATH` | *(none — in-memory)* | File path for the append-only raft state WAL. When set, `currentTerm`, `votedFor`, and the log are persisted to and recovered from this file on startup (before the consensus loop starts); when empty, state stays in memory only. Point it at a persistent volume in production. |
 | `RAFT_ALLOWED_COMMANDS` | `CREATED,DISPATCHED,IN_TRANSIT,DELIVERED,COMPLETED,CANCELLED` | Comma-separated allow-list of order commands accepted by `/commit`. |
 
 ---

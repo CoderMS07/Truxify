@@ -323,6 +323,11 @@ func (rn *RaftNode) stepDownLocked(term uint64) {
 		rn.Role = Follower
 	}
 	rn.lastLeaderSeen = time.Now()
+	// A higher term must be durable before any request in it is acknowledged;
+	// otherwise a restart would return to the stale lower term (Raft §3.5).
+	if err := rn.persistTermLocked(term, ""); err != nil {
+		log.Printf("⚠️ node [%s] failed to persist term %d: %v", rn.NodeID, term, err)
+	}
 }
 
 // startElection campaigns for leadership: bump term, vote for self, and
@@ -341,6 +346,17 @@ func (rn *RaftNode) startElection() {
 	rn.LeaderID = ""
 	rn.electionStarted = time.Now()
 	rn.electionTimeout = rn.randomElectionTimeout()
+
+	// Persist the term and the self-vote before requesting votes: a node must
+	// never campaign in a term that is not durable (Raft §3.5).
+	if err := rn.persistTermLocked(term, rn.VotedFor); err != nil {
+		rn.Role = Follower
+		rn.VotedFor = ""
+		rn.CurrentTerm--
+		log.Printf("⚠️ node [%s] failed to persist election state for term %d: %v", rn.NodeID, term, err)
+		rn.mu.Unlock()
+		return
+	}
 
 	req := RequestVoteRequest{
 		Term:         rn.CurrentTerm,
@@ -821,10 +837,13 @@ func (rn *RaftNode) appendLogFromLeaderLocked(req AppendEntriesRequest) bool {
 			return false
 		}
 	}
+	origLen := len(rn.Log)
+	var appended []LogEntry
 	for i, e := range req.Entries {
 		idx := int(req.PrevLogIndex) + 1 + i
 		if idx <= len(rn.Log) {
 			if rn.Log[idx-1].Term != e.Term {
+				appended = req.Entries[i:]
 				rn.Log = rn.Log[:idx-1]
 				rn.Log = append(rn.Log, req.Entries[i:]...)
 				if err := rn.persister.SaveLog(rn.Log); err != nil {
@@ -839,6 +858,17 @@ func (rn *RaftNode) appendLogFromLeaderLocked(req AppendEntriesRequest) bool {
 			}
 			return true
 		}
+	}
+	if len(appended) == 0 {
+		return true
+	}
+	// Make the appended entries durable before acknowledging them; if that
+	// fails, roll the log back so we never acknowledge entries that are only
+	// volatile (Raft §3.5).
+	if err := rn.persistEntriesLocked(appended); err != nil {
+		rn.Log = rn.Log[:origLen]
+		log.Printf("⚠️ node [%s] failed to persist %d replicated entries: %v", rn.NodeID, len(appended), err)
+		return false
 	}
 	return true
 }
@@ -1088,6 +1118,13 @@ func main() {
 	}
 
 	node := NewRaftNode(nodeID, peers, peerURLs)
+
+	if statePath := os.Getenv("RAFT_STATE_PATH"); statePath != "" {
+		if err := node.recoverFromWAL(statePath); err != nil {
+			log.Fatalf("Fatal consensus storage error: %v", err)
+		}
+		log.Printf("💾 node [%s] recovered raft state from %s (log length %d, term %d)", nodeID, statePath, len(node.Log), node.CurrentTerm)
+	}
 
 	http.HandleFunc("/api/v1/raft/status", node.HandleStatus)
 	http.HandleFunc("/api/v1/raft/commit", node.HandleCommitOrder)
