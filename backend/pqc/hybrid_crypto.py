@@ -1,6 +1,7 @@
 import json
 import hashlib
 import time
+import struct
 from datetime import datetime
 from typing import Dict
 import numpy as np
@@ -106,6 +107,15 @@ class HybridCrypto:
     def hybrid_encrypt(self, data: bytes, hybrid_key: Dict) -> Dict:
         """Encrypt using hybrid approach"""
         try:
+            # RSA-2048/OAEP-SHA256 max plaintext = 256 - 2*32 - 2 = 190 bytes.
+            # Reserve 4 bytes for length prefix + 32 bytes for quantum_secret = 154 bytes max data.
+            MAX_DATA_BYTES = 154
+            if len(data) > MAX_DATA_BYTES:
+                raise ValueError(
+                    f"Payload too large: {len(data)} bytes (max {MAX_DATA_BYTES} for RSA-2048 OAEP). "
+                    "Chunk large payloads or use a hybrid scheme with symmetric encryption."
+                )
+
             # Generate quantum shared secret
             quantum_ciphertext, quantum_secret = self.kyber.encapsulate(
                 hybrid_key['quantum']['public']
@@ -162,7 +172,7 @@ class HybridCrypto:
                 quantum_ciphertext,
                 hybrid_key['quantum']['private']
             )
-            
+
             # Decrypt data
             decrypted = hybrid_key['classical']['private'].decrypt(
                 base64.b64decode(ciphertext['encrypted_data']),
