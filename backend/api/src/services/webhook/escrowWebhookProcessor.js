@@ -113,25 +113,78 @@ async function verifyPolygonTransactionReceipt(txHash) {
   return receipt;
 }
 
-// Asserts the on-chain release transferred exactly the escrowed amount to the
-// driver's wallet. `receipt.value` is denominated in wei (a bigint from ethers),
-// while `order.escrow_amount_wei` is persisted as a string/number — both are
-// normalized to BigInt before comparison. Binding the receipt value to the
-// order prevents a misrouted/partial event from triggering a full payout.
-function assertReceiptAmount(receipt, order) {
+// Escrow contract events that carry the released/refunded amount. For
+// contract-initiated payouts (releasePayment / cancelBooking /
+// cancelWithPenalty / resolveDispute) the relayer's `msg.value` is `0` and
+// ethers v6 does not even populate a `value` field on the TransactionReceipt —
+// so the moved wei MUST be read from the contract's emitted event logs, never
+// from `receipt.value`.
+const ESCROW_AMOUNT_EVENTS = new ethers.Interface([
+  'event PaymentReleased(uint256 indexed bookingId, address indexed driver, uint256 amount)',
+  'event BookingCancelled(uint256 indexed bookingId, address indexed customer, uint256 refundAmount)',
+  'event WithdrawalReady(uint256 indexed bookingId, address indexed recipient, uint256 amount)',
+  'event CancellationPenaltyApplied(uint256 indexed bookingId, address indexed driver, uint256 driverAmount, address indexed customer, uint256 refundAmount)',
+  'event DisputeResolved(uint256 indexed bookingId, address indexed driver, uint256 driverAmount, address indexed customer, uint256 refundAmount)',
+]);
+
+// Reads the on-chain released/refunded amount for a given webhook event type
+// from the escrow contract's emitted event logs. Returns null when no matching
+// event is present (e.g. a malformed or off-contract receipt).
+function extractEscrowEventAmount(receipt, eventType) {
+  const escrowAddress = process.env.ESCROW_CONTRACT_ADDRESS;
+  const logs = receipt.logs || [];
+  let matched = null;
+
+  for (const log of logs) {
+    if (escrowAddress && log.address && String(log.address).toLowerCase() !== String(escrowAddress).toLowerCase()) {
+      continue;
+    }
+    let parsed;
+    try {
+      parsed = ESCROW_AMOUNT_EVENTS.parseLog(log);
+    } catch {
+      continue;
+    }
+    if (!parsed) {
+      continue;
+    }
+    const { name, args } = parsed;
+    if (eventType === 'PaymentReleased' && name === 'PaymentReleased') {
+      matched = (matched == null ? 0n : matched) + BigInt(args.amount);
+    } else if (eventType === 'BookingCancelled') {
+      if (name === 'BookingCancelled') {
+        matched = (matched == null ? 0n : matched) + BigInt(args.refundAmount);
+      } else if (name === 'CancellationPenaltyApplied' || name === 'DisputeResolved') {
+        matched = (matched == null ? 0n : matched) + BigInt(args.driverAmount) + BigInt(args.refundAmount);
+      }
+    } else if ((eventType === 'WithdrawalReady' || eventType === 'Withdrawn') && name === 'WithdrawalReady') {
+      matched = (matched == null ? 0n : matched) + BigInt(args.amount);
+    }
+  }
+
+  return matched;
+}
+
+// Asserts the on-chain release/refund transferred exactly the escrowed amount.
+// The amount is taken from the escrow contract's emitted event logs (which
+// carry the actual moved wei) rather than `receipt.value` — the latter is the
+// transaction's `msg.value`, which is `0` for contract-initiated payouts.
+// Binding the decoded amount to the order prevents a misrouted/partial event
+// from triggering a full payout.
+function assertReceiptAmount(receipt, order, eventType) {
   if (order.escrow_amount_wei == null) {
     return;
   }
-  if (receipt.value == null) {
+  const actual = extractEscrowEventAmount(receipt, eventType);
+  if (actual == null) {
     throw new Error(
-      `Polygon receipt for ${order.order_display_id} is missing a transferred value — cannot bind release to escrow amount`
+      `Polygon receipt for ${order.order_display_id} carries no ${eventType} amount in its escrow event logs — cannot bind release to escrow amount`
     );
   }
   const expected = BigInt(order.escrow_amount_wei);
-  const actual = BigInt(receipt.value);
   if (actual !== expected) {
     throw new Error(
-      `Polygon release value ${actual} wei does not match escrow amount ${expected} wei for order ${order.order_display_id}`
+      `Polygon ${eventType} amount ${actual} wei does not match escrow amount ${expected} wei for order ${order.order_display_id}`
     );
   }
 }
@@ -163,7 +216,7 @@ async function handlePaymentReleased(payload) {
   const receipt = await verifyPolygonTransactionReceipt(payload.txHash);
   const order = await findOrderByIdOrDisplayId(payload.orderId);
   assertBookingBinding(payload, order);
-  assertReceiptAmount(receipt, order);
+  assertReceiptAmount(receipt, order, 'PaymentReleased');
   const now = new Date().toISOString();
 
   // Idempotency: a release event is only ever emitted once per booking
@@ -215,6 +268,15 @@ async function handleBookingCancelled(payload) {
     }
     logger.info(`[Webhook] Order ${order.order_display_id} already refunded — duplicate delivery ignored.`);
     return;
+  }
+
+  // Verify the on-chain cancellation/refund actually moved the escrow amount.
+  // Like a payout, a contract-initiated cancel has msg.value === 0, so the
+  // released/refunded wei is read from the BookingCancelled /
+  // CancellationPenaltyApplied event logs rather than receipt.value.
+  if (payload.txHash) {
+    const receipt = await verifyPolygonTransactionReceipt(payload.txHash);
+    assertReceiptAmount(receipt, order, 'BookingCancelled');
   }
 
   const { data: updatedOrders, error } = await requireDb()

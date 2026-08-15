@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { ethers as actualEthers } from 'ethers';
 
 vi.mock('../../src/middleware/logger.js', () => ({
   default: {
@@ -9,13 +10,18 @@ vi.mock('../../src/middleware/logger.js', () => ({
 }));
 
 const mockGetTransactionReceipt = vi.fn();
-vi.mock('ethers', () => ({
-  ethers: {
-    JsonRpcProvider: vi.fn(function JsonRpcProvider() {
-      this.getTransactionReceipt = mockGetTransactionReceipt;
-    }),
-  },
-}));
+vi.mock('ethers', async () => {
+  const actual = await vi.importActual('ethers');
+  return {
+    ...actual,
+    ethers: {
+      ...actual.ethers,
+      JsonRpcProvider: vi.fn(function JsonRpcProvider() {
+        this.getTransactionReceipt = mockGetTransactionReceipt;
+      }),
+    },
+  };
+});
 
 
 const mockQuery = {
@@ -25,6 +31,7 @@ const mockQuery = {
   update: vi.fn(function () { return this; }),
   limit: vi.fn(function () { return this; }),
   maybeSingle: vi.fn(),
+  then: (resolve) => resolve({ data: [{ id: 'order-uuid' }], error: null }),
 };
 
 const mockSupabaseAdmin = {
@@ -322,5 +329,130 @@ describe('regression: wallet ledger must not multiply the net credit across driv
     expect(mockQuery.update.mock.calls[walletUpdateIndexes[0]][0]).toEqual(
       expect.objectContaining({ status: 'confirmed' })
     );
+  });
+});
+
+describe('processEscrowWebhookEvent — receipt amount bound to escrow event logs (issue #14709)', () => {
+  // The relayer's `msg.value` is 0 for contract-initiated payouts/cancels, and
+  // ethers v6 does not populate a `value` field on the TransactionReceipt, so
+  // the moved wei must be read from the contract's emitted event logs.
+  const escrowIface = new actualEthers.Interface([
+    'event PaymentReleased(uint256 indexed bookingId, address indexed driver, uint256 amount)',
+    'event BookingCancelled(uint256 indexed bookingId, address indexed customer, uint256 refundAmount)',
+  ]);
+
+  const ESCROW_ADDR = '0xEscrowContract000000000000000000000000001';
+
+  function buildLog(eventName, indexedArgs, nonIndexedArgs) {
+    const fragment = escrowIface.getEvent(eventName);
+    const { data, topics } = escrowIface.encodeEventLog(fragment, [
+      ...indexedArgs,
+      ...nonIndexedArgs,
+    ]);
+    return { address: ESCROW_ADDR, topics, data };
+  }
+
+  function receiptWith(logs, value = 0n) {
+    return { status: 1, to: ESCROW_ADDR, value, logs };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockQuery.maybeSingle.mockReset();
+    process.env.POLYGON_RPC_URL = 'https://polygon-rpc.example';
+    process.env.ESCROW_CONTRACT_ADDRESS = ESCROW_ADDR;
+  });
+
+  it('marks released using the amount carried in the PaymentReleased event log (receipt.value is 0)', async () => {
+    const amountWei = '4000000000000';
+    const order = {
+      id: 'order-uuid',
+      order_display_id: '#OD9',
+      driver_id: 'driver-9',
+      escrow_status: 'funded',
+      escrow_amount_wei: amountWei,
+      release_tx_hash: null,
+      refund_tx_hash: null,
+    };
+    mockQuery.maybeSingle.mockResolvedValue({ data: order, error: null });
+    mockGetTransactionReceipt.mockResolvedValue(
+      receiptWith([buildLog('PaymentReleased', [1n, '0x0000000000000000000000000000000000000009'], [BigInt(amountWei)])])
+    );
+
+    await expect(
+      processEscrowWebhookEvent('PaymentReleased', { orderId: '#OD9', txHash: '0xabc', escrow_booking_id: '1' })
+    ).resolves.toEqual({ received: true });
+
+    expect(mockQuery.update).toHaveBeenCalledWith(expect.objectContaining({
+      escrow_status: 'released',
+      release_tx_hash: '0xabc',
+    }));
+  });
+
+  it('marks refunded using the amount carried in the BookingCancelled event log (receipt.value is 0)', async () => {
+    const amountWei = '4000000000000';
+    const order = {
+      id: 'order-uuid',
+      order_display_id: '#OD10',
+      driver_id: null,
+      escrow_status: 'refund_pending',
+      escrow_amount_wei: amountWei,
+      release_tx_hash: null,
+      refund_tx_hash: null,
+    };
+    mockQuery.maybeSingle.mockResolvedValue({ data: order, error: null });
+    mockGetTransactionReceipt.mockResolvedValue(
+      receiptWith([buildLog('BookingCancelled', [2n, '0x000000000000000000000000000000000000000A'], [BigInt(amountWei)])])
+    );
+
+    await expect(
+      processEscrowWebhookEvent('BookingCancelled', { orderId: '#OD10', txHash: '0xdef', escrow_booking_id: '2' })
+    ).resolves.toEqual({ received: true });
+
+    expect(mockQuery.update).toHaveBeenCalledWith(expect.objectContaining({
+      escrow_status: 'refunded',
+      refund_tx_hash: '0xdef',
+    }));
+  });
+
+  it('throws when the event-log amount does not match the escrow amount', async () => {
+    const order = {
+      id: 'order-uuid',
+      order_display_id: '#OD11',
+      driver_id: 'driver-11',
+      escrow_status: 'funded',
+      escrow_amount_wei: '4000000000000',
+      release_tx_hash: null,
+      refund_tx_hash: null,
+    };
+    mockQuery.maybeSingle.mockResolvedValue({ data: order, error: null });
+    mockGetTransactionReceipt.mockResolvedValue(
+      receiptWith([buildLog('PaymentReleased', [3n, '0x000000000000000000000000000000000000000B'], [123n])])
+    );
+
+    await expect(
+      processEscrowWebhookEvent('PaymentReleased', { orderId: '#OD11', txHash: '0xabc', escrow_booking_id: '3' })
+    ).rejects.toThrow('does not match escrow amount');
+  });
+
+  it('throws when the receipt carries no escrow event log for the release', async () => {
+    const order = {
+      id: 'order-uuid',
+      order_display_id: '#OD12',
+      driver_id: 'driver-12',
+      escrow_status: 'funded',
+      escrow_amount_wei: '4000000000000',
+      release_tx_hash: null,
+      refund_tx_hash: null,
+    };
+    mockQuery.maybeSingle.mockResolvedValue({ data: order, error: null });
+    // No logs at all (and receipt.value is 0 / undefined) — the old code keyed
+    // off receipt.value and would always fail here; the new code expects the
+    // correct amount in the event log.
+    mockGetTransactionReceipt.mockResolvedValue(receiptWith([], 0n));
+
+    await expect(
+      processEscrowWebhookEvent('PaymentReleased', { orderId: '#OD12', txHash: '0xabc', escrow_booking_id: '4' })
+    ).rejects.toThrow('carries no PaymentReleased amount');
   });
 });
