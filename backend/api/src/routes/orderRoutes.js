@@ -1225,7 +1225,7 @@ router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requirePolicy(
 });
 
 // POST /api/orders/:id/ratings - customer submits rating for a driver
-router.post('/:id/ratings', authenticate, userLimiter, validateParams(paramIdSchema), validateBody(submitRatingSchema), async (req, res) => {
+router.post('/:id/ratings', authenticate, userLimiter, requirePolicy('order:submit-rating'), validateParams(paramIdSchema), validateBody(submitRatingSchema), async (req, res) => {
   try {
     const { stars, comment } = req.body;
     const result = await orderLifecycleService.submitRating(req.params.id, req.user.id, stars, comment, createUserClient(req.token));
@@ -1236,21 +1236,6 @@ router.post('/:id/ratings', authenticate, userLimiter, validateParams(paramIdSch
     }
     logger.error('Rating submission error:', err);
     return res.status(500).json({ error: 'Failed to submit rating.' });
-  }
-});
-
-// POST /api/orders/:id/bids - driver submits bid on a load offer
-router.post('/:id/bids', authenticate, requireRole(['driver']), bidLimiter, validateParams(paramIdSchema), validateBody(submitBidSchema), async (req, res) => {
-  try {
-    const { bid_amount } = req.body;
-    const result = await orderLifecycleService.submitBid(req.params.id, req.user.id, bid_amount);
-    return res.json(result);
-  } catch (err) {
-    if (err instanceof DomainError) {
-      return res.status(err.status).json(err.payload);
-    }
-    logger.error('Bid submission error:', err);
-    return res.status(500).json({ error: 'Failed to submit bid.' });
   }
 });
 
