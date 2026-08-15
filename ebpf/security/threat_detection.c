@@ -78,7 +78,7 @@ int trace_file_access(struct trace_event_raw_sys_enter *args)
     if (bpf_probe_read_user_str(filename, sizeof(filename), (void *)(long)args->args[1]) < 0) {
         return 0;
     }
-    
+
     // Check for sensitive files
     struct {
         const char *path;
@@ -90,13 +90,13 @@ int trace_file_access(struct trace_event_raw_sys_enter *args)
         { "/root/.ssh/id_rsa", 17 },
         { "/etc/ssl/private/", 17 }
     };
-    
+
     for (int i = 0; i < 5; i++) {
         if (str_has_prefix(filename, sensitive_files[i].path, sensitive_files[i].len)) {
             bpf_printk("Sensitive file access: %s\n", filename);
         }
     }
-    
+
     return 0;
 }
 
@@ -110,7 +110,7 @@ int trace_process_exec(struct trace_event_raw_sys_enter *args)
     if (bpf_probe_read_user_str(filename, sizeof(filename), (void *)(long)args->args[0]) < 0) {
         return 0;
     }
-    
+
     // Check for suspicious processes
     struct {
         const char *name;
@@ -122,13 +122,13 @@ int trace_process_exec(struct trace_event_raw_sys_enter *args)
         { "python -c", 9 }, { "perl -e", 7 },
         { "bash -i", 7 }, { "sh -i", 5 }
     };
-    
+
     for (int i = 0; i < 12; i++) {
         if (str_contains(filename, sizeof(filename), suspicious_processes[i].name, suspicious_processes[i].len)) {
             bpf_printk("Suspicious process: %s\n", filename);
         }
     }
-    
+
     return 0;
 }
 
@@ -171,13 +171,13 @@ int trace_network_connect(struct trace_event_raw_sys_enter *args)
         6667, // IRC
         1337  // Common backdoor port
     };
-    
+
     for (int i = 0; i < 9; i++) {
         if (port == suspicious_ports[i]) {
             bpf_printk("Suspicious connection attempt on port: %d\n", port);
         }
     }
-    
+
     return 0;
 }
 
@@ -186,12 +186,12 @@ SEC("tracepoint/syscalls/sys_enter_setuid")
 int trace_setuid(struct trace_event_raw_sys_enter *args)
 {
     __u32 uid = (__u32)args->args[0];
-    
+
     // Check for root escalation
     if (uid == 0) {
         bpf_printk("Potential privilege escalation to root\n");
     }
-    
+
     return 0;
 }
 
@@ -212,7 +212,7 @@ int trace_file_rename(struct trace_event_raw_sys_enter *args)
     }
 
     bpf_printk("File renamed: %s -> %s\n", oldpath, newpath);
-    
+
     return 0;
 }
 
@@ -222,10 +222,10 @@ int trace_process_exit(struct trace_event_raw_sched_process_exit *args)
 {
     __u32 pid = args->pid;
     __u32 exit_code = args->exit_code;
-    
+
     if (exit_code != 0) {
         bpf_printk("Process %d exited with code %d\n", pid, exit_code);
     }
-    
+
     return 0;
 }
