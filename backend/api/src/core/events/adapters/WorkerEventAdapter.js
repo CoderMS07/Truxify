@@ -37,23 +37,27 @@ export class WorkerEventAdapter extends EventPublisher {
   }
 
   registerWorker(name, worker) {
+    const boundHandler = (message) => {
+      if (message && message.eventType) {
+        const event = {
+          metadata: {
+            eventType: message.eventType,
+            source: `worker:${name}`,
+            timestamp: new Date().toISOString(),
+            ...message.metadata,
+          },
+          payload: message.payload || message,
+        };
+        this._emitWorkerEvent(name, event);
+      }
+    };
+
     this._workers.set(name, worker);
+    this._workerListeners = this._workerListeners || new Map();
+    this._workerListeners.set(name, boundHandler);
 
     if (worker.on) {
-      worker.on('message', (message) => {
-        if (message && message.eventType) {
-          const event = {
-            metadata: {
-              eventType: message.eventType,
-              source: `worker:${name}`,
-              timestamp: new Date().toISOString(),
-              ...message.metadata,
-            },
-            payload: message.payload || message,
-          };
-          this._emitWorkerEvent(name, event);
-        }
-      });
+      worker.on('message', boundHandler);
     }
 
     logger.info(`[WorkerEventAdapter] Worker "${name}" registered`);
@@ -61,8 +65,17 @@ export class WorkerEventAdapter extends EventPublisher {
   }
 
   removeWorker(name) {
+    const worker = this._workers.get(name);
+    const handler = this._workerListeners?.get(name);
+
+    // Remove event listener to prevent memory leaks
+    if (worker?.off && handler) {
+      worker.off('message', handler);
+    }
+
     this._workers.delete(name);
     this._messageHandlers.delete(name);
+    this._workerListeners?.delete(name);
     return this;
   }
 
