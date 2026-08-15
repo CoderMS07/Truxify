@@ -145,7 +145,7 @@ export async function findHandoffCandidates({
         .eq('is_active', true)
         .limit(limit * 4);
       if (qErr) {
-        throw new DomainError(503, { error: 'Failed to query nearby drivers.', details: qErr.message });
+        throw new new DomainError(503, { error: 'Failed to query nearby drivers.', details: qErr.message });
       }
       drivers = (onlineDrivers || [])
         .map((d) => ({
