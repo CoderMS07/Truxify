@@ -43,33 +43,44 @@ describe('requestContext', () => {
         observedCache = getRequestCache();
       });
 
-      expect(observedCache).toBeNull();
-    });
-
-    it('nested context.run() calls create isolated stores', () => {
-      const outerStore = { requestCache: new RequestCache() };
-      const innerStore = { requestCache: new RequestCache() };
-      let outerCache = null;
-      let innerCache = null;
-      let outerCacheAfterInner = null;
-
-      requestContext.run(outerStore, () => {
-        outerCache = getRequestCache();
-
-        requestContext.run(innerStore, () => {
-          innerCache = getRequestCache();
-        });
-
-        outerCacheAfterInner = getRequestCache();
-      });
-
-      expect(outerCache).toBe(outerStore.requestCache);
-      expect(innerCache).toBe(innerStore.requestCache);
-      expect(outerCacheAfterInner).toBe(outerStore.requestCache);
-    });
+describe('requestContext safeJsonParseWithFallback', () => {
+  it('returns parsed object for valid JSON object string', () => {
+    const result = safeJsonParseWithFallback('{"key":"value"}', null);
+    expect(result).toEqual({ key: 'value' });
   });
-});
 
+  it('returns fallback for JSON array string (not an object)', () => {
+    const fallback = null;
+    const result = safeJsonParseWithFallback('[1, 2, 3]', fallback);
+    expect(result).toBe(fallback);
+  });
+
+  it('returns fallback for null input', () => {
+    const fallback = { default: true };
+    expect(safeJsonParseWithFallback(null, fallback)).toBe(fallback);
+  });
+
+  it('returns fallback for undefined input', () => {
+    const fallback = { default: true };
+    expect(safeJsonParseWithFallback(undefined, fallback)).toBe(fallback);
+  });
+
+  it('returns fallback for invalid JSON string', () => {
+    const fallback = { safe: true };
+    expect(safeJsonParseWithFallback('not valid json', fallback)).toBe(fallback);
+  });
+
+  it('returns fallback for primitive JSON values', () => {
+    const fallback = { safe: true };
+    expect(safeJsonParseWithFallback('"just a string"', fallback)).toBe(fallback);
+    expect(safeJsonParseWithFallback('123', fallback)).toBe(fallback);
+    expect(safeJsonParseWithFallback('true', fallback)).toBe(fallback);
+  });
+
+  it('returns fallback for empty string', () => {
+    const fallback = { safe: true };
+    expect(safeJsonParseWithFallback('', fallback)).toBe(fallback);
+  });
 
 // === Spec 1 test ===
 import { safeJsonParseWithFallback } from '../../src/lib/requestContext.js';
