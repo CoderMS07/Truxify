@@ -279,7 +279,7 @@ func NewRaftNode(id string, peers []string, peerURLs []string) *RaftNode {
 		electionTimeout:    time.Duration(electionMinMs) * time.Millisecond,
 		nextIndex:          make(map[string]uint64),
 		matchIndex:         make(map[string]uint64),
-		liveAck:            make(map[string]bool),
+		peerLive:           make(map[string]bool),
 		httpClient:         &http.Client{Timeout: 500 * time.Millisecond},
 		rng:                rand.New(rand.NewSource(rand.Int63())),
 	}
@@ -363,10 +363,11 @@ func (rn *RaftNode) startElection() {
 		CandidateID:  rn.NodeID,
 		LastLogIndex: rn.lastLogIndex(),
 		LastLogTerm:  rn.lastLogTerm(),
-	}
-	rn.mu.Unlock()
+		}
+		rn.persistMeta()
+		rn.mu.Unlock()
 
-	// Perform outbound HTTP RPC requests without holding rn.mu to avoid deadlocks
+		// Perform outbound HTTP RPC requests without holding rn.mu to avoid deadlocks
 	responses := rn.requestVotes(req)
 
 	rn.mu.Lock()
@@ -399,9 +400,11 @@ func (rn *RaftNode) startElection() {
 		// already proves a reachable quorum (issue #13975).
 		rn.nextIndex = make(map[string]uint64, len(rn.PeerURLs))
 		rn.matchIndex = make(map[string]uint64, len(rn.PeerURLs))
-		rn.liveAck = make(map[string]bool, len(rn.PeerURLs))
+		rn.peerLive = make(map[string]bool, len(rn.PeerURLs))
 		for _, url := range rn.PeerURLs {
 			rn.nextIndex[url] = rn.lastLogIndex() + 1
+			// Seed matchIndex to 0 on election per Raft spec; let sendHeartbeats'
+			// existing monotonic update learn the true match index.
 			rn.matchIndex[url] = 0
 			// Winning the election proves a quorum of peers is reachable: they
 			// responded to RequestVote. Seed liveAck optimistically so a fresh
@@ -626,7 +629,7 @@ func (rn *RaftNode) sendHeartbeats() {
 			return
 		}
 		if res.resp.Success {
-			rn.liveAck[res.url] = true
+			rn.peerLive[res.url] = true
 			// Follower accepted the prefix; monotonically record highest matching index.
 			newMatch := res.request.PrevLogIndex + uint64(len(res.request.Entries))
 			if newMatch > rn.matchIndex[res.url] {
@@ -699,8 +702,8 @@ func (rn *RaftNode) advanceCommitIndexLocked() {
 // instead of accepting /commit entries it cannot replicate.
 func (rn *RaftNode) leaderHasLiveQuorumLocked() bool {
 	acked := 1 // self
-	for _, url := range rn.PeerURLs {
-		if rn.liveAck[url] {
+	for url, m := range rn.matchIndex {
+		if rn.peerLive[url] && m >= rn.CommitIndex {
 			acked++
 		}
 	}
@@ -803,6 +806,7 @@ func (rn *RaftNode) HandleVote(w http.ResponseWriter, r *http.Request) {
 
 	if req.Term > rn.CurrentTerm {
 		rn.stepDownLocked(req.Term)
+		rn.persistMeta()
 	}
 
 	if req.Term == rn.CurrentTerm &&
@@ -814,6 +818,7 @@ func (rn *RaftNode) HandleVote(w http.ResponseWriter, r *http.Request) {
 		}
 		rn.lastLeaderSeen = time.Now()
 		resp.VoteGranted = true
+		rn.persistMeta()
 	}
 
 	resp.Term = rn.CurrentTerm
@@ -850,6 +855,7 @@ func (rn *RaftNode) HandleAppend(w http.ResponseWriter, r *http.Request) {
 
 	if req.Term > rn.CurrentTerm {
 		rn.stepDownLocked(req.Term)
+		rn.persistMeta()
 	}
 
 	if req.Term == rn.CurrentTerm {
@@ -861,6 +867,7 @@ func (rn *RaftNode) HandleAppend(w http.ResponseWriter, r *http.Request) {
 		// cannot obtain a second vote.
 		if rn.VotedFor == "" || rn.VotedFor == req.LeaderID {
 			rn.VotedFor = req.LeaderID
+			rn.persistMeta()
 		}
 		if err := rn.persister.SaveState(rn.CurrentTerm, rn.VotedFor); err != nil {
 			log.Printf("raft persist error: %v", err)
