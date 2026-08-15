@@ -137,7 +137,7 @@ describe('OutboxService', () => {
       expect(mockLogger.error).toHaveBeenCalled();
     });
 
-    it('uses maxRetries as the lt threshold for retry_count', async () => {
+    it('uses maxRetries as the lt threshold for attempts', async () => {
       mocks.chain.error = null;
       // Track the .lt call to verify maxRetries is passed correctly.
       const ltValues = [];
@@ -146,7 +146,7 @@ describe('OutboxService', () => {
         return this;
       });
       await outboxService.requeueFailedEvents(7);
-      expect(mocks.chain.lastEq).toEqual(['status', 'failed']);
+      expect(mocks.chain.lastEq).toEqual(['status', 'publishing']);
       expect(ltValues.length).toBeGreaterThan(0);
     });
   });
