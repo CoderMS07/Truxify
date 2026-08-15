@@ -22,8 +22,11 @@ import { supabaseAdmin } from '../../config/db.js';
 import { DomainError } from './domainError.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 import { hashOtp, verifyOtpHash } from '../../lib/otpHashing.js';
+import { haversineKm } from '../../lib/pricing.js';
 import logger from '../../middleware/logger.js';
 import { sendPushNotification } from '../notificationService.js';
+
+export { haversineKm } from '../../lib/pricing.js';
 
 export { DomainError } from './domainError.js';
 
@@ -68,22 +71,6 @@ function toIso(date) {
 
 function hoursAhead(hours) {
   return new Date(Date.now() + hours * 60 * 60 * 1000);
-}
-
-/**
- * Haversine distance in km between two lat/lng points. Used for ranking
- * candidate handoff drivers and for sanity-checking the requested cross-dock
- * point; not authoritative for routing.
- */
-export function haversineKm(lat1, lng1, lat2, lng2) {
-  const toRad = (d) => (d * Math.PI) / 180;
-  const R = 6371;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
 /**
