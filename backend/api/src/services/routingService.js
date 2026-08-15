@@ -110,6 +110,9 @@ export async function optimizeWaypoints(start, end, waypoints, departureDate, de
 }
 
 export function getHaversineDistance(lat1, lon1, lat2, lon2) {
+  if (!Number.isFinite(lat1) || !Number.isFinite(lon1) || !Number.isFinite(lat2) || !Number.isFinite(lon2)) {
+    return null;
+  }
   const R = 6371; // km
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
@@ -155,14 +158,20 @@ export function optimizeLtlRoute(driverLat, driverLng, tasks) {
 
     for (const task of tasks) {
       if (visited.has(task.id)) continue;
-      
+
       // Enforce precedence: cannot visit dropoff if pickup is not completed
       if (task.type === 'dropoff' && !pickedUpOrders.has(task.orderId)) {
         continue;
       }
 
+      // Skip tasks with null or non-finite coordinates
+      if (!Number.isFinite(task.lat) || !Number.isFinite(task.lng)) {
+        continue;
+      }
+
       const dist = getHaversineDistance(currentLat, currentLng, task.lat, task.lng);
-      if (dist < minDistance) {
+      // dist can be null if driver coordinates are non-finite
+      if (dist !== null && dist < minDistance) {
         minDistance = dist;
         nearestTask = task;
       }
