@@ -6,8 +6,27 @@ import { supabase } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 import logger from '../middleware/logger.js';
+import { predictEta } from '../services/ml.js';
+import { haversineKm } from '../lib/pricing.js';
 
 const router = express.Router();
+
+function parseCoord(value, min, max) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= min && n <= max ? n : null;
+}
+
+// Sanitize a trip identifier before interpolating it into a PostgREST `.or()`
+// filter. The filter grammar treats `)`, `,`, quotes and whitespace as syntax,
+// so an unsanitized value could break out of the intended predicate
+// (injection / malformed query / DoS). Rejects any such characters.
+function sanitizeTripId(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  if (/[,)(\s'"]/.test(trimmed)) return null;
+  return trimmed;
+}
 
 // ============================================================================
 // 1. GET DEMAND HEATMAP
@@ -38,41 +57,26 @@ router.get(
   }
 );
 
-// ============================================================================
-// 2. GET PRICE FORECAST
-// GET /api/ml/price-forecast
-// ============================================================================
-router.get(
-  '/price-forecast',
-  authenticate,
-  userLimiter,
-  cacheMiddleware(600, 'ml_price_forecast', (req) => {
-    const origin = req.query.origin || '';
-    const destination = req.query.destination || '';
-    const date = req.query.date || '';
-    return `${origin}:${destination}:${date}`;
-  }),
-  async (req, res) => {
-    const { origin, destination, date } = req.query;
-    try {
-      const result = await predictPrice({
-        distanceKm: 120,
-        cargoWeightKg: 5000,
-        truckType: 'medium_truck',
-        routeOrigin: origin || '',
-        routeDestination: destination || '',
-        trafficMultiplier: 1.1
-      });
-      return res.json(result);
-    } catch (err) {
-      logger.warn({ err: err.message }, '[ML] Price forecast fallback');
-      // Fallback
-      return res.json({
-        estimated_price: 15000,
-        currency: 'INR',
-        confidence: 0.90,
-        estimatedPricePaisa: 1500000
-      });
+    // Sanitize before interpolating into the PostgREST filter (see sanitizeTripId).
+    const safeTripId = sanitizeTripId(tripId);
+    if (!safeTripId) {
+      return res.status(400).json({ error: 'tripId contains invalid characters.' });
+    }
+
+    // Resolve the trip by primary key or display id, then its linked order for
+    // the drop coordinates that define the remaining route.
+    const { data: trip, error: tripErr } = await supabaseAdmin
+      .from('trips')
+      .select('id, trip_display_id, order_id')
+      .or(`id.eq.${safeTripId},trip_display_id.eq.${safeTripId}`)
+      .maybeSingle();
+
+    if (tripErr) {
+      logger.error('[MlEta] Failed to resolve trip:', tripErr);
+      return res.status(500).json({ error: 'Failed to resolve trip.' });
+    }
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found.' });
     }
   }
 );
