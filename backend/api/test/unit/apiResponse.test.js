@@ -87,4 +87,19 @@ describe('apiResponse helpers', () => {
       expect(result.pagination.limit).toBe(10);
     });
   });
+
+  it('clamps negative page values to 1', () => {
+    const result = paginated([], -5, 10, 0);
+    expect(result.pagination.page).toBe(1);
+    expect(result.pagination.hasNextPage).toBe(false);
+    expect(result.pagination.hasPrevPage).toBe(false);
+  });
+
+  it('clamps NaN page values to 1', () => {
+    const result = paginated([], NaN, 10, 50);
+    expect(result.pagination.page).toBe(1);
+    expect(result.pagination.totalPages).toBe(5);
+    expect(result.pagination.hasNextPage).toBe(true);
+    expect(result.pagination.hasPrevPage).toBe(false);
+  });
 });
