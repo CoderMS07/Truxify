@@ -405,7 +405,24 @@ export class OrderLifecycleService {
   }
 
   async updateMilestone(orderId, milestone, driverId) {
+    const lockKey = `lock:milestone:${orderId}`;
+    const lockValue = await acquireLock(lockKey, 10000);
+    if (!lockValue) {
+      throw new DomainError(409, {
+        error: 'Milestone update already in progress for this order. Please try again.',
+      });
+    }
     return measureExecution('OrderLifecycleService.updateMilestone', async () => {
+      try {
+        return await this._updateMilestoneInner(orderId, milestone, driverId);
+      } finally {
+        await releaseLock(lockKey, lockValue);
+      }
+    });
+  }
+
+  async _updateMilestoneInner(orderId, milestone, driverId) {
+    return measureExecution('OrderLifecycleService.updateMilestoneInner', async () => {
       const milestoneMap = {
         'Arrived at Pickup': 'at_pickup',
         'Goods Loaded': 'picked_up',
