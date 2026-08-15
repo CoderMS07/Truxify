@@ -684,7 +684,7 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
         user_id: customerId,
         title,
         body,
-        notif_type: 'delivery_otp',
+        notif_type: 'order_update',
         // No OTP or OTP-derived value is persisted here: an unsalted digest of
         // a 6-digit code is offline-brute-forceable if the table leaks.
         metadata: { order_display_id: orderDisplayId }
