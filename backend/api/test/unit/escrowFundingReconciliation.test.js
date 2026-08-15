@@ -46,7 +46,7 @@ vi.mock('../../src/lib/redisLock.js', () => ({
 }));
 
 vi.mock('../../src/services/notificationService.js', () => ({
-  sendPushNotification: vi.fn(),
+  sendPushNotification: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock the order repository
