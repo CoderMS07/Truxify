@@ -31,6 +31,10 @@ describe('EscalationHandler', () => {
     });
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   describe('generateAlertId', () => {
     it('generates a 16-char hex string', () => {
       const alert = { type: 'TX_STUCK', driver: 'driver-123' };
