@@ -169,7 +169,7 @@ export async function validateEscrowSetup () {
  * the amount the app records, the amount the customer deposits, and the
  * amount released to the driver can never diverge due to rounding.
  */
-export const PAISA_WEI_SCALE = BigInt(Math.round(ESCROW_MATIC_PER_PAISA * 1e18));
+const PAISA_WEI_SCALE = BigInt(Math.round(ESCROW_MATIC_PER_PAISA * 1e18));
 
 /**
  * Tolerance (in wei) used when comparing amounts that may have been written
@@ -178,7 +178,7 @@ export const PAISA_WEI_SCALE = BigInt(Math.round(ESCROW_MATIC_PER_PAISA * 1e18))
  * by at most ±256 wei for real order sizes (≤ ~250,000 paisa), far below
  * 1 gwei. A tolerance this large can never mask a real under/over-deposit.
  */
-export const ESCROW_AMOUNT_TOLERANCE_WEI = 1_000_000_000n; // 1 gwei
+const ESCROW_AMOUNT_TOLERANCE_WEI = 1_000_000_000n; // 1 gwei
 
 /**
  * Convert an amount in paisa to its equivalent MATIC wei value using the
@@ -204,18 +204,6 @@ export function paisaToMaticWei(paisa) {
     throw new RangeError(`Deposit ${matic} MATIC exceeds safety cap of ${MAX_ESCROW_MATIC} MATIC (${paisa} paisa @ ${ESCROW_MATIC_PER_PAISA} MATIC/paisa)`);
   }
   return maticWei;
-}
-
-/**
- * Convert an amount in wei back to paisa using the canonical scale.
- * Rounding is floored; intended for audit/display, not for authoritative
- * payout math (which must always derive from the integer paisa amount).
- *
- * @param {string|bigint|number} wei - Amount in wei
- * @returns {bigint} Amount in paisa
- */
-export function maticWeiToPaisa(wei) {
-  return BigInt(wei) / PAISA_WEI_SCALE;
 }
 
 /**
@@ -974,16 +962,3 @@ export async function submitEscrowResolveDisputeTimeout (orderDisplayId) {
   })
 }
 export const lockPayment = escrowLockPayment;
-
-
-
-export async function verifyOnChainEscrowBalance(bookingId, expectedWei) {
-  const bookingOnChain = await escrowContract.bookings(bookingId);
-  const onChainAmountBN = BigInt(bookingOnChain.amount.toString());
-  const expectedWeiBN = BigInt(expectedWei);
-  return {
-    valid: onChainAmountBN >= expectedWeiBN,
-    onChainAmount: onChainAmountBN.toString(),
-    expectedAmount: expectedWeiBN.toString()
-  };
-}
