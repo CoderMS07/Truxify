@@ -11,20 +11,10 @@ class RouteDraft {
     required this.stacked,
     required this.fragile,
     required this.requirements,
-    this.pickupDate,
     this.pickupLat,
     this.pickupLng,
     this.dropLat,
     this.dropLng,
-    this.truckType,
-    this.selectedTruckTypes,
-    this.selectedCargoCategories,
-    this.minCapacity,
-    this.maxCapacity,
-    this.materialType,
-    this.requiresRefrigeration,
-    this.targetTemperatureMin,
-    this.targetTemperatureMax,
   });
 
   final String pickup;
@@ -36,20 +26,10 @@ class RouteDraft {
   final bool stacked;
   final bool fragile;
   final List<String> requirements;
-  final DateTime? pickupDate;
   final double? pickupLat;
   final double? pickupLng;
   final double? dropLat;
   final double? dropLng;
-  final String? truckType;
-  final List<String>? selectedTruckTypes;
-  final List<String>? selectedCargoCategories;
-  final double? minCapacity;
-  final double? maxCapacity;
-  final String? materialType;
-  final bool? requiresRefrigeration;
-  final double? targetTemperatureMin;
-  final double? targetTemperatureMax;
 }
 
 class ShipmentCardData {
@@ -77,23 +57,11 @@ class RouteCardData {
     required this.route,
     required this.pickup,
     required this.drop,
-    this.tripCount,
-    this.lastUsedDate,
-    this.pickupLat,
-    this.pickupLng,
-    this.dropLat,
-    this.dropLng,
   });
 
   final String route;
   final String pickup;
   final String drop;
-  final int? tripCount;
-  final String? lastUsedDate;
-  final double? pickupLat;
-  final double? pickupLng;
-  final double? dropLat;
-  final double? dropLng;
 }
 
 class StatCardData {
@@ -111,22 +79,14 @@ class StatCardData {
 class TruckResultData {
   const TruckResultData({
     required this.driver,
-    this.driverId,
     required this.rating,
     required this.truck,
-    this.truckId,
     required this.capacity,
     this.freeSpacePercent = 0,
     required this.price,
     required this.eta,
     this.badge,
     this.badgeColor = Colors.black,
-    this.baseFreight,
-    this.tollEstimate,
-    this.platformFee,
-    this.truckNumber,
-    this.isAiEstimate = false,
-    this.isDigilockerVerified = false,
   });
 
   factory TruckResultData.fromJson(Map<String, dynamic> json) {
@@ -134,21 +94,6 @@ class TruckResultData {
     final priceStr = rawPrice is num
         ? '₹${(rawPrice / 100).round()}'
         : (rawPrice?.toString() ?? '₹0');
-
-    final rawBaseFreight = json['baseFreight'];
-    final baseFreightStr = rawBaseFreight is num
-        ? '₹${(rawBaseFreight / 100).round()}'
-        : null;
-
-    final rawTollEstimate = json['tollEstimate'];
-    final tollEstimateStr = rawTollEstimate is num
-        ? '₹${(rawTollEstimate / 100).round()}'
-        : null;
-
-    final rawPlatformFee = json['platformFee'];
-    final platformFeeStr = rawPlatformFee is num
-        ? '₹${(rawPlatformFee / 100).round()}'
-        : null;
 
     final etaMinutes = json['etaMinutes'];
     final etaStr = etaMinutes != null
@@ -159,40 +104,23 @@ class TruckResultData {
 
     return TruckResultData(
       driver: json['driver'] as String? ?? 'Unknown Driver',
-      driverId: json['driverId'] as String? ?? json['driver_id'] as String?,
       rating: (json['rating'] as num?)?.toDouble() ?? 0.0,
       truck: json['truck'] as String? ?? 'Unknown Truck',
-      truckId: json['truckId'] as String? ?? json['truck_id'] as String?,
       capacity: json['capacity'] as String? ?? '',
       price: priceStr,
       eta: etaStr,
-      badge: json['badge'] as String?,
-      baseFreight: baseFreightStr,
-      tollEstimate: tollEstimateStr,
-      platformFee: platformFeeStr,
-      truckNumber: json['truckNumber'] as String? ?? json['number_plate'] as String?,
-      isAiEstimate: json['isAiEstimate'] as bool? ?? false,
-      isDigilockerVerified: json['isDigilockerVerified'] as bool? ?? false,
     );
   }
 
   final String driver;
-  final String? driverId;
   final double rating;
   final String truck;
-  final String? truckId;
   final String capacity;
   final int freeSpacePercent;
   final String price;
   final String eta;
   final String? badge;
   final Color badgeColor;
-  final String? baseFreight;
-  final String? tollEstimate;
-  final String? platformFee;
-  final String? truckNumber;
-  final bool isAiEstimate;
-  final bool isDigilockerVerified;
 }
 
 class ActiveOrderData {
@@ -223,26 +151,6 @@ class HistoryOrderData {
     required this.driver,
     required this.truckNumber,
     required this.timeline,
-    this.blockchainTxHash,
-    this.baseFare,
-    this.distanceCharge,
-    this.tollCharge,
-    this.platformFee,
-    this.driverPhone,
-    this.goodsType,
-    this.weightTonnes,
-    this.dimensions,
-    this.isStackable,
-    this.isFragile,
-    this.specialRequirements,
-    this.requiresRefrigeration,
-    this.targetTemperatureMin,
-    this.targetTemperatureMax,
-    this.escrowStatus,
-    this.pickupLat,
-    this.pickupLng,
-    this.dropLat,
-    this.dropLng,
   });
 
   final String orderId;
@@ -253,23 +161,6 @@ class HistoryOrderData {
   final String driver;
   final String truckNumber;
   final List<TimelineStepData> timeline;
-  final String? blockchainTxHash;
-  final String? baseFare;
-  final String? distanceCharge;
-  final String? tollCharge;
-  final String? platformFee;
-  final String? driverPhone;
-  final String? goodsType;
-  final String? weightTonnes;
-  final String? dimensions;
-  final bool? isStackable;
-  final bool? isFragile;
-  final String? specialRequirements;
-  final String? escrowStatus;
-  final double? pickupLat;
-  final double? pickupLng;
-  final double? dropLat;
-  final double? dropLng;
 }
 
 class TimelineStepData {
