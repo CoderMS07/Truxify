@@ -28,6 +28,11 @@ const ROUTE_THRESHOLDS = new Map([
 // 2. HELPER & UTILITY FUNCTIONS
 // ==========================================
 
+function parseEnvNumber(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function extractClientIP(req) {
   const forwarded = req.headers['x-forwarded-for'];
   if (forwarded) {
