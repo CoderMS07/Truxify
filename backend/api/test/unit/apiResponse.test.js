@@ -47,7 +47,6 @@ describe('apiResponse helpers', () => {
       const result = error('Server error', 500, undefined);
       expect(result.errors).toBeUndefined();
     });
-  });
 
   describe('paginated', () => {
     it('returns pagination metadata for page 1', () => {
