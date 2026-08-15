@@ -602,6 +602,8 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
       });
     }
 
+    const filteredEvents = events || [];
+
     return res.json({
       trip_id: tripId,
       events: events || [],
