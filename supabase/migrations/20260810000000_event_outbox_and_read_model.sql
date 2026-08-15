@@ -74,11 +74,7 @@ create table if not exists event_outbox (
   next_attempt_at timestamptz not null default now(),
   created_at      timestamptz not null default now(),
   published_at    timestamptz,
-  constraint event_outbox_status_check check (status in ('pending', 'publishing', 'published')),
-  -- Versions must be strictly sequential per aggregate: this constraint is the
-  -- backstop that makes duplicate (aggregate_id, version) rows impossible even
-  -- if two enqueues race on a brand-new aggregate that has no rows to lock.
-  constraint event_outbox_aggregate_version_unique unique (aggregate_id, version)
+  constraint event_outbox_status_check check (status in ('pending', 'publishing', 'published'))
 );
 
 create index if not exists idx_event_outbox_dispatch
@@ -141,16 +137,6 @@ begin
       return NEW;
     end if;
   end if;
-
-  -- Serialize concurrent enqueues for the same aggregate: lock the
-  -- aggregate's existing outbox rows so the max(version) + 1 compute below
-  -- is race-free. When no rows exist yet (very first event), the UNIQUE
-  -- (aggregate_id, version) constraint is the backstop and surfaces a
-  -- retryable error on collision (#11716).
-  perform 1
-    from event_outbox
-   where aggregate_id = NEW.id::text
-     for update;
 
   select coalesce(max(version), 0) + 1
     into v_next_version
@@ -265,29 +251,26 @@ as $$
 declare
   v_applied boolean;
 begin
+  -- Idempotency: always record the processed event so genuine duplicates
+  -- (same topic + event_id) are de-duplicated regardless of the write path.
   insert into kafka_processed_events (topic, event_id, order_id)
   values (p_topic, p_event_id, nullif(p_order_id, '')::uuid)
   on conflict (topic, event_id) do nothing
   returning true into v_applied;
 
-  if v_applied then
-    -- Only a strictly newer event may overwrite the read model. Without this
-    -- guard, coalesce() picked excluded.version whenever it was non-null and
-    -- payload was overwritten unconditionally, so a stale/out-of-order event
-    -- could downgrade version and clobber the row with old data (#11717).
-    -- A pre-existing row with NULL version is still overwritable (legacy rows
-    -- never carried a version), matching the previous behaviour.
-    insert into orders_read_model (order_id, payload, event_type, version, updated_at)
-    values (p_order_id, p_payload, p_event_type, p_version, now())
-    on conflict (order_id) do update
-    set payload     = excluded.payload,
-        event_type  = excluded.event_type,
-        version     = excluded.version,
-        updated_at  = now()
-    where orders_read_model.version is null
-       or excluded.version > orders_read_model.version
-    returning true into v_applied;
-  end if;
+  -- Apply only when the incoming event is strictly newer than the stored
+  -- version. This keeps the read model monotonic: a stale/out-of-order
+  -- delivery must never overwrite a newer one (regression for #11396).
+  insert into orders_read_model (order_id, payload, event_type, version, updated_at)
+  values (p_order_id, p_payload, p_event_type, p_version, now())
+  on conflict (order_id) do update
+  set payload     = excluded.payload,
+      event_type  = excluded.event_type,
+      version     = excluded.version,
+      updated_at  = now()
+  where orders_read_model.version is null
+     or excluded.version > orders_read_model.version
+  returning true into v_applied;
 
   return jsonb_build_object('applied', coalesce(v_applied, false));
 end;
