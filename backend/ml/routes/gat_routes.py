@@ -12,8 +12,10 @@ import os
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/gat", tags=["Graph Attention Networks"])
 
-# Initialize model
-in_features = 64
+# Initialize model. The node-feature dimension is derived from the builder
+# (TrafficGraphBuilder.NODE_FEATURE_DIM == 5) so the model stays aligned with
+# the 5 features get_pytorch_data() actually emits (#13979).
+in_features = TrafficGraphBuilder.NODE_FEATURE_DIM
 hidden_features = 128
 out_features = 32
 num_heads = 8
