@@ -4,6 +4,16 @@ import BlockchainMonitor from './blockchainMonitor.js';
 import AlertRouter, { SEVERITY_LEVELS, ALERT_CHANNELS } from './alertRouter.js';
 import EscalationHandler, { ESCALATION_LEVELS, ESCALATION_THRESHOLDS } from './escalationHandler.js';
 import BlockchainMetrics from './blockchainMetrics.js';
+import {
+  startEventListener,
+  stopEventListener,
+  isEventListenerActive,
+  getLastProcessedBlock,
+  saveLastProcessedBlock,
+  handlePaymentLockedEvent,
+  handlePaymentReleasedEvent,
+  handleDisputeOpenedEvent,
+} from './eventListener.js';
 
 export {
   Multicall3Service,
@@ -16,5 +26,13 @@ export {
   ESCALATION_LEVELS,
   ESCALATION_THRESHOLDS,
   BlockchainMetrics,
+  startEventListener,
+  stopEventListener,
+  isEventListenerActive,
+  getLastProcessedBlock,
+  saveLastProcessedBlock,
+  handlePaymentLockedEvent,
+  handlePaymentReleasedEvent,
+  handleDisputeOpenedEvent,
 };
 
