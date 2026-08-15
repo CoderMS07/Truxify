@@ -1,7 +1,7 @@
 import os from 'os';
 import { supabaseAdmin } from '../config/db.js';
 import { escrowRelease, getEscrowBooking, getEscrowBookingId, resolveExpectedDepositAmount } from './escrow.js';
-import { acquireLock, releaseLock, renewLock, LockAcquisitionError } from '../lib/redisLock.js';
+import { acquireLock, releaseLock, renewLock, withLockRenewal, LockAcquisitionError } from '../lib/redisLock.js';
 import logger from '../middleware/logger.js';
 
 /**
@@ -31,7 +31,7 @@ import logger from '../middleware/logger.js';
 const DEFAULT_INTERVAL_MS = 60_000;
 const GLOBAL_LOCK_KEY = 'escrow:release:reconciliation:lock';
 const GLOBAL_LOCK_TTL_MS = 120_000;
-const ORDER_LOCK_TTL_MS = 60_000;
+const ORDER_LOCK_TTL_MS = 120_000;
 const MAX_RETRIES = 10;
 
 let reconciliationTimer = null;
@@ -91,7 +91,12 @@ export async function reconcilePendingEscrowReleases(orderRepository) {
       }
 
       try {
-        await finalizeReleasedOrder(order, orderRepository);
+        // Keep the per-order lock alive while the on-chain release +
+        // finalization runs, otherwise the TTL can lapse mid-transaction and a
+        // concurrent sweep double-submits the payout (issue #14681).
+        await withLockRenewal(orderLockKey, orderLockValue, ORDER_LOCK_TTL_MS, async () => {
+          await finalizeReleasedOrder(order, orderRepository);
+        });
       } catch (err) {
         logger.error(
           `[escrow-release-reconciliation] Finalization failed for order ${order.order_display_id}:`,

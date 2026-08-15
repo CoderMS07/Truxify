@@ -1,7 +1,7 @@
 import { redisClient } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { confirmEscrowRefund, submitEscrowRefund, submitEscrowCancelWithPenalty, paisaToMaticWei, getEscrowBooking, getEscrowBookingId } from './escrow.js';
-import { acquireLock, releaseLock } from '../lib/redisLock.js';
+import { acquireLock, renewLock, releaseLock, withLockRenewal } from '../lib/redisLock.js';
 import os from 'os';
 
 const RECONCILIATION_EVENTS = {
@@ -32,16 +32,19 @@ export async function reconcilePendingEscrowRefunds(orderRepository) {
   }
   if (reconciliationRunning) return;
   reconciliationRunning = true;
-  let globalLockAcquired = false;
+  let globalLockValue = null;
 
   try {
     if (redisClient) {
       try {
-        globalLockAcquired = await redisClient.set(LOCK_KEY, process.pid.toString(), 'NX', 'EX', LOCK_TTL_SECONDS);
+        // Use the owner-token pattern so the lock can only be extended or
+        // released by its owner (issue #14681). The previous unconditional
+        // `expire`/`del` let two sweeps run at once.
+        globalLockValue = await acquireLock(LOCK_KEY, LOCK_TTL_SECONDS * 1000);
       } catch (err) {
         logger.warn({ err }, '[escrow-reconciliation] Failed to acquire reconciliation lock, proceeding without lock');
       }
-      if (!globalLockAcquired) {
+      if (!globalLockValue) {
         logger.info('[escrow-reconciliation] Global lock held by another instance, skipping batch pull.');
         return;
       }
@@ -70,16 +73,16 @@ export async function reconcilePendingEscrowRefunds(orderRepository) {
         }
       }
 
-      if (globalLockAcquired && redisClient) {
+      if (globalLockValue) {
         try {
-          await redisClient.expire(LOCK_KEY, LOCK_TTL_SECONDS);
+          await renewLock(LOCK_KEY, globalLockValue, LOCK_TTL_SECONDS * 1000);
         } catch (err) {
           logger.warn({ err }, '[escrow-reconciliation] Failed to refresh lock');
         }
       }
 
       const lockKey = `escrow_lock:${order.id}`;
-      const lockValue = await acquireLock(lockKey, 30000);
+      const lockValue = await acquireLock(lockKey, 120000);
       if (!lockValue) {
         logger.info({ event: 'ESCROW_LOCK_SKIP', orderId: order.order_display_id }, '[escrow-reconciliation] Order locked by another process, skipping');
         continue;
@@ -176,7 +179,13 @@ export async function reconcilePendingEscrowRefunds(orderRepository) {
               `Escrow refund for ${order.order_display_id} could not be submitted on-chain (no confirmation available).`
             );
           }
-          receipt = await submitted.waitForConfirmation();
+          // Keep the per-order lock alive while the (slow) on-chain
+          // confirmation runs, otherwise the TTL can lapse mid-transaction and
+          // a concurrent sweep double-submits the refund (issue #14681).
+          receipt = await withLockRenewal(lockKey, lockValue, 120000, async () => {
+            const r = await submitted.waitForConfirmation();
+            return r;
+          });
           refundTxHash = receipt.hash ?? submitted.txHash;
 
           // Persist the on-chain tx hash immediately after submission (issue
@@ -232,9 +241,9 @@ export async function reconcilePendingEscrowRefunds(orderRepository) {
       }
     }
   } finally {
-    if (globalLockAcquired && redisClient) {
+    if (globalLockValue) {
       try {
-        await redisClient.del(LOCK_KEY);
+        await releaseLock(LOCK_KEY, globalLockValue);
       } catch (err) {
         logger.warn('[escrow-reconciliation] Failed to release global lock:', err.message);
       }
