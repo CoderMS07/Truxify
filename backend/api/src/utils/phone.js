@@ -32,6 +32,14 @@ export function normalizePhone(phone) {
     digits = digits.slice(2);
   }
 
+  // Strip a leading trunk prefix 0 only from remaining 11-digit sequences
+  // (10 local digits + leading 0, e.g. 091234567890 → 91234567890).
+  // This prevents 12-digit numbers (already stripped above) from being
+  // incorrectly reduced to 11 digits and rejected.
+  if (digits.startsWith('0') && digits.length === 11) {
+    digits = digits.slice(1);
+  }
+
   // Validate: must be exactly 10 digits after country code removal
   if (digits.length !== 10) {
     return null;
