@@ -41,7 +41,16 @@ class _AvailableLoadsScreenState extends State<AvailableLoadsScreen> {
   }
 
   @override
+  State<AvailableLoadsScreen> createState() => _AvailableLoadsScreenState();
+}
+
+class _AvailableLoadsScreenState extends State<AvailableLoadsScreen> {
+  _LoadFilter _selectedFilter = _LoadFilter.nearMe;
+
+  @override
   Widget build(BuildContext context) {
+    final indexes = List<int>.generate(10, (index) => index).where(_matchesFilter).toList();
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Available Loads'),
@@ -57,20 +66,20 @@ class _AvailableLoadsScreenState extends State<AvailableLoadsScreen> {
                 children: [
                   FilterChip(
                     label: const Text('Near me'),
-                    selected: true,
-                    onSelected: (bool selected) {},
+                    selected: _selectedFilter == _LoadFilter.nearMe,
+                    onSelected: (_) => _selectFilter(_LoadFilter.nearMe),
                   ),
                   const SizedBox(width: 8),
                   FilterChip(
                     label: const Text('High Paying'),
-                    selected: false,
-                    onSelected: (bool selected) {},
+                    selected: _selectedFilter == _LoadFilter.highPaying,
+                    onSelected: (_) => _selectFilter(_LoadFilter.highPaying),
                   ),
                   const SizedBox(width: 8),
                   FilterChip(
                     label: const Text('Matches Route'),
-                    selected: false,
-                    onSelected: (bool selected) {},
+                    selected: _selectedFilter == _LoadFilter.matchesRoute,
+                    onSelected: (_) => _selectFilter(_LoadFilter.matchesRoute),
                   ),
                 ],
               ),
