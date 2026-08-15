@@ -9,6 +9,7 @@ import 'package:geolocator/geolocator.dart';
 import '../theme/app_theme.dart';
 import '../services/location_service.dart';
 import '../widgets/common_widgets.dart';
+import '../utils/location_permission_helper.dart';
 
 class LocationPickResult {
   const LocationPickResult({required this.address, required this.point});
@@ -170,54 +171,37 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
   }
 
   Future<void> _useCurrentLocation() async {
-  setState(() {
-    _isFetchingCurrentLocation = true;
-  });
+    setState(() {
+      _isFetchingCurrentLocation = true;
+    });
 
-  try {
-    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-
-    if (!serviceEnabled) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enable location service')),
+    try {
+      final result = await LocationPermissionHelper.handleLocationRequest(
+        context,
+        purpose: 'set your pickup and drop location',
       );
-      return;
-    }
 
-    LocationPermission permission = await Geolocator.checkPermission();
-
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Location permission denied')),
-      );
-      return;
-    }
 
-    final position = await Geolocator.getCurrentPosition();
-
-    final point = LatLng(position.latitude, position.longitude);
-
-    await _setLocation(point);
-  } catch (_) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Unable to fetch current location')),
-    );
-  } finally {
-    if (mounted) {
-      setState(() {
-        _isFetchingCurrentLocation = false;
-      });
+      if (result.isGranted && result.position != null) {
+        final point = LatLng(result.position!.latitude, result.position!.longitude);
+        await _setLocation(point);
+      } else if (result.errorMessage != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.errorMessage!),
+            backgroundColor: TruxifyColors.accentDark,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isFetchingCurrentLocation = false;
+        });
+      }
     }
   }
-}
 
   @override
   Widget build(BuildContext context) {
