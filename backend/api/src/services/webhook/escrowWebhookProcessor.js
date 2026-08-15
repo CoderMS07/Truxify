@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '../../config/db.js';
+import { ethers } from 'ethers';
 import logger from '../../middleware/logger.js';
 import {
   normalizeTxHash,
@@ -102,6 +103,9 @@ async function findDriverPolygonWallet(driverId) {
   } catch (err) {
     logger.warn(`[Webhook] Failed to load driver polygon wallet for ${driverId}: ${err?.message}`);
     return null;
+  }
+}
+
 // Idempotent duplicate-delivery path: the order-level escrow_status effect
 // already happened on the first delivery, so a missing/errored wallet-ledger
 // reconcile must not throw here — otherwise the DLQ redelivers forever,
@@ -124,6 +128,16 @@ async function getPolygonProvider() {
   if (!rpcUrl) {
     throw new Error('POLYGON_RPC_URL is not configured for Polygon receipt validation');
   }
+  return new ethers.JsonRpcProvider(rpcUrl);
+}
+
+async function verifyPolygonTransactionReceipt(txHash) {
+  const provider = await getPolygonProvider();
+  const receipt = await provider.getTransactionReceipt(txHash);
+  if (!receipt) {
+    throw new Error(`Polygon transaction ${txHash} not found`);
+  }
+  return receipt;
 }
 
 function isUniqueViolation(error) {
@@ -198,7 +212,6 @@ async function releaseOrder({ order, txHash, now }) {
 
   await reconcileWalletLedger(order, txHash);
   logger.info(`[Webhook] Order ${order.order_display_id} marked escrow released after on-chain verification (tx: ${txHash})`);
-  return receipt;
 }
 
 // Escrow contract events that carry the released/refunded amount. For
@@ -490,6 +503,7 @@ async function handleWithdrawalSettled(payload) {
         `Order ${order.order_display_id} is already ${targetStatus} with a different transaction hash`,
         { retryable: false },
       );
+    }
     if (txHash) {
       if (isRefund && !order.refund_tx_hash) {
         await requireDb().from('orders').update({ refund_tx_hash: txHash }).eq('id', order.id);
@@ -547,7 +561,6 @@ async function handleWithdrawalSettled(payload) {
     })
     .update({ ...settlement, updated_at: now })
     .eq('id', order.id)
-    .in('escrow_status', targetStatuses);
     .in('escrow_status', [...REFUND_RECONCILABLE_STATUSES, ...RELEASE_RECONCILABLE_STATUSES])
     .select('id');
 
