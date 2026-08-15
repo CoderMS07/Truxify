@@ -498,7 +498,6 @@ export async function authenticate(req, res, next) {
 
       return next();
     }
-    }
   } catch (error) {
     logger.error(
       { err: error, requestId: req.requestId },
