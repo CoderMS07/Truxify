@@ -63,6 +63,10 @@ class AuditLogService {
    * @returns {Promise<object|null>}      - The created audit log entry, or null on failure
    */
   async log(entry) {
+    if (!entry.actorId) {
+      logger.warn('[AuditLog] actorId is required — audit entry dropped.');
+      return null;
+    }
     if (!supabaseAdmin) {
       logger.warn('[AuditLog] Supabase admin client not available — audit entry dropped.');
       return null;
