@@ -65,6 +65,7 @@ describe('sanitizeUploadFilename', () => {
     expect(sanitizeUploadFilename(null, 'fallback.pdf')).toBe('fallback.pdf');
     expect(sanitizeUploadFilename(undefined, 'backup.jpg')).toBe('backup.jpg');
   });
+});
 
   it('rejects Windows reserved device names regardless of extension', () => {
     expect(sanitizeUploadFilename('nul.pdf')).toBe('upload');
@@ -80,7 +81,6 @@ describe('sanitizeUploadFilename', () => {
     expect(sanitizeUploadFilename('FILE123.TXT')).toBe('FILE123.TXT');
     expect(sanitizeUploadFilename('Report_2024_V2.PDF')).toBe('Report_2024_V2.PDF');
   });
-});
 
   it('handles filenames with only extension', () => {
     // Leading dots are stripped, so .pdf becomes pdf which is not reserved
