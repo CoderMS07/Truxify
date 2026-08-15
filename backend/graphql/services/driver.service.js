@@ -32,6 +32,42 @@ function mapDriver(row) {
     };
 }
 
+const EARTH_RADIUS_KM = 6371;
+
+function toFiniteNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+}
+
+function getDriverLocation(driver) {
+    const location = driver?.current_location || driver?.currentLocation;
+    const lat = toFiniteNumber(location?.lat);
+    const lng = toFiniteNumber(location?.lng);
+
+    if (lat === null || lng === null) {
+        return null;
+    }
+
+    return { lat, lng };
+}
+
+function distanceInKm(from, to) {
+    const latDelta = (to.lat - from.lat) * Math.PI / 180;
+    const lngDelta = (to.lng - from.lng) * Math.PI / 180;
+    const fromLat = from.lat * Math.PI / 180;
+    const toLat = to.lat * Math.PI / 180;
+
+    const a = Math.sin(latDelta / 2) ** 2
+        + Math.cos(fromLat) * Math.cos(toLat) * Math.sin(lngDelta / 2) ** 2;
+
+    return 2 * EARTH_RADIUS_KM * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function isWithinRadius(driver, center, radiusKm) {
+    const location = getDriverLocation(driver);
+    return location ? distanceInKm(center, location) <= radiusKm : false;
+}
+
 const typeDefs = gql`
     extend type Query {
         driver(id: ID!): Driver
@@ -71,6 +107,7 @@ const typeDefs = gql`
         lat: Float!
         lng: Float!
         address: String
+        radius: Float
     }
 
     input UpdateDriverInput {
@@ -111,15 +148,7 @@ const resolvers = {
             if (available !== undefined) {
                 query = query.eq('status', available ? 'AVAILABLE' : 'BUSY');
             }
-            
-            if (location) {
-                // Use PostGIS for location queries
-                query = query.lte('current_location->>lat', location.lat + 0.01)
-                    .gte('current_location->>lat', location.lat - 0.01)
-                    .lte('current_location->>lng', location.lng + 0.01)
-                    .gte('current_location->>lng', location.lng - 0.01);
-            }
-            
+
             const { data, error } = await query;
             if (error) throw error;
             return data.map(mapDriver);
@@ -128,10 +157,6 @@ const resolvers = {
             const { data, error } = await supabase
                 .from('drivers')
                 .select('*')
-                .lte('current_location->>lat', lat + radius * 0.01)
-                .gte('current_location->>lat', lat - radius * 0.01)
-                .lte('current_location->>lng', lng + radius * 0.01)
-                .gte('current_location->>lng', lng - radius * 0.01)
                 .eq('status', 'AVAILABLE');
             
             if (error) throw error;
