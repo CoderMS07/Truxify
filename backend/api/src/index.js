@@ -28,6 +28,7 @@ import iotRoutes from './routes/iotRoutes.js'
 import demandRoutes from './routes/demandRoutes.js'
 
 import { closeDbConnections, waitForMongoDb, validateConfig, redisClient, supabaseAdmin } from './config/db.js'
+import { startOutboxRelayWorker, stopOutboxRelayWorker } from './workers/outboxRelayWorker.js'
 import { orderRepository } from './core/container.js'
 import { OrderRepository } from './repositories/orderRepository.js'
 import CacheManager from './cache/CacheManager.js'

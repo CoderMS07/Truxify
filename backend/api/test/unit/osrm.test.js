@@ -19,7 +19,7 @@ vi.mock('../../src/middleware/logger.js', () => ({
   default: mockLogger,
 }));
 
-import { getRouteEstimate, __testing } from '../../src/services/osrm.js';
+import { getRouteEstimate, __testing, routeWithFailover } from '../../src/services/osrm.js';
 
 const { buildRouteUrl, buildCacheKey, DEFAULT_OSRM_BASE_URL, DEFAULT_TIMEOUT_MS } = __testing;
 

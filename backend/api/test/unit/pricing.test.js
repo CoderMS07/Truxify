@@ -5,6 +5,7 @@ import {
   convertKmToMiles,
   sanitizePrice,
   __testing,
+  guardNonNegative,
 } from '../../src/lib/pricing.js';
 
 describe('Pricing Service Unit Tests', () => {

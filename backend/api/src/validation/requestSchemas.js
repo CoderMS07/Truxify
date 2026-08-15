@@ -281,11 +281,13 @@ export const earningsSummarySchema = z.object({
 
 
 export const syncWeightSchema = z.object({
-  truck_id: z.string().min(1, "Truck ID is required"),
+  vehicleId: z.string().min(1, 'vehicleId is required'),
+  truckId: z.string().min(1, 'truckId is required'),
   axles: z.array(z.object({
-    position: z.string().min(1, "Axle position is required"),
-    pressure_psi: coerceNumber(z.number().positive("Pressure must be positive"))
-  })).min(1, "At least one axle reading is required")
+    position: z.number().int().min(0),
+    pressure_psi: z.number().positive('pressure_psi must be a positive number'),
+  })).min(1, 'At least one axle is required'),
+  timestamp: z.string().datetime({ message: 'timestamp must be ISO 8601' }).optional(),
 }).strict();
 
 // Indian vehicle registration plate: 2 letters, 2 digits, up to 3 letters, up to 4 digits

@@ -5,6 +5,7 @@ import {
   matchesMimeSignature,
   DocumentValidationError,
   ALLOWED_DOCUMENT_MIME_TYPES,
+  matchesMimeSignature,
 } from '../../src/lib/documentValidation.js';
 
 describe('documentValidation', () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { correlationIdMiddleware, correlationContext } from '../../src/middleware/correlationId.js';
+import { correlationIdMiddleware, correlationContext, runWithCorrelationId, getCorrelationStore } from '../../src/middleware/correlationId.js';
 
 function makeReq(headers = {}) {
   return {

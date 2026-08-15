@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { redisRateLimiter } from '../../src/middleware/redisRateLimiter.js';
+import { redisRateLimiter, checkSlidingWindow } from '../../src/middleware/redisRateLimiter.js';
 
 describe('redisRateLimiter Middleware', () => {
   it('bypasses rate limiting when redisClient is null', async () => {
