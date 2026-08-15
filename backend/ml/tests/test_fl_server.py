@@ -3,7 +3,38 @@
 Run with: python3 -m pytest tests/test_fl_server.py -v --no-header
 """
 import numpy as np
-from federated.fl_server import FederatedAveragingServer
+from federated.fl_server import FederatedAveragingServer, robust_aggregate
+
+
+class TestRobustAggregate:
+    """Byzantine-robust aggregation must resist a malicious outlier."""
+
+    def test_malicious_outlier_does_not_move_global_model(self):
+        """A single extreme client weight must not skew the aggregate.
+
+        With four honest clients near 1.0 and one malicious client submitting
+        an extreme value (1e6), a naive mean would land near 2e5, but the
+        coordinate-wise median must stay at ~1.0 (and the clipped delta keeps
+        it bounded).
+        """
+        honest = [np.array([1.0, 1.0]) for _ in range(4)]
+        malicious = [np.array([1e6, 1e6])]
+        global_weights = np.array([1.0, 1.0])
+
+        result = robust_aggregate(
+            honest + malicious, global_weights, clip_norm=1.0
+        )
+
+        # Median of five values with one outlier is still ~1.0 for each coord.
+        assert np.allclose(result, np.array([1.0, 1.0]), atol=1e-6)
+        # The malicious client must not move the model by more than the clip.
+        assert np.linalg.norm(result - global_weights) <= 1.0 + 1e-6
+
+    def test_single_client_returns_its_weights(self):
+        """With one client there is no outlier to resist; return its weights."""
+        result = robust_aggregate([np.array([3.0, 4.0])])
+        assert np.allclose(result, np.array([3.0, 4.0]))
+
 
 
 class TestAggregateUpdates:
