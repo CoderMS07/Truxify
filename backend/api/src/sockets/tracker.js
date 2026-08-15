@@ -710,7 +710,15 @@ export function initWebSocketServer(server, orderRepository) {
       clearInterval(wsHeartbeatInterval);
       wsHeartbeatInterval = null;
     }
+    if (messageRateTrackerCleanupInterval) {
+      clearInterval(messageRateTrackerCleanupInterval);
+      messageRateTrackerCleanupInterval = null;
+    }
   });
+
+  messageRateTrackerCleanupInterval = setInterval(() => {
+    sweepMessageRateTracker();
+  }, 30000);
 
   // Periodically purge expired per-IP WebSocket upgrade-limit entries, so the
   // in-memory fallback map does not leak during Redis outages.
