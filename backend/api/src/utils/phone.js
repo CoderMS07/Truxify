@@ -30,6 +30,9 @@ export function normalizePhone(phone) {
   // Remove country code prefix if present (91 for India)
   if (digits.startsWith('91') && digits.length === 12) {
     digits = digits.slice(2);
+  } else if (digits.startsWith('0')) {
+    // Strip a leading trunk prefix 0 (e.g. 09876543210 -> 9876543210)
+    digits = digits.slice(1);
   }
 
   // Strip a leading trunk prefix 0 only from remaining 11-digit sequences

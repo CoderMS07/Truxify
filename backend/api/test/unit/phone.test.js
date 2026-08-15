@@ -43,4 +43,8 @@ describe('phone utils', () => {
       expect(normalizePhone('abcdefghij')).toBeNull();
     });
   });
+
+  it('returns null for invalid country code (e.g. 01-prefixed without 91)', () => {
+    expect(normalizePhone('0187654321')).toBeNull();
+  });
 });
