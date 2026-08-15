@@ -61,7 +61,11 @@ async function relayOnce() {
         }
       } catch (err) {
         logger.error('[OutboxRelay] Failed to publish event:', { eventId: event.id, err: err.message });
-        await outboxService.markFailed(event.id, err.message);
+        try {
+          await outboxService.markFailed(event.id, err.message);
+        } catch (markErr) {
+          logger.error('[OutboxRelay] Failed to mark event failed:', { eventId: event.id, err: markErr.message });
+        }
       }
     }
   } catch (err) {
