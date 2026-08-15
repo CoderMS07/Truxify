@@ -6,6 +6,20 @@ import { redisRateLimiter } from '../middleware/redisRateLimiter.js';
 import logger from '../middleware/logger.js';
 
 const router = express.Router();
+const PRIVILEGED_VERIFICATION_ROLES = new Set(['admin', 'regulator']);
+const zkpVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: safeIpKeyGenerator,
+  store: createStore('rl:zkp-verify:'),
+  message: { error: 'Rate limit exceeded', retryAfter: 900 },
+});
+
+function canVerifyUser(requestUser, targetUserId) {
+  return requestUser?.id === targetUserId || PRIVILEGED_VERIFICATION_ROLES.has(requestUser?.role);
+}
 
 /**
  * Rate limiter for POST /zkp/verify.
