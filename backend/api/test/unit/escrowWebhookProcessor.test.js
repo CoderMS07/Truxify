@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { ethers as actualEthers } from 'ethers';
 
 vi.mock('../../src/middleware/logger.js', () => ({
   default: {
@@ -95,6 +96,7 @@ const mockQuery = {
   update: vi.fn(function () { return this; }),
   limit: vi.fn(function () { return this; }),
   maybeSingle: vi.fn(),
+  then: (resolve) => resolve({ data: [{ id: 'order-uuid' }], error: null }),
 };
 
 const mockSupabaseAdmin = {
