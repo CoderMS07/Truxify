@@ -25,12 +25,29 @@ void main() {
         expect(NotificationRouter.resolveTarget(data), NotificationTarget.tripDetail);
       });
 
+      test('order_delivered maps to tripDetail', () {
+        final data = {'notifType': 'order_delivered'};
+        expect(NotificationRouter.resolveTarget(data), NotificationTarget.tripDetail);
+      });
+
+      test('bid_received maps to loadDetail', () {
+        final data = {'notifType': 'bid_received'};
+        expect(NotificationRouter.resolveTarget(data), NotificationTarget.loadDetail);
+      });
+
       test('payment maps to earnings', () {
         final data = {'notifType': 'payment'};
         expect(NotificationRouter.resolveTarget(data), NotificationTarget.earnings);
       });
 
-      test('payment_released maps to earnings', () {
+      test('payment_released maps to wallet for customer', () {
+        NotificationRouter.setAppType(NotificationAppType.customer);
+        final data = {'notifType': 'payment_released'};
+        expect(NotificationRouter.resolveTarget(data), NotificationTarget.wallet);
+      });
+
+      test('payment_released maps to earnings for driver', () {
+        NotificationRouter.setAppType(NotificationAppType.driver);
         final data = {'notifType': 'payment_released'};
         expect(NotificationRouter.resolveTarget(data), NotificationTarget.earnings);
       });

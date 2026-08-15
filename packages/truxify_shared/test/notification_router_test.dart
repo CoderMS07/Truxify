@@ -219,6 +219,22 @@ void main() {
       );
     });
 
+    test('resolves order_delivered to tripDetail', () {
+      final data = {'notifType': 'order_delivered'};
+      expect(
+        NotificationRouter.resolveTarget(data),
+        NotificationTarget.tripDetail,
+      );
+    });
+
+    test('resolves bid_received to loadDetail', () {
+      final data = {'notifType': 'bid_received'};
+      expect(
+        NotificationRouter.resolveTarget(data),
+        NotificationTarget.loadDetail,
+      );
+    });
+
     test('resolves payment to earnings', () {
       final data = {'notifType': 'payment'};
       expect(
@@ -227,7 +243,17 @@ void main() {
       );
     });
 
-    test('resolves payment_released to earnings', () {
+    test('resolves payment_released to wallet for customer', () {
+      NotificationRouter.setAppType(NotificationAppType.customer);
+      final data = {'notifType': 'payment_released'};
+      expect(
+        NotificationRouter.resolveTarget(data),
+        NotificationTarget.wallet,
+      );
+    });
+
+    test('resolves payment_released to earnings for driver', () {
+      NotificationRouter.setAppType(NotificationAppType.driver);
       final data = {'notifType': 'payment_released'};
       expect(
         NotificationRouter.resolveTarget(data),
@@ -288,6 +314,40 @@ void main() {
       expect(
         NotificationRouter.resolveTarget(data),
         NotificationTarget.tripDetail,
+      );
+    });
+  });
+
+  group('NotificationRouter.targetForRoute', () {
+    test('order_delivered route maps to tripDetail', () {
+      expect(
+        NotificationRouter.targetForRoute(
+          const NavigateToLiveTracking('ord_456'),
+        ),
+        NotificationTarget.tripDetail,
+      );
+    });
+
+    test('bid_received route maps to loadDetail', () {
+      expect(
+        NotificationRouter.targetForRoute(
+          const NavigateToLoadDetail('bid_789'),
+        ),
+        NotificationTarget.loadDetail,
+      );
+    });
+
+    test('payment_released customer route maps to wallet', () {
+      expect(
+        NotificationRouter.targetForRoute(const NavigateToWallet()),
+        NotificationTarget.wallet,
+      );
+    });
+
+    test('payment_released driver route maps to earnings', () {
+      expect(
+        NotificationRouter.targetForRoute(const NavigateToEarnings()),
+        NotificationTarget.earnings,
       );
     });
   });

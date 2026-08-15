@@ -5,7 +5,7 @@ import 'package:truxify_shared/src/services/notification_router.dart';
 
 void main() {
   group('payment_released routing consistency', () {
-    test('resolveForNotification and resolveTarget agree on earnings', () {
+    test('resolveForNotification and resolveTarget agree on wallet/earnings', () {
       NotificationRouter.setAppType(NotificationAppType.customer);
       final customerRoute = NotificationRouter.resolve(
         const NotificationPayload(type: 'payment_released'),
@@ -13,7 +13,7 @@ void main() {
       expect(customerRoute, isA<NavigateToWallet>());
       expect(
         NotificationRouter.targetForRoute(customerRoute),
-        NotificationTarget.earnings,
+        NotificationTarget.wallet,
       );
 
       NotificationRouter.setAppType(NotificationAppType.driver);
@@ -26,8 +26,15 @@ void main() {
         NotificationTarget.earnings,
       );
 
-      // The in-app target/badge is app-agnostic and must always agree with
-      // the route's target for payment_released.
+      // The FCM-tap target is app-aware and must always agree with the
+      // route's target for payment_released.
+      NotificationRouter.setAppType(NotificationAppType.customer);
+      expect(
+        NotificationRouter.resolveTarget({'notifType': 'payment_released'}),
+        NotificationTarget.wallet,
+      );
+
+      NotificationRouter.setAppType(NotificationAppType.driver);
       expect(
         NotificationRouter.resolveTarget({'notifType': 'payment_released'}),
         NotificationTarget.earnings,

@@ -50,6 +50,7 @@ class NavigateToNotificationsList extends NotificationRoute {
 enum NotificationTarget {
   orderDetail,
   tripDetail,
+  wallet,
   earnings,
   loadDetail,
   notifications,
@@ -60,8 +61,8 @@ enum NotificationTarget {
 /// Single source of truth mapping a notification type to the in-app
 /// [NotificationTarget] used for badge/consumption tracking.
 ///
-/// Both [resolveTarget] (badge/consumption) and the deep-link route resolver
-/// derive their `payment_released` decision (and every other type) from this
+/// `payment_released` is intentionally not listed here because it is
+/// app-specific (see [resolveTarget]); every other type is derived from this
 /// map so the deep-link target and the in-app target/badge never diverge.
 const Map<String, NotificationTarget> _targetByType = {
   'order_update': NotificationTarget.orderDetail,
@@ -70,7 +71,6 @@ const Map<String, NotificationTarget> _targetByType = {
   'trip_update': NotificationTarget.tripDetail,
   'trip_completed': NotificationTarget.tripDetail,
   'payment': NotificationTarget.earnings,
-  'payment_released': NotificationTarget.earnings,
   'bid_received': NotificationTarget.loadDetail,
   'load_offer': NotificationTarget.loadDetail,
   'support_ticket': NotificationTarget.notifications,
@@ -182,10 +182,17 @@ class NotificationRouter {
   /// Resolves the [NotificationTarget] from a raw data map (FCM data payload
   /// or [NotificationItem.metadata]).
   ///
-  /// The mapping is centralized in [_targetByType] so it stays in sync with the
-  /// deep-link route produced by [resolve].
+  /// Mirrors [_resolveForAppType] so the FCM-tap path used by
+  /// [navigateFromRemoteMessage] agrees with the in-app route resolver on
+  /// every type. `payment_released` is app-specific: customers land on the
+  /// wallet target, drivers on earnings.
   static NotificationTarget resolveTarget(Map<String, dynamic> data) {
     final type = _extractNotifType(data);
+    if (type == 'payment_released') {
+      return _appType == NotificationAppType.customer
+          ? NotificationTarget.wallet
+          : NotificationTarget.earnings;
+    }
     return _targetByType[type] ?? NotificationTarget.unknown;
   }
 
@@ -193,13 +200,13 @@ class NotificationRouter {
   /// [NotificationTarget].
   ///
   /// This is the canonical route→target mapping and is the counterpart to
-  /// [_targetByType]; the consistency regression test guarantees the two never
+  /// [resolveTarget]; the consistency regression test guarantees the two never
   /// drift apart.
   static NotificationTarget targetForRoute(NotificationRoute route) {
     if (route is NavigateToOrderDetail) return NotificationTarget.orderDetail;
     if (route is NavigateToLiveTracking) return NotificationTarget.tripDetail;
     if (route is NavigateToLoadDetail) return NotificationTarget.loadDetail;
-    if (route is NavigateToWallet) return NotificationTarget.earnings;
+    if (route is NavigateToWallet) return NotificationTarget.wallet;
     if (route is NavigateToEarnings) return NotificationTarget.earnings;
     if (route is NavigateToSupportTicket) {
       return NotificationTarget.notifications;
