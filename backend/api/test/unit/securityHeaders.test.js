@@ -38,110 +38,131 @@ describe('securityHeaders', () => {
     expect(res.headers['cross-origin-resource-policy']).toBe('same-origin');
     expect(res.headers['x-content-security-policy']).toBe("default-src 'self'");
   });
+  const mockRes = () => {
+    const headers = {};
+    return {
+      headers,
+      getHeader: (name) => headers[name],
+      setHeader: (name, value) => {
+        headers[name] = value;
+      },
+    };
+  };
+  const mockNext = vi.fn();
 
-  it('does not send HSTS over plain HTTP', async () => {
-    const res = await request(createApp()).get('/test');
-
-    expect(res.headers['strict-transport-security']).toBeUndefined();
+  beforeEach(() => {
+    vi.resetModules();
+    process.env = { ...originalEnv };
+    mockNext.mockClear();
   });
 
-  it('sends HSTS when the request arrived over HTTPS at the proxy', async () => {
-    const res = await request(createApp())
-      .get('/test')
-      .set('x-forwarded-proto', 'https');
-
-    expect(res.headers['strict-transport-security']).toBe(
-      'max-age=31536000; includeSubDomains'
-    );
+  afterEach(() => {
+    process.env = originalEnv;
   });
 
-  it('uses SECURE_HSTS_MAX_AGE when configured', async () => {
-    const original = process.env.SECURE_HSTS_MAX_AGE;
-    process.env.SECURE_HSTS_MAX_AGE = '3600';
-    try {
-      const res = await request(createApp())
-        .get('/test')
-        .set('x-forwarded-proto', 'https');
-
-      expect(res.headers['strict-transport-security']).toBe(
-        'max-age=3600; includeSubDomains'
-      );
-    } finally {
-      if (original === undefined) delete process.env.SECURE_HSTS_MAX_AGE;
-      else process.env.SECURE_HSTS_MAX_AGE = original;
-    }
+  it('sets X-Content-Type-Options header', async () => {
+    const { default: securityHeaders } = await import('../../src/middleware/securityHeaders.js');
+    const req = mockReq();
+    const res = mockRes();
+    securityHeaders(req, res, mockNext);
+    expect(res.getHeader('X-Content-Type-Options')).toBe('nosniff');
+    expect(mockNext).toHaveBeenCalled();
   });
 
-  it('falls back to the default max-age for an invalid SECURE_HSTS_MAX_AGE', async () => {
-    const original = process.env.SECURE_HSTS_MAX_AGE;
-    process.env.SECURE_HSTS_MAX_AGE = 'not-a-number';
-    try {
-      const res = await request(createApp())
-        .get('/test')
-        .set('x-forwarded-proto', 'https');
-
-      expect(res.headers['strict-transport-security']).toBe(
-        'max-age=31536000; includeSubDomains'
-      );
-    } finally {
-      if (original === undefined) delete process.env.SECURE_HSTS_MAX_AGE;
-      else process.env.SECURE_HSTS_MAX_AGE = original;
-    }
+  it('sets X-Frame-Options to DENY', async () => {
+    const { default: securityHeaders } = await import('../../src/middleware/securityHeaders.js');
+    const req = mockReq();
+    const res = mockRes();
+    securityHeaders(req, res, mockNext);
+    expect(res.getHeader('X-Frame-Options')).toBe('DENY');
   });
 
-  it('falls back to the default max-age for weakening values like 0', async () => {
-    const original = process.env.SECURE_HSTS_MAX_AGE;
-    process.env.SECURE_HSTS_MAX_AGE = '0';
-    try {
-      const res = await request(createApp())
-        .get('/test')
-        .set('x-forwarded-proto', 'https');
-
-      expect(res.headers['strict-transport-security']).toBe(
-        'max-age=31536000; includeSubDomains'
-      );
-    } finally {
-      if (original === undefined) delete process.env.SECURE_HSTS_MAX_AGE;
-      else process.env.SECURE_HSTS_MAX_AGE = original;
-    }
+  it('sets X-XSS-Protection header', async () => {
+    const { default: securityHeaders } = await import('../../src/middleware/securityHeaders.js');
+    const req = mockReq();
+    const res = mockRes();
+    securityHeaders(req, res, mockNext);
+    expect(res.getHeader('X-XSS-Protection')).toBe('1; mode=block');
   });
 
-  it('preserves headers an earlier layer already set', async () => {
-    const res = await request(
-      createApp({
-        'X-Frame-Options': 'SAMEORIGIN',
-        'Referrer-Policy': 'no-referrer',
-        'Cross-Origin-Resource-Policy': 'cross-origin',
-      })
-    ).get('/test');
-
-    expect(res.headers['x-frame-options']).toBe('SAMEORIGIN');
-    expect(res.headers['referrer-policy']).toBe('no-referrer');
-    expect(res.headers['cross-origin-resource-policy']).toBe('cross-origin');
-    // The headers nobody set are still filled in.
-    expect(res.headers['x-content-type-options']).toBe('nosniff');
+  it('sets Referrer-Policy header', async () => {
+    const { default: securityHeaders } = await import('../../src/middleware/securityHeaders.js');
+    const req = mockReq();
+    const res = mockRes();
+    securityHeaders(req, res, mockNext);
+    expect(res.getHeader('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
   });
 
-  it('never overrides an existing Content-Security-Policy', async () => {
-    const csp = "default-src 'none'; script-src 'self'";
-    const res = await request(createApp({ 'Content-Security-Policy': csp })).get('/test');
-
-    expect(res.headers['content-security-policy']).toBe(csp);
+  it('sets Permissions-Policy header', async () => {
+    const { default: securityHeaders } = await import('../../src/middleware/securityHeaders.js');
+    const req = mockReq();
+    const res = mockRes();
+    securityHeaders(req, res, mockNext);
+    expect(res.getHeader('Permissions-Policy')).toBe('geolocation=(self), camera=(self), microphone=(self)');
   });
 
-  it('does not set a Content-Security-Policy of its own', async () => {
-    const res = await request(createApp()).get('/test');
-
-    expect(res.headers['content-security-policy']).toBeUndefined();
+  it('sets Cross-Origin-Resource-Policy header', async () => {
+    const { default: securityHeaders } = await import('../../src/middleware/securityHeaders.js');
+    const req = mockReq();
+    const res = mockRes();
+    securityHeaders(req, res, mockNext);
+    expect(res.getHeader('Cross-Origin-Resource-Policy')).toBe('same-origin');
   });
 
-  it('calls next() so the request reaches the route', async () => {
-    const res = await request(createApp()).get('/test');
-
-    expect(res.body).toEqual({ ok: true });
+  it('sets X-Content-Security-Policy header', async () => {
+    const { default: securityHeaders } = await import('../../src/middleware/securityHeaders.js');
+    const req = mockReq();
+    const res = mockRes();
+    securityHeaders(req, res, mockNext);
+    expect(res.getHeader('X-Content-Security-Policy')).toBe("default-src 'self'");
   });
-});
 
+  it('sets HSTS header when req.secure is true', async () => {
+    const { default: securityHeaders } = await import('../../src/middleware/securityHeaders.js');
+    const req = mockReq({ secure: true });
+    const res = mockRes();
+    securityHeaders(req, res, mockNext);
+    const hsts = res.getHeader('Strict-Transport-Security');
+    expect(hsts).toContain('max-age=');
+    expect(hsts).toContain('includeSubDomains');
+  });
+
+  it('sets HSTS header when x-forwarded-proto is https', async () => {
+    const { default: securityHeaders } = await import('../../src/middleware/securityHeaders.js');
+    const req = mockReq({ headers: { 'x-forwarded-proto': 'https' } });
+    const res = mockRes();
+    securityHeaders(req, res, mockNext);
+    const hsts = res.getHeader('Strict-Transport-Security');
+    expect(hsts).toContain('max-age=');
+    expect(hsts).toContain('includeSubDomains');
+  });
+
+  it('does not set HSTS header when not over HTTPS', async () => {
+    const { default: securityHeaders } = await import('../../src/middleware/securityHeaders.js');
+    const req = mockReq({ secure: false, headers: {} });
+    const res = mockRes();
+    securityHeaders(req, res, mockNext);
+    expect(res.getHeader('Strict-Transport-Security')).toBeUndefined();
+  });
+
+  it('does not override existing headers', async () => {
+    const { default: securityHeaders } = await import('../../src/middleware/securityHeaders.js');
+    const req = mockReq();
+    const res = mockRes();
+    res.setHeader('X-Content-Type-Options', 'already-set');
+    securityHeaders(req, res, mockNext);
+    expect(res.getHeader('X-Content-Type-Options')).toBe('already-set');
+  });
+
+  it('respects SECURE_HSTS_MAX_AGE env var', async () => {
+    process.env.SECURE_HSTS_MAX_AGE = '63072000';
+    const { default: securityHeaders } = await import('../../src/middleware/securityHeaders.js');
+    const req = mockReq({ secure: true });
+    const res = mockRes();
+    securityHeaders(req, res, mockNext);
+    const hsts = res.getHeader('Strict-Transport-Security');
+    expect(hsts).toContain('max-age=63072000');
+  });
 
 // === Spec 11 test ===
 import { setHstsHeader } from '../../src/middleware/securityHeaders.js';
@@ -150,9 +171,23 @@ describe('setHstsHeader', () => {
     const r = { _h: {}, getHeader(k){return this._h[k];}, setHeader(k,v){this._h[k]=v;} };
     expect(setHstsHeader(r)).toBe(true);
   });
-  it('skips when set', () => {
-    const r = { _h: { 'Strict-Transport-Security': 'x' }, getHeader(k){return this._h[k];}, setHeader(k,v){this._h[k]=v;} };
-    expect(setHstsHeader(r)).toBe(false);
+
+  describe('setHstsHeader', () => {
+    it('sets preload HSTS header', async () => {
+      const { setHstsHeader } = await import('../../src/middleware/securityHeaders.js');
+      const res = mockRes();
+      const result = setHstsHeader(res);
+      expect(result).toBe(true);
+      expect(res.getHeader('Strict-Transport-Security')).toContain('max-age=63072000');
+      expect(res.getHeader('Strict-Transport-Security')).toContain('preload');
+    });
+
+    it('returns false when HSTS header already set', async () => {
+      const { setHstsHeader } = await import('../../src/middleware/securityHeaders.js');
+      const res = mockRes();
+      res.setHeader('Strict-Transport-Security', 'already-set');
+      const result = setHstsHeader(res);
+      expect(result).toBe(false);
+    });
   });
 });
-

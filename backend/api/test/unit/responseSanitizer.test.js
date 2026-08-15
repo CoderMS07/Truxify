@@ -1,84 +1,95 @@
-import { describe, it, expect, vi } from 'vitest';
-import responseSanitizer from '../../src/middleware/responseSanitizer.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-function makeResMock() {
-  const res = {
-    _data: null,
+describe('middleware/responseSanitizer', () => {
+  const mockRes = () => {
+    const headers = {};
+    return {
+      headers,
+      statusCode: 200,
+      json: vi.fn(function (body) { return body; }),
+      getHeader: (name) => headers[name],
+      setHeader: (name, value) => { headers[name] = value; },
+    };
   };
-  res.json = vi.fn(function (body) {
-    res._data = body;
-    return res;
-  });
-  return res;
-}
+  const mockNext = vi.fn();
 
-describe('responseSanitizer', () => {
-  it('calls next() and wraps res.json', () => {
-    const req = {};
-    const res = makeResMock();
-    const next = vi.fn();
-
-    responseSanitizer(req, res, next);
-    expect(next).toHaveBeenCalledOnce();
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it('strips _internal field from response body', () => {
+  it('removes undefined values from response body', async () => {
+    const { default: sanitizer } = await import('../../src/middleware/responseSanitizer.js');
     const req = {};
-    const res = makeResMock();
-    const next = vi.fn();
-
-    responseSanitizer(req, res, next);
-    res.json({ id: '1', name: 'test', _internal: 'secret' });
-
-    expect(res._data).toEqual({ id: '1', name: 'test' });
-    expect(res._data._internal).toBeUndefined();
+    const res = mockRes();
+    sanitizer(req, res, mockNext);
+    res.json({ name: 'Alice', age: undefined, city: 'NYC' });
+    expect(res.json).toHaveBeenCalledWith({ name: 'Alice', city: 'NYC' });
+    expect(mockNext).toHaveBeenCalled();
   });
 
-  it('strips __v field from response body', () => {
+  it('removes private fields from response body', async () => {
+    const { default: sanitizer } = await import('../../src/middleware/responseSanitizer.js');
     const req = {};
-    const res = makeResMock();
-    const next = vi.fn();
-
-    responseSanitizer(req, res, next);
-    res.json({ id: '1', __v: 3 });
-
-    expect(res._data).toEqual({ id: '1' });
-    expect(res._data.__v).toBeUndefined();
+    const res = mockRes();
+    sanitizer(req, res, mockNext);
+    res.json({ name: 'Bob', _internal: 'secret', __v: 1, _debug: 'debug', password: 'hunter2' });
+    expect(res.json).toHaveBeenCalledWith({ name: 'Bob', password: 'hunter2' });
   });
 
-  it('strips _debug, _metadata, and _private fields', () => {
+  it('handles null body', async () => {
+    const { default: sanitizer } = await import('../../src/middleware/responseSanitizer.js');
     const req = {};
-    const res = makeResMock();
-    const next = vi.fn();
-
-    responseSanitizer(req, res, next);
-    res.json({ id: '2', _debug: true, _metadata: {}, _private: 'x' });
-
-    expect(res._data).toEqual({ id: '2' });
+    const res = mockRes();
+    sanitizer(req, res, mockNext);
+    res.json(null);
+    expect(res.json).toHaveBeenCalledWith(null);
   });
 
-  it('handles arrays of objects by sanitizing each element', () => {
+  it('handles arrays in response body', async () => {
+    const { default: sanitizer } = await import('../../src/middleware/responseSanitizer.js');
     const req = {};
-    const res = makeResMock();
-    const next = vi.fn();
-
-    responseSanitizer(req, res, next);
+    const res = mockRes();
+    sanitizer(req, res, mockNext);
     res.json([
-      { id: '1', _internal: 'a' },
-      { id: '2', __v: 5 },
+      { name: 'Alice', _private: 'secret' },
+      { name: 'Bob', __v: 2 },
     ]);
-
-    expect(res._data).toEqual([{ id: '1' }, { id: '2' }]);
+    expect(res.json).toHaveBeenCalledWith([
+      { name: 'Alice' },
+      { name: 'Bob' },
+    ]);
   });
 
-  it('passes through primitive values unchanged', () => {
+  it('handles nested objects', async () => {
+    const { default: sanitizer } = await import('../../src/middleware/responseSanitizer.js');
     const req = {};
-    const res = makeResMock();
-    const next = vi.fn();
+    const res = mockRes();
+    sanitizer(req, res, mockNext);
+    res.json({
+      user: { name: 'Alice', _internal: { secret: 'data' } },
+      token: 'abc123',
+      _metadata: { version: '1.0' },
+    });
+    expect(res.json).toHaveBeenCalledWith({
+      user: { name: 'Alice' },
+      token: 'abc123',
+    });
+  });
 
-    responseSanitizer(req, res, next);
-    res.json('hello');
+  it('handles primitive values', async () => {
+    const { default: sanitizer } = await import('../../src/middleware/responseSanitizer.js');
+    const req = {};
+    const res = mockRes();
+    sanitizer(req, res, mockNext);
+    res.json('just a string');
+    expect(res.json).toHaveBeenCalledWith('just a string');
+  });
 
-    expect(res._data).toBe('hello');
+  it('calls next()', async () => {
+    const { default: sanitizer } = await import('../../src/middleware/responseSanitizer.js');
+    const req = {};
+    const res = mockRes();
+    sanitizer(req, res, mockNext);
+    expect(mockNext).toHaveBeenCalled();
   });
 });
