@@ -320,22 +320,22 @@ export async function authenticate(req, res, next) {
 
       // Redis cache lookup
       try {
-      const cachedProfile = await getCachedSupabaseProfile(user.id);
-      if (cachedProfile) {
-        if (!isValidCachedSupabaseProfile(user.id, cachedProfile)) {
-          await invalidateCachedSupabaseProfile(user.id).catch((err) =>
-            logger.error({ err }, "Cache invalidation failed"),
-          );
-        } else if (cachedProfile.isActive === false) {
-          return res.status(403).json({
-            error: "User profile is inactive.",
-            hint: "Contact support to reactivate your account.",
-          });
-        } else {
-          req.user = cachedProfile;
-          return next();
+        const cachedProfile = await getCachedSupabaseProfile(user.id);
+        if (cachedProfile) {
+          if (!isValidCachedSupabaseProfile(user.id, cachedProfile)) {
+            await invalidateCachedSupabaseProfile(user.id).catch((err) =>
+              logger.error({ err }, "Cache invalidation failed"),
+            );
+          } else if (cachedProfile.isActive === false) {
+            return res.status(403).json({
+              error: "User profile is inactive.",
+              hint: "Contact support to reactivate your account.",
+            });
+          } else {
+            req.user = cachedProfile;
+            return next();
+          }
         }
-      }
       } catch (err) {
         logger.error({ err }, "Supabase cache check failed");
       }
@@ -416,22 +416,22 @@ export async function authenticate(req, res, next) {
 
       // Redis Cache Check
       try {
-      const cachedProfile = await getCachedProfile(firebaseUid);
-      if (cachedProfile) {
-        if (!isValidCachedProfile(firebaseUid, cachedProfile)) {
-          await invalidateCachedProfile(firebaseUid).catch((err) =>
-            logger.error({ err }, "Cache invalidation failed"),
-          );
-        } else if (cachedProfile.isActive === false) {
-          return res.status(403).json({
-            error: "User profile is inactive.",
-            hint: "Contact support to reactivate your account.",
-          });
-        } else {
-          req.user = cachedProfile;
-          return next();
+        const cachedProfile = await getCachedProfile(firebaseUid);
+        if (cachedProfile) {
+          if (!isValidCachedProfile(firebaseUid, cachedProfile)) {
+            await invalidateCachedProfile(firebaseUid).catch((err) =>
+              logger.error({ err }, "Cache invalidation failed"),
+            );
+          } else if (cachedProfile.isActive === false) {
+            return res.status(403).json({
+              error: "User profile is inactive.",
+              hint: "Contact support to reactivate your account.",
+            });
+          } else {
+            req.user = cachedProfile;
+            return next();
+          }
         }
-      }
       } catch (err) {
         logger.error({ err }, "Firebase cache check failed");
       }
@@ -498,7 +498,6 @@ export async function authenticate(req, res, next) {
       );
 
       return next();
-    }
     }
   } catch (error) {
     logger.error(
