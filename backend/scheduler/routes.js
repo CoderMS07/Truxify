@@ -89,7 +89,7 @@ router.delete('/scheduler/tasks', (req, res) => {
             }
             priorityValue = prioMap[upperPriority];
         }
-        
+
         const count = scheduler.cancelAll(priorityValue);
         
         res.json({
