@@ -108,6 +108,10 @@ class AppLocalizationsMr extends AppLocalizations {
   String get biometricAuthSuccessful => 'बायोमेट्रिक प्रमाणीकरण यशस्वी';
 
   @override
+  String get biometricAuthRequiresSession =>
+      'सेव्ह केलेले सत्र सापडले नाही. कृपया प्रथम तुम्ही तुमच्या फोन नंबरने साइन इन करा.';
+
+  @override
   String get pleaseEnterPhone => 'कृपया तुमचा फोन नंबर प्रविष्ट करा';
 
   @override

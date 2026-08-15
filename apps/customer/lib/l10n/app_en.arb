@@ -178,6 +178,11 @@
     "description": "Success message after biometric authentication"
   },
 
+  "biometricAuthRequiresSession": "No saved session found. Please sign in with your phone number first.",
+  "@biometricAuthRequiresSession": {
+    "description": "Message shown when biometric success has no cached session to re-authenticate"
+  },
+
   "pleaseEnterPhone": "Please enter your phone number",
   "@pleaseEnterPhone": {
     "description": "Validation message when phone number field is empty"

@@ -178,6 +178,11 @@
     "description": "Success message after biometric authentication"
   },
 
+  "biometricAuthRequiresSession": "सेव्ह केलेले सत्र सापडले नाही. कृपया प्रथम तुम्ही तुमच्या फोन नंबरने साइन इन करा.",
+  "@biometricAuthRequiresSession": {
+    "description": "Message shown when biometric success has no cached session to re-authenticate"
+  },
+
   "pleaseEnterPhone": "कृपया तुमचा फोन नंबर प्रविष्ट करा",
   "@pleaseEnterPhone": {
     "description": "Validation message when phone number field is empty"

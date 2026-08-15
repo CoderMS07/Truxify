@@ -178,6 +178,11 @@
     "description": "Success message after biometric authentication"
   },
 
+  "biometricAuthRequiresSession": "कोई सहेजा गया सत्र नहीं मिला। कृपया पहले अपने फ़ोन नंबर से साइन इन करें।",
+  "@biometricAuthRequiresSession": {
+    "description": "Message shown when biometric success has no cached session to re-authenticate"
+  },
+
   "pleaseEnterPhone": "कृपया अपना फ़ोन नंबर दर्ज करें",
   "@pleaseEnterPhone": {
     "description": "Validation message when phone number field is empty"

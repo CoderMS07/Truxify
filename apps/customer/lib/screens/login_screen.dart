@@ -105,16 +105,31 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       );
 
-      if (authenticated) {
-        if (!mounted) return;
+      if (!authenticated) return;
+
+      if (!mounted) return;
+
+      // Biometric success only proves the device owner; it does not by itself
+      // establish a Firebase session. Only proceed when a real session exists and
+      // re-confirm/refresh it, otherwise report that a session is required.
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-                AppLocalizations.of(context)!.biometricAuthSuccessful),
+            content: Text(AppLocalizations.of(context)!
+                .biometricAuthRequiresSession),
             duration: const Duration(seconds: 4),
           ),
         );
+        return;
       }
+
+      await user.reload();
+      await _authService.getIdToken(forceRefresh: true);
+
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+          AppPageRoute(builder: (_) => const TruxifyShellScreen()));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
