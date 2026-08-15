@@ -255,7 +255,8 @@ create or replace function public.apply_order_event(
   p_event_type text,
   p_version bigint,
   p_topic text,
-  p_event_id text
+  p_event_id text,
+  p_consumer_group text
 )
 returns jsonb
 language plpgsql
@@ -265,9 +266,9 @@ as $$
 declare
   v_applied boolean;
 begin
-  insert into kafka_processed_events (topic, event_id, order_id)
-  values (p_topic, p_event_id, nullif(p_order_id, '')::uuid)
-  on conflict (topic, event_id) do nothing
+  insert into kafka_processed_events (consumer_group, topic, event_id, order_id)
+  values (p_consumer_group, p_topic, p_event_id, nullif(p_order_id, '')::uuid)
+  on conflict (consumer_group, topic, event_id) do nothing
   returning true into v_applied;
 
   if v_applied then
