@@ -125,6 +125,9 @@ pub fn filter_drivers(drivers: Vec<DriverData>, min_rating: f64) -> Vec<DriverDa
 
 #[wasm_bindgen]
 pub fn aggregate_prices(prices: Vec<f64>) -> f64 {
+    if prices.is_empty() {
+        return 0.0;
+    }
     prices.iter().sum::<f64>() / prices.len() as f64
 }
 
@@ -159,4 +162,21 @@ pub fn compress_data(data: &[u8]) -> Vec<u8> {
     compressed.push(count);
     
     compressed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_prices_empty_returns_zero_not_nan() {
+        let result = aggregate_prices(vec![]);
+        assert_eq!(result, 0.0);
+        assert!(!result.is_nan());
+    }
+
+    #[test]
+    fn aggregate_prices_computes_average() {
+        assert_eq!(aggregate_prices(vec![10.0, 20.0, 30.0]), 20.0);
+    }
 }
