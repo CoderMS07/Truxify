@@ -271,14 +271,13 @@ const CATEGORY_LABELS = {
   account: 'Account Management',
 };
 
-const CATEGORY_SLA = Object.freeze({
+const CATEGORY_SLA = {
   payment: 24,
   order: 12,
   technical: 4,
   general: 48,
   account: 24,
-});
-
+};
 const CATEGORY_DESCRIPTIONS = {
   payment: 'Issues related to payments, invoices, billing, and refunds.',
   order: 'Issues related to load bookings, orders, and shipment tracking.',
@@ -287,15 +286,7 @@ const CATEGORY_DESCRIPTIONS = {
   account: 'Login problems, account settings, and profile access.',
 };
 
-/**
- * @route GET /api/support/categories
- * @desc Retrieve the valid support ticket categories, their human-readable labels, descriptions, and SLA response times
- * @access Public (No authentication required)
- * @returns {object} 200 - Object containing categories array, labels map, SLA hours map, and descriptions map
- */
 router.get('/categories', (_req, res) => {
-  // Optimize: Add caching header for static support categories
-  res.setHeader('Cache-Control', 'public, max-age=86400');
   res.json({
     categories: VALID_CATEGORIES,
     labels: CATEGORY_LABELS,
@@ -420,24 +411,9 @@ router.post('/tickets', authenticate, userLimiter, validateBody(createTicketSche
  */
 router.get('/tickets', authenticate, userLimiter, async (req, res) => {
   const { status, category, page = '1', limit = '20' } = req.query;
-  const parsedPage = parsePositiveInteger(page, 1, 'page');
-  if (parsedPage.error) {
-    return res.status(400).json({ error: parsedPage.error });
-  }
-  const parsedLimit = parsePositiveInteger(limit, 20, 'limit');
-  if (parsedLimit.error) {
-    return res.status(400).json({ error: parsedLimit.error });
-  }
-
-  const pageNum = parsedPage.value;
-  const limitNum = Math.min(100, parsedLimit.value);
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
   const offset = (pageNum - 1) * limitNum;
-  const normalizedCategory = typeof category === 'string' ? category.toLowerCase().trim() : '';
-  const dbCategory = CATEGORY_MAP[normalizedCategory] || null;
-
-  if (category && !dbCategory) {
-    return res.status(400).json({ error: 'Unsupported support ticket category.' });
-  }
 
   const statusResult = parseTicketStatus(status);
   if (statusResult.error) {
@@ -454,8 +430,8 @@ router.get('/tickets', authenticate, userLimiter, async (req, res) => {
       query = query.eq('status', statusResult.value);
     }
 
-    if (dbCategory) {
-      query = query.eq('category', dbCategory);
+    if (category) {
+      query = query.eq('category', category);
     }
 
     const { data: tickets, error, count } = await query
@@ -741,24 +717,9 @@ router.patch('/tickets/:id', authenticate, userLimiter, requirePolicy('ticket:up
  */
 router.get('/admin/tickets', authenticate, userLimiter, requirePolicy('ticket:admin-view-all'), auditLog({ action: 'ticket:admin-view-all' }), async (req, res) => {
   const { status, category, user_id, page = '1', limit = '20' } = req.query;
-  const parsedPage = parsePositiveInteger(page, 1, 'page');
-  if (parsedPage.error) {
-    return res.status(400).json({ error: parsedPage.error });
-  }
-  const parsedLimit = parsePositiveInteger(limit, 20, 'limit');
-  if (parsedLimit.error) {
-    return res.status(400).json({ error: parsedLimit.error });
-  }
-
-  const pageNum = parsedPage.value;
-  const limitNum = Math.min(100, parsedLimit.value);
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
   const offset = (pageNum - 1) * limitNum;
-  const normalizedCategory = typeof category === 'string' ? category.toLowerCase().trim() : '';
-  const dbCategory = CATEGORY_MAP[normalizedCategory] || null;
-
-  if (category && !dbCategory) {
-    return res.status(400).json({ error: 'Unsupported support ticket category.' });
-  }
 
   const userIdResult = parseUuidQuery(user_id, 'user_id');
   if (userIdResult.error) {
@@ -779,8 +740,8 @@ router.get('/admin/tickets', authenticate, userLimiter, requirePolicy('ticket:ad
       query = query.eq('status', statusResult.value);
     }
 
-    if (dbCategory) {
-      query = query.eq('category', dbCategory);
+    if (category) {
+      query = query.eq('category', category);
     }
 
     if (userIdResult.value) {
@@ -876,7 +837,7 @@ router.post('/tickets/:id/comments', authenticate, userLimiter, requirePolicy('t
   try {
     const { data: ticket, error: fetchError } = await userDb(req)
       .from('support_tickets')
-      .select('id, user_id, status')
+      .select('id, user_id')
       .eq('id', ticketId)
       .maybeSingle();
 
@@ -900,7 +861,7 @@ router.post('/tickets/:id/comments', authenticate, userLimiter, requirePolicy('t
       .insert({
         ticket_id: ticketId,
         user_id: req.user.id,
-        user_name: req.user.fullName || 'Anonymous',
+        user_name: req.user.name || 'Anonymous',
         message: message.trim(),
         created_at: new Date().toISOString()
       })
@@ -977,9 +938,6 @@ router.get('/tickets/:id/comments', authenticate, userLimiter, requirePolicy('ti
 }), validateParams(paramIdSchema), async (req, res) => {
   const ticketId = req.params.id;
   const { sort } = req.query;
-  if (sort !== undefined && sort !== 'asc' && sort !== 'desc') {
-    return res.status(400).json({ error: "sort parameter must be 'asc' or 'desc'" });
-  }
   const isAscending = sort !== 'desc';
 
   try {
@@ -1016,7 +974,7 @@ router.get('/tickets/:id/comments', authenticate, userLimiter, requirePolicy('ti
       .from('support_ticket_comments')
       .select('id, ticket_id, user_id, user_name, message, created_at')
       .eq('ticket_id', ticketId)
-      .order('created_at', { ascending: isAscending })
+      .order('created_at', { ascending: true })
       .range(offset, offset + limit - 1);
 
     if (commentsError) {
