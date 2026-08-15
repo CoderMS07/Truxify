@@ -160,6 +160,7 @@ import { predictDemand, predictPrice, matchEnRouteLoads } from '../services/ml.j
 import { requireIdempotency } from '../middleware/idempotency.js';
 import { acquireLock, releaseLock } from '../lib/redisLock.js';
 import logger from '../middleware/logger.js';
+import { invalidateBookingCaches } from '../utils/cacheInvalidation.js';
 import { auditLog } from '../middleware/auditLog.js';
 import {
   createOrder,
@@ -573,6 +574,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
     }
 
     await finalizeAcceptance();
+    invalidateBookingCaches().catch(err => logger.error({ err }, 'Failed to invalidate cache on confirm deposit'));
     res.json({ message: 'Escrow deposit confirmed', txHash: result.txHash });
   } catch (err) {
     if (err instanceof DomainError) {

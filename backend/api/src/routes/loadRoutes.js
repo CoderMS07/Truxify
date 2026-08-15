@@ -59,6 +59,7 @@ import { loadFilterQuerySchema, createLoadSchema } from '../validation/loadSchem
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { paramIdSchema } from '../validation/requestSchemas.js';
 import { escapeLike } from '../lib/escapeLike.js';
+import { invalidateBookingCaches } from '../utils/cacheInvalidation.js';
 
 
 const router = express.Router();
@@ -340,6 +341,9 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), validateB
       logger.error('Failed to create load offer:', error);
       return res.status(500).json({ error: 'Failed to create load offer', details: error.message });
     }
+
+    // Invalidate caches since a new load is posted
+    invalidateBookingCaches().catch(err => logger.error({ err }, 'Failed to invalidate cache on load creation'));
 
     res.status(201).json({ message: 'Load posted successfully', load: data });
   } catch (err) {

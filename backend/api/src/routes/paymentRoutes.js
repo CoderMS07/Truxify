@@ -422,6 +422,8 @@ router.post(
 
       logger.info(`[payments] Payment locked for order ${order.order_display_id}`);
 
+      invalidateBookingCaches().catch(err => logger.error({ err }, 'Failed to invalidate cache on payment lock'));
+
       return res.status(201).json({
         message: 'Payment successfully locked in escrow. It will be released to the driver upon delivery confirmation.',
         escrow_status: 'funded',

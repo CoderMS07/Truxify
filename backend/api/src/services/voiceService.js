@@ -57,10 +57,11 @@ async function getBookingContext(bookingId, userId) {
     if (isUuid) {
       orderQuery = orderQuery.eq('id', bookingId);
     } else {
-      orderQuery = orderQuery.eq('order_display_id', bookingId);
+      orderQuery = orderQuery
+        .or(`customer_id.eq.${userId},driver_id.eq.${userId}`)
+        .order('created_at', { ascending: false })
+        .limit(1);
     }
-    
-    orderQuery = orderQuery.or(`customer_id.eq.${userId},driver_id.eq.${userId}`);
 
     const { data: order, error } = await orderQuery.maybeSingle();
     if (error) {
@@ -79,41 +80,32 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
   const bookingData = await getBookingContext(bookingId, userId);
   
   if (!process.env.OPENAI_API_KEY || !process.env.ELEVENLABS_API_KEY) {
-    logger.warn('Missing OpenAI or ElevenLabs API keys. Using mock Voice AI pipeline.');
-    
-    // Choose mock response matching user's query keywords if any
-    const queries = [
-      {
-        transcript: "Where is my package?",
-        response_text: bookingData
-          ? `Your shipment is currently ${bookingData.status?.replace(/_/g, ' ') || 'in transit'}.`
-          : "Your package is currently in transit."
-      },
-      {
-        transcript: "When will it reach?",
-        response_text: bookingData
-          ? `It is estimated to reach its destination in ${bookingData.eta || '2 hours'}.`
-          : "It will reach in approximately 2 hours."
-      },
-      {
-        transcript: "Is my payment released?",
-        response_text: bookingData
-          ? `Your payment is in status ${bookingData.escrow_status || 'secured in escrow'} and will release upon delivery.`
-          : "The payment is currently secured in the smart contract escrow."
-      }
-    ];
+    logger.warn('Missing OpenAI or ElevenLabs API keys. Using mock Voice AI intent pipeline.');
 
-    const selected = queries[crypto.randomInt(0, queries.length)];
-    
-    // Generate a dummy silent mp3
+    let transcript = textQuery || 'Where is my package?';
+    if (!textQuery && audioBuffer) {
+      // Deterministically sample query based on buffer byte content or intent matching
+      const querySamples = [
+        'Where is my package?',
+        'When will it arrive?',
+        'Is my payment released?'
+      ];
+      const byteSum = audioBuffer.reduce((acc, val) => acc + val, 0);
+      transcript = querySamples[byteSum % querySamples.length];
+    }
+
+    const intent = detectQueryIntent(transcript);
+    const responseText = buildResponseForIntent(intent, bookingData, transcript);
+
     const mockAudio = Buffer.alloc(1000);
     const audioId = crypto.randomUUID();
     cacheAudio(audioId, mockAudio, userId);
 
     return {
-      transcript: selected.transcript,
-      response_text: selected.response_text,
-      audio_url: `/api/voice/audio/${audioId}`
+      transcript,
+      response_text: responseText,
+      audio_url: `/api/voice/audio/${audioId}`,
+      intent
     };
   }
 
@@ -142,11 +134,13 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
     throw new Error('Transcription failed: ' + err?.message ?? String(err), { cause: err });
   }
 
+  const intent = detectQueryIntent(transcript);
+
   // Production LLM call
   let responseText;
   try {
-    const systemPrompt = `You are a freight assistant. Answer in 1-2 sentences in the customer's language (Hindi/English/Tamil).\nBooking: ${JSON.stringify(bookingData || {})}`;
-    
+    const systemPrompt = `You are Truxify Voice AI Assistant for freight tracking. Answer in 1-2 concise sentences in the customer's language (English/Hindi/Tamil). Focus on intent: ${intent}.\nOrder Context: ${JSON.stringify(bookingData || {})}`;
+
     const llmResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: 'gpt-4o-mini',
       messages: [
@@ -197,7 +191,8 @@ export async function processVoiceQuery(userId, bookingId, audioBuffer, filename
   return {
     transcript,
     response_text: responseText,
-    audio_url: audioUrl
+    audio_url: audioUrl,
+    intent
   };
 }
 

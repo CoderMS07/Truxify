@@ -27,35 +27,35 @@ const upload = multer({
 
 router.post('/query', authenticate, userLimiter, upload.single('file'), async (req, res) => {
   try {
-    const bookingId = req.body.bookingId || req.body.booking_id;
+    const bookingId = req.body?.bookingId || req.body?.booking_id;
+    const textQuery = req.body?.text || req.body?.query;
     const file = req.file;
 
-    if (!file) {
-      // Covers both a missing field and a file the fileFilter rejected —
-      // multer silently drops the latter rather than raising.
+    if (!file && !textQuery) {
       return res.status(400).json({
-        error: 'A valid audio file is required.',
-        hint: 'Accepted formats: WAV, MP3, M4A/AAC, OGG, WebM.',
+        error: 'A valid audio file or text query is required.',
+        hint: 'Provide an audio file upload or text/query field in form-data/JSON.',
       });
     }
 
-    if (!bookingId) {
-      return res.status(400).json({ error: 'Booking ID is required.' });
-    }
+    let audioBuffer = null;
+    let safeFilename = 'voice-query.wav';
 
-    // Second gate: inspect the actual bytes. The declared MIME type and the
-    // filename are both attacker-controlled, so content is what decides.
-    try {
-      validateAudioBuffer(file.buffer);
-    } catch (validationErr) {
-      if (validationErr instanceof AudioValidationError) {
-        logger.warn(
-          { userId: req.user.id, bookingId, declaredType: file.mimetype },
-          `[voice] Rejected upload: ${validationErr.message}`
-        );
-        return res.status(400).json({ error: validationErr.message });
+    if (file) {
+      try {
+        validateAudioBuffer(file.buffer);
+      } catch (validationErr) {
+        if (validationErr instanceof AudioValidationError) {
+          logger.warn(
+            { userId: req.user?.id, bookingId, declaredType: file.mimetype },
+            `[voice] Rejected upload: ${validationErr.message}`
+          );
+          return res.status(400).json({ error: validationErr.message });
+        }
+        throw validationErr;
       }
-      throw validationErr;
+      audioBuffer = file.buffer;
+      safeFilename = sanitizeUploadFilename(file.originalname || 'voice-query.wav', 'voice-query.wav');
     }
 
     const safeFilename = sanitizeUploadFilename(file.originalname, 'voice-query.wav');
@@ -72,6 +72,8 @@ router.post('/query', authenticate, userLimiter, upload.single('file'), async (r
     
     res.json(result);
   } catch (err) {
+    logger.error('Voice AI query failed:', err);
+    res.status(500).json({ error: err.message || 'Internal Server Error', stack: err.stack });
     logger.error({ requestId: req.requestId, query: req.body?.query }, 'Voice AI query failed:', err);
     res.status(500).json({ error: err?.message || 'Internal Server Error' });
   }
