@@ -14,6 +14,9 @@ const DELIVERY_IN_PROGRESS_STATUSES = new Set([
   'arriving',
 ]);
 
+export const ORACLE_PROVIDER_COUNT = 3;
+export const ORACLE_THRESHOLD = 2;
+
 class OracleService {
   constructor(deps = {}) {
     this.orderRepository = deps.orderRepository || null;
@@ -42,14 +45,14 @@ class OracleService {
 
     const confirmedCount = providerResults.filter(r => r.confirmed === true).length;
     const totalProviders = providerResults.length;
-    const hasConsensus = confirmedCount >= 2;
+    const hasConsensus = confirmedCount >= ORACLE_THRESHOLD;
 
     await this.logOracleResult(orderId, providerResults, hasConsensus);
 
     return {
       confirmed: hasConsensus,
       consensusCount: confirmedCount,
-      threshold: 2,
+      threshold: ORACLE_THRESHOLD,
       totalProviders,
       providerResults,
       timestamp: new Date().toISOString(),
