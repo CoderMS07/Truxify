@@ -213,6 +213,21 @@ export async function uploadMaintenancePhotos(req, res) {
       return res.status(500).json({ error: 'Failed to save photo references' });
     }
 
+    // Generate signed URLs for ALL paths (both pre-existing and newly uploaded)
+    const allSignedUrls = [];
+    for (const path of allPaths) {
+      const { data: urlData, error: urlError } = await supabase.storage
+        .from('maintenance-photos')
+        .createSignedUrl(path, 60 * 60 * 24 * 7); // 7-day expiry
+
+      if (urlError) {
+        logger.error('[MaintenancePhotoController] Failed to create signed URL:', urlError.message);
+        return res.status(500).json({ error: 'Failed to generate photo URL' });
+      }
+
+      allSignedUrls.push(urlData.signedUrl);
+    }
+
     return res.status(200).json({
       success: true,
       photo_urls: [...existingUrls, ...photoUrls],
