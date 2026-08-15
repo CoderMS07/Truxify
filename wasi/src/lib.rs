@@ -128,9 +128,40 @@ fn is_path_allowed(path: &str) -> bool {
     };
 
     let allowed_prefixes = ["/tmp/truxify/", "./data/", "/var/truxify/"];
+    let mut lexically_ok = false;
     for prefix in allowed_prefixes {
         if let Some(root) = resolve_lexically(prefix) {
             if resolved == root || resolved.starts_with(&format!("{}/", root)) {
+                lexically_ok = true;
+                break;
+            }
+        }
+    }
+    if !lexically_ok {
+        return false;
+    }
+
+    // The lexical check above is necessary but not sufficient: a symlink placed
+    // inside the sandbox still resolves to a target outside it, and the real
+    // `std::fs` operations follow that symlink. Re-verify the canonical
+    // (symlink-resolved) form of the path against the canonical sandbox roots.
+    // If the path does not exist yet (so it cannot be a symlink escape of an
+    // existing target) we trust the lexical result.
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        return canonical_target_allowed(&canon.to_string_lossy(), allowed_prefixes);
+    }
+    true
+}
+
+// Returns true only when `canon` (a symlink-resolved absolute path) equals or
+// lies beneath one of the canonicalized sandbox roots.
+fn canonical_target_allowed(canon: &str, allowed_prefixes: [&str; 3]) -> bool {
+    for prefix in allowed_prefixes {
+        if let Some(root) = std::fs::canonicalize(resolve_lexically(prefix).unwrap_or_default())
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+        {
+            if canon == root || canon.starts_with(&format!("{}/", root)) {
                 return true;
             }
         }
