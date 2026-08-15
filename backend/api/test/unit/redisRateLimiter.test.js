@@ -27,3 +27,43 @@ describe('checkSlidingWindow', () => {
   });
 });
 
+
+// === Spec 1 test: null pipeline guard ===
+describe('redisRateLimiter null-pipeline guard', () => {
+  let mockReq;
+  let mockRes;
+  let mockNext;
+  let mockPipeline;
+  let mockRedisClient;
+
+  beforeEach(() => {
+    mockNext = vi.fn();
+    mockPipeline = {
+      zremrangebyscore: vi.fn().mockReturnThis(),
+      zcard: vi.fn().mockReturnThis(),
+      exec: vi.fn(),
+    };
+    mockRedisClient = { pipeline: vi.fn(() => mockPipeline) };
+    mockReq = { ip: '127.0.0.1' };
+    mockRes = {
+      status: vi.fn(() => mockRes),
+      json: vi.fn(),
+    };
+  });
+
+  it('allows request when pipeline.exec() returns null (connection closed)', async () => {
+    mockPipeline.exec.mockResolvedValue(null);
+    const middleware = redisRateLimiter({ routeKey: 'test', limit: 10, windowMs: 60000 });
+    middleware.client = mockRedisClient;
+    await middleware(mockReq, mockRes, mockNext);
+    expect(mockNext).toHaveBeenCalled();
+  });
+
+  it('allows request when pipeline.exec() results have null second element', async () => {
+    mockPipeline.exec.mockResolvedValue([null, null]);
+    const middleware = redisRateLimiter({ routeKey: 'test', limit: 10, windowMs: 60000 });
+    middleware.client = mockRedisClient;
+    await middleware(mockReq, mockRes, mockNext);
+    expect(mockNext).toHaveBeenCalled();
+  });
+});

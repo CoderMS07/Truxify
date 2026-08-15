@@ -67,7 +67,6 @@ describe('correlationIdMiddleware', () => {
     correlationContext.run({ correlationId: 'context-test-id' }, () => {
       storedId = correlationContext.getStore()?.correlationId;
     });
-    // The middleware stores the ID in the context before calling next
     expect(req.correlationId).toBe('context-test-id');
   });
 
@@ -141,3 +140,16 @@ describe('correlationId context', () => {
   });
 });
 
+  it('multiple nested calls maintain separate contexts', () => {
+    let outerId = null;
+    let innerId = null;
+    runWithCorrelationId('outer-id', () => {
+      outerId = getCorrelationStore()?.correlationId;
+      runWithCorrelationId('inner-id', () => {
+        innerId = getCorrelationStore()?.correlationId;
+      });
+    });
+    expect(outerId).toBe('outer-id');
+    expect(innerId).toBe('inner-id');
+  });
+});
