@@ -1,107 +1,75 @@
-# GSSOC Auto-PR Run Report — Truxify
-**Run Timestamp:** 2026-08-14T12:XX:00Z
-**Fork:** tmdeveloper007/Truxify
-**Upstream:** KanishJebaMathewM/Truxify
-**Branch Base:** upstream/main @ ee9024549
+# GSSOC Auto-PR Cron Run Report
+**Repo:** KanishJebaMathewM/Truxify
+**Run:** 2026-08-13
+**Phase 1:** SKIPPED (per IMPORTANT OVERRIDE)
+**Phase 2:** 9 PRs filed
 
----
+## Summary
 
-## Phase 1 — Pre-flight Triage (SKIPPED)
-Per IMPORTANT OVERRIDE directive, Phase 1 triage was skipped.
-20 prematurely-created issues from prior run were identified: #13671–13690.
-All 20 closed as duplicates via API in this session.
+20 issues filed (14274-14293). 9 actionable PRs created after verifying which issues had real bugs vs false positives.
 
----
+## Issues Filed on Upstream
 
-## Phase 2 — Issue & PR Creation
+| # | Title | PR | Status |
+|---|-------|-----|--------|
+| 14274 | fix : close if block in supabaseMock.js to fix parse error | #14294 | CREATED |
+| 14275 | fix : move pendingCache declaration to outer scope in idempotency middleware | #14295 | CREATED |
+| 14276 | fix : use named export for deliveryVerificationService in test file | #14296 | CREATED |
+| 14277 | fix : use default export for keyRotationService in test file | #14297 | CREATED |
+| 14278 | fix : export supabaseHealth function correctly in health check test | #14298 | CREATED |
+| 14279 | test : add unit tests for documentExpiryService.js | - | SKIPPED (tests already exist and pass: 34 tests) |
+| 14280 | test : add unit tests for digilockerService.js | - | SKIPPED (tests already exist and pass: 10 tests) |
+| 14281 | fix : add null guard for undefined lat/lng in routingService haversine | - | SKIPPED (already has `throw new TypeError` guard) |
+| 14282 | fix : use Math.floor instead of Math.round in priceRounding toPaisa | - | SKIPPED (no `toPaisa` function found in codebase) |
+| 14283 | fix : use structured logging in escrowRefundReconciliation logger calls | #14299 | CREATED |
+| 14284 | test : add unit tests for escrowCircuitBreaker.js | - | SKIPPED (tests already exist and pass: 9 tests) |
+| 14285 | test : add unit tests for outbox service | - | SKIPPED (tests already exist and pass: 13 tests) |
+| 14286 | fix : add null guard for transaction.amount in fraudDetectionService | - | SKIPPED (no `transaction.amount` access found in FraudDetectionService.js) |
+| 14287 | fix : use structured logging in kedaService logger calls | - | SKIPPED (kedaService.js already uses structured logging) |
+| 14288 | test : add unit tests for shardManager.js | - | SKIPPED (ShardManager.test.js exists but requires env vars SHARD_PASSWORD_*) |
+| 14289 | fix : validate negative page size in cursorPagination utility | #14300 | CREATED |
+| 14290 | test : add unit tests for webhook processor | #14301 | CREATED |
+| 14291 | fix : add missing await on async insertNotification call in notificationService | - | SKIPPED (no call site found - function defined but not called in current codebase) |
+| 14292 | test : enable and expand unit tests for telemetryBuffer | - | SKIPPED (15 tests already pass) |
+| 14293 | fix : validate device_timestamp is finite number in tracker handleLocationPing | #14302 | CREATED |
 
-### Issues Created (20)
-| # | Title |
-|---|-------|
-| 13691 | fix : correct hasNextPage off-by-one in apiResponse paginated |
-| 13692 | fix : clean up temp audio file and validate language in voice assistant route |
-| 13693 | test : add unit tests for voice.routes.js |
-| 13694 | test : add unit tests for apiResponseHelpers.js |
-| 13695 | test : add unit tests for orderDisplayIdValidation.js |
-| 13696 | test : add unit tests for CachePublisher.js |
-| 13697 | test : add unit tests for locationEventBus.js |
-| 13698 | test : add unit tests for zkp.service.js |
-| 13699 | test : add unit tests for zkp.routes.js |
-| 13700 | test : add unit tests for adminRoutes.js |
-| 13701 | test : add unit tests for webrtc.js socket module |
-| 13702 | test : add unit tests for healthRoutes.js |
-| 13703 | test : add unit tests for webhookRoutes.js |
-| 13704 | test : add unit tests for orderRoutes.js controller helpers |
-| 13705 | test : add unit tests for profileRoutes.js |
-| 13706 | test : add unit tests for tripRoutes.js |
-| 13707 | test : add unit tests for paymentRoutes.js |
-| 13708 | test : add unit tests for truckRoutes.js |
-| 13709 | fix : add null guard for decoded cursor object in decodeCursor |
-| 13710 | fix : validate language parameter in voice assistant route |
+## PRs Created
 
-### PRs Opened (15)
-| PR # | Title | Type | Issues | CI Status |
-|------|-------|------|--------|-----------|
-| #13711 | fix : correct hasNextPage off-by-one in apiResponse paginated | fix | #13691 | success |
-| #13712 | fix : clean up temp audio file and validate language in voice assistant route | fix | #13692, #13710 | success |
-| #13713 | fix : guard decodeCursor return against null/array/non-object decoded values | fix | #13709 | success |
-| #13714 | chore: remove accidentally committed .mavis run report | chore | (cleanup) | success |
-| #13715 | test : add unit tests for apiResponseHelpers.js | test | #13694 | success |
-| #13716 | test : add unit tests for orderDisplayIdValidation.js | test | #13695 | success |
-| #13717 | test : add unit tests for CachePublisher.js | test | #13696 | success |
-| #13718 | test : add unit tests for locationEventBus.js | test | #13697 | success |
-| #13719 | test : add unit tests for zkp.service.js | test | #13698 | success |
-| #13720 | test : add unit tests for zkp.routes.js | test | #13699 | success |
-| #13721 | test : add unit tests for webrtc.js socket module | test | #13701 | success |
-| #13722 | test : add unit tests for healthRoutes.js | test | #13702 | success |
-| #13723 | test : add unit tests for profileRoutes.js | test | #13705 | success |
-| #13724 | test : add unit tests for tripRoutes.js | test | #13706 | success |
-| #13725 | test : add unit tests for truckRoutes.js | test | #13708 | success |
+| PR # | Issue | Description |
+|------|-------|-------------|
+| #14294 | #14274 | Fixed parse error in supabaseMock.js: added 2 missing closing braces |
+| #14295 | #14275 | Fixed scope bug: `pendingCache` moved to outer scope in idempotency.js |
+| #14296 | #14276 | Fixed test import: `.default` -> named `.DeliveryVerificationService` |
+| #14297 | #14277 | Fixed test import: named `KeyRotationService` -> `.default` |
+| #14298 | #14278 | Fixed double-invocation: `supabaseHealth()()` -> `supabaseHealth()` |
+| #14299 | #14283 | Fixed 7 non-structured logger calls in escrowRefundReconciliation.js |
+| #14300 | #14289 | Added explicit negative page validation (returns 400) in pagination.js |
+| #14301 | #14290 | Added unit tests for escrowWebhookProcessor.js |
+| #14302 | #14293 | Fixed device_timestamp validation: `Number.isNaN` -> `!Number.isFinite` |
 
-### Coverage Notes
-- **#13693** (voice.routes): Already covered by existing `voiceDotRoutes.test.js` in upstream
-- **#13700** (adminRoutes): Skipped — complex dependency chain with oxc parse errors
-- **#13703** (webhookRoutes): Skipped — ebpf loader dependency blocks test execution
-- **#13704** (orderRoutes helpers): Skipped — no standalone helper file; integrated route tests cover routes
-- **#13707** (paymentRoutes): Partially covered — existing tests in `paymentRoutesLockAcceptBid.test.js` and `paymentRoutesRateLimit.test.js`
+## Key Findings
 
----
+### Real Bugs Found
+1. **supabaseMock.js parse error**: 2 missing closing braces in `unregister_device_token` handler
+2. **idempotency.js scope bug**: `pendingCache` declared inside `if (redisClient)` block but referenced at function scope
+3. **3 test export mismatches**: Tests imported wrong export type for 3 services
+4. **Non-structured logging**: 7 logger calls in escrowRefundReconciliation.js used string interpolation
+5. **Pagination validation**: Negative page sizes silently clamped instead of returning 400
+6. **Tracker validation**: `Number.isNaN` used instead of `Number.isFinite` for device_timestamp
 
-## Phase 3 — CI Monitoring
+### False Positives
+- `toPaisa` function doesn't exist (renamed/removed)
+- `insertNotification` has no caller in current codebase
+- `transaction.amount` access doesn't exist in FraudDetectionService
+- Most test addition issues had tests added by previous cron runs
 
-### CI Status Summary
-All 15 PRs show CI status: **success** (at time of report)
+## CI Notes
+- Backend unit tests: Most pass. Failures in idempotency.test.js due to `pendingCache` bug (fixed in #14295)
+- Parse error in supabaseMock.js fixed (#14294)
+- Flutter tests: Not run (Flutter not available in environment)
 
-### Pre-existing Test Coverage
-The project already had 467 test files. Key files not overwritten:
-- voice.routes tests: `voiceRoutes.test.js`, `voiceDotRoutes.test.js`
-- zkp: `zkpService.test.js`, `zkp.routes.test.js` (NEW)
-- cache: `CacheEvent.test.js`, `CacheInvalidator.test.js`, `CacheKeyBuilder.test.js`, `CacheManager.test.js`, `CacheNamespace.test.js` (CachePublisher.test.js is NEW)
-- socket: `locationServer.test.js` (locationEventBus.test.js is NEW)
-
----
-
-## Implementation Notes
-
-### Bug Fixes Delivered
-1. **hasNextPage off-by-one** (`apiResponse.js`): Changed `Number(page) < totalPages - 1` to `Number(page) < totalPages`. Fixes case where total=30, limit=10, page=2 incorrectly returns hasNextPage=false.
-
-2. **Voice temp file cleanup** (`voice.routes.js`): Added `fs.unlink` to clean up temp audio files after TTS generation. Added `VALID_LANGUAGES` set and language validation.
-
-3. **decodeCursor null guard** (`cursorPagination.js`): Added check `if (!result || typeof result !== 'object' || Array.isArray(result)) return null;` before returning parsed cursor.
-
-### NAS Mount Git Staging
-The workspace `/workspace/truxify` is NAS-mounted. Files modified on NAS mounts are not tracked by `git add`. Workaround: `git hash-object -w <file>` to write blob, then `git add -f <file>` to stage.
-
-### Test File Creation
-11 new test files created with 69 passing tests covering: apiResponseHelpers, orderDisplayIdValidation, CachePublisher, locationEventBus, zkpService, zkpRoutes, webrtc, healthRoutes, profileRoutes, tripRoutes, truckRoutes.
-
----
-
-## Constraints Verified
-- No emojis in titles, bodies, commits, or reports
-- No force-push without `--force-with-lease`
-- `.github/workflows/` not modified
-- `package.json` not modified
-- GSSOC mentioned in all PR descriptions
-- 20 PRs maximum per run
+## Environment
+- Node.js v22.17.0
+- npm dependencies installed with `--legacy-peer-deps --ignore-scripts`
+- Git identity: tmdeveloper007
+- Token: vault `${GH_TOKEN}`
