@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { isValidDisplayId } from '../../src/utils/orderDisplayIdValidation.js';
+import { isValidDisplayId, getDisplayIdDate } from '../../src/utils/orderDisplayIdValidation.js';
 
 describe('orderDisplayIdValidation', () => {
   describe('isValidDisplayId', () => {
@@ -27,6 +27,46 @@ describe('orderDisplayIdValidation', () => {
 
     it('returns false for empty string', () => {
       expect(isValidDisplayId('')).toBe(false);
+    });
+  });
+
+  describe('getDisplayIdDate', () => {
+    it('extracts valid date from a correct display ID', () => {
+      expect(getDisplayIdDate('#FF20260815ABCDEFGHI123')).toBe('20260815');
+    });
+
+    it('returns date for a valid leap year date', () => {
+      expect(getDisplayIdDate('#FF20240229ABCDEFGHI123')).toBe('20240229');
+    });
+
+    it('returns null for invalid month (13)', () => {
+      expect(getDisplayIdDate('#FF20261315ABCDEFGHI123')).toBeNull();
+    });
+
+    it('returns null for invalid month (00)', () => {
+      expect(getDisplayIdDate('#FF20260015ABCDEFGHI123')).toBeNull();
+    });
+
+    it('returns null for invalid day (32)', () => {
+      expect(getDisplayIdDate('#FF20260832ABCDEFGHI123')).toBeNull();
+    });
+
+    it('returns null for invalid day (00)', () => {
+      expect(getDisplayIdDate('#FF20260800ABCDEFGHI123')).toBeNull();
+    });
+
+    it('returns null for invalid date portion 99999999', () => {
+      expect(getDisplayIdDate('#FF99999999ABCDEFGHI123')).toBeNull();
+    });
+
+    it('returns null for non-string input', () => {
+      expect(getDisplayIdDate(null)).toBeNull();
+      expect(getDisplayIdDate(undefined)).toBeNull();
+      expect(getDisplayIdDate(12345)).toBeNull();
+    });
+
+    it('returns null for invalid format', () => {
+      expect(getDisplayIdDate('#FF20260815')).toBeNull();
     });
   });
 });
