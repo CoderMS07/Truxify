@@ -93,7 +93,6 @@ export {
   orderLifecycleService,
 
   buildDepositTx,
-  submitEscrowRefund,
   recordDepositTx,
   confirmEscrowRefund,
 };

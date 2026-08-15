@@ -73,6 +73,8 @@ class _TruckResultsScreenState extends State<TruckResultsScreen> {
         isFragile: draft.fragile,
         isStackable: draft.stacked,
         truckType: draft.truckType,
+        selectedTruckTypes: draft.selectedTruckTypes,
+        selectedCargoCategories: draft.selectedCargoCategories,
         minCapacity: draft.minCapacity,
         maxCapacity: draft.maxCapacity,
         materialType: draft.materialType,

@@ -17,6 +17,8 @@ class RouteDraft {
     this.dropLat,
     this.dropLng,
     this.truckType,
+    this.selectedTruckTypes,
+    this.selectedCargoCategories,
     this.minCapacity,
     this.maxCapacity,
     this.materialType,
@@ -40,6 +42,8 @@ class RouteDraft {
   final double? dropLat;
   final double? dropLng;
   final String? truckType;
+  final List<String>? selectedTruckTypes;
+  final List<String>? selectedCargoCategories;
   final double? minCapacity;
   final double? maxCapacity;
   final String? materialType;
