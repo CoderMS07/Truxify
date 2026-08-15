@@ -17,6 +17,8 @@ class LSTMAutoencoder:
         self.encoder = None
         self.decoder = None
         self.threshold = None
+        # Per-entity ring buffer: entity_id -> deque of recent observations
+        self._observation_buffer = {}
         
     def build_model(self):
         """Build LSTM Autoencoder architecture"""
