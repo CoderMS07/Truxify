@@ -37,7 +37,7 @@ i18next
     }
   });
 
-export const i18nMiddleware = middleware.handle(i18next);
+const i18nMiddleware = middleware.handle(i18next);
 
 export const errorTranslationInterceptor = (req, res, next) => {
   const originalJson = res.json;

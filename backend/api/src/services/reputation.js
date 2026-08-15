@@ -30,7 +30,7 @@ import { measureExecution } from "../core/performanceMetrics.js";
 /** @type {number} Must match Reputation.sol MAX_REPUTATION constant */
 const MAX_REPUTATION = 10000;
 
-export function clampReputation(value) {
+function clampReputation(value) {
   return Math.max(0, Math.min(MAX_REPUTATION, Number(value) || 0));
 }
 
