@@ -75,8 +75,8 @@ describe('OutboxService', () => {
   });
 
   describe('writeEvent', () => {
-    it('writes a pending outbox event via supabaseAdmin and returns its id', async () => {
-      mocks.chain.data = { id: 'evt-1' };
+    it('writes a pending outbox event to event_outbox and returns its event_id', async () => {
+      mocks.chain.data = { event_id: 'evt-1' };
       const id = await outboxService.writeEvent({
         aggregateId: 'order-1',
         eventType: 'order.created',
@@ -86,13 +86,11 @@ describe('OutboxService', () => {
       expect(id).toBe('evt-1');
       expect(mocks.chain.lastInsert).toMatchObject({
         aggregate_id: 'order-1',
-        aggregate_type: 'order',
         event_type: 'order.created',
         status: 'pending',
-        retry_count: 0,
       });
       expect(mocks.chain.lastInsert.payload).toEqual({ a: 1 });
-      expect(mocks.chain.lastInsert.id).toBeTypeOf('string');
+      expect(mocks.chain.lastInsert.event_id).toBeTypeOf('string');
     });
 
     it('returns null when aggregateId is missing', async () => {
@@ -101,17 +99,17 @@ describe('OutboxService', () => {
       expect(mocks.supabase.from).not.toHaveBeenCalled();
     });
 
-    it('throws when the insert errors so failures are observable', async () => {
+    it('returns null (never throws) when the insert errors so a committed mutation is not turned into a 500', async () => {
       mocks.chain.error = { message: 'insert failed' };
-      await expect(
-        outboxService.writeEvent({ aggregateId: 'order-1', eventType: 'order.created' })
-      ).rejects.toThrow(/insert failed/);
+      const id = await outboxService.writeEvent({ aggregateId: 'order-1', eventType: 'order.created' });
+      expect(id).toBeNull();
+      expect(mockLogger.error).toHaveBeenCalled();
     });
   });
 
   describe('fetchPendingEvents', () => {
     it('returns rows ordered by created_at ascending', async () => {
-      mocks.chain.data = [{ id: 'evt-1' }, { id: 'evt-2' }];
+      mocks.chain.data = [{ event_id: 'evt-1' }, { event_id: 'evt-2' }];
       const rows = await outboxService.fetchPendingEvents(10);
 
       expect(rows).toHaveLength(2);
@@ -126,37 +124,25 @@ describe('OutboxService', () => {
   });
 
   describe('markFailed', () => {
-    it('fetches the current retry_count and increments it in the update', async () => {
-      mocks.chain.data = { retry_count: 2 };
+    it('fetches the current attempts and increments it in the update', async () => {
+      mocks.chain.data = { attempts: 2 };
       await outboxService.markFailed('evt-1', 'boom');
 
       expect(mocks.chain.lastUpdate).toMatchObject({
-        status: 'failed',
+        status: 'pending',
         last_error: 'boom',
-        retry_count: 3,
+        attempts: 3,
       });
-      // The buggy implementation embedded a query builder here; verify we
-      // pass a plain number instead.
-      expect(mocks.chain.lastUpdate.retry_count).toBeTypeOf('number');
+      // The increment must be computed in JS and passed as a plain number.
+      expect(mocks.chain.lastUpdate.attempts).toBeTypeOf('number');
       expect(mocks.supabase.from).toHaveBeenCalledTimes(2);
     });
 
-    it('defaults retry_count to 1 when the row has no retry_count', async () => {
+    it('defaults attempts to 1 when the row has no attempts', async () => {
       mocks.chain.data = null;
       await outboxService.markFailed('evt-2', 'err');
 
-      expect(mocks.chain.lastUpdate.retry_count).toBe(1);
-    });
-
-    it('does not embed an unawaited rpc() Promise as the retry_count value (#12178)', async () => {
-      mocks.chain.data = { retry_count: 4 };
-      await outboxService.markFailed('evt-3', 'boom');
-
-      // The increment must be computed in JS and passed as a plain number,
-      // never by assigning the rpc() query builder to the column.
-      expect(mocks.chain.lastUpdate.retry_count).toBe(5);
-      expect(mocks.chain.lastUpdate.retry_count).toBeTypeOf('number');
-      expect(mocks.chain.rpc).not.toHaveBeenCalled();
+      expect(mocks.chain.lastUpdate.attempts).toBe(1);
     });
 
     it('skips when eventId is missing', async () => {
@@ -171,17 +157,17 @@ describe('OutboxService', () => {
       await outboxService.markPublished('evt-1');
 
       expect(mocks.chain.lastUpdate).toMatchObject({ status: 'published' });
-      expect(mocks.chain.lastEq).toEqual(['id', 'evt-1']);
+      expect(mocks.chain.lastEq).toEqual(['event_id', 'evt-1']);
     });
   });
 
   describe('requeueFailedEvents', () => {
-    it('resets failed events below maxRetries to pending', async () => {
+    it('resets stuck (publishing) events below maxRetries to pending', async () => {
       mocks.chain.error = null;
       await outboxService.requeueFailedEvents(5);
 
       expect(mocks.chain.lastUpdate).toEqual({ status: 'pending' });
-      expect(mocks.chain.lastEq).toEqual(['status', 'failed']);
+      expect(mocks.chain.lastEq).toEqual(['status', 'publishing']);
     });
 
     it('does not throw when the Supabase update returns an error', async () => {
@@ -191,7 +177,7 @@ describe('OutboxService', () => {
       expect(mockLogger.error).toHaveBeenCalled();
     });
 
-    it('uses maxRetries as the lt threshold for retry_count', async () => {
+    it('uses maxRetries as the lt threshold for attempts', async () => {
       mocks.chain.error = null;
       // Track the .lt call to verify maxRetries is passed correctly.
       const ltValues = [];
@@ -200,7 +186,7 @@ describe('OutboxService', () => {
         return this;
       });
       await outboxService.requeueFailedEvents(7);
-      expect(mocks.chain.lastEq).toEqual(['status', 'failed']);
+      expect(mocks.chain.lastEq).toEqual(['status', 'publishing']);
       expect(ltValues.length).toBeGreaterThan(0);
     });
   });

@@ -28,7 +28,7 @@ async function relayOnce() {
           eventType: event.event_type,
           payload: {
             aggregateId: event.aggregate_id,
-            aggregateType: event.aggregate_type,
+            aggregateType: event.aggregate_type ?? 'order',
             ...event.payload,
           },
           source: EVENT_SOURCES.INTERNAL,
@@ -48,20 +48,20 @@ async function relayOnce() {
           outcome.adapterFailures === 0;
 
         if (delivered) {
-          await outboxService.markPublished(event.id);
-          logger.info('[OutboxRelay] Published event:', { eventId: event.id, type: event.event_type });
+          await outboxService.markPublished(event.event_id);
+          logger.info('[OutboxRelay] Published event:', { eventId: event.event_id, type: event.event_type });
         } else {
           const reason = outcome.deduplicated
             ? 'Event deduplicated by EventBus'
             : outcome.adapterAttempted === 0
               ? 'No event consumer/adapters handled the event'
               : `Adapter failures: ${outcome.adapterErrors.join('; ')}`;
-          await outboxService.markFailed(event.id, reason);
-          logger.error('[OutboxRelay] Event not delivered, marked failed:', { eventId: event.id, reason });
+          await outboxService.markFailed(event.event_id, reason);
+          logger.error('[OutboxRelay] Event not delivered, marked failed:', { eventId: event.event_id, reason });
         }
       } catch (err) {
         logger.error('[OutboxRelay] Failed to publish event:', { eventId: event.id, err: err.message });
-        await outboxService.markFailed(event.id, err.message);
+        await outboxService.markFailed(event.event_id, err.message);
       }
     }
   } catch (err) {
