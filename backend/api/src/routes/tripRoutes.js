@@ -98,6 +98,20 @@ function parsePositiveIntegerQuery(value, fallback, max) {
   return { value: Math.min(parsed, max) };
 }
 
+function parseOptionalCoordinate(value, field, min, max) {
+  if (value === undefined) return { value: undefined };
+  if (typeof value !== 'string' || !/^-?(?:\d+|\d*\.\d+)$/.test(value.trim())) {
+    return { error: `${field} must be a finite number` };
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+    return { error: `${field} must be between ${min} and ${max}` };
+  }
+
+  return { value: parsed };
+}
+
 // ============================================================================
 // 🛡️ OFFLINE SYNC VALIDATION SCHEMAS (ISSUE #362)
 // ============================================================================
