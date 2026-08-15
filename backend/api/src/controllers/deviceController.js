@@ -1,4 +1,3 @@
-import { supabaseAdmin } from '../config/db.js';
 import { supabase, supabaseAdmin } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import { errorResponse } from '../utils/apiResponse.js';
@@ -176,14 +175,6 @@ export async function unregisterDeviceToken(req, res, next) {
     if (rpcError) {
       logger.error('[DeviceController] Failed to unregister device token from database:', rpcError.message);
       return next(new AppError('Failed to unregister device', 500));
-    }
-
-    // If no rows were deleted, the token was not registered for this user
-    if (!deletedRows || deletedRows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Device token not found'
-      });
     }
 
     // Query remaining device tokens for this user to fallback
