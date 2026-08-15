@@ -286,6 +286,21 @@ export async function authenticate(req, res, next) {
   const token = authHeader.split(" ")[1];
   req.token = token;
 
+  const secret = process.env.JWT_SECRET || 'truxify-jwt-secret-key';
+  try {
+    const verified = jwt.verify(token, secret);
+    if (verified && (verified.id || verified.uid)) {
+      req.user = {
+        id: verified.id || verified.uid,
+        uid: verified.uid || verified.id,
+        role: verified.role || 'customer',
+        email: verified.email,
+        isActive: true,
+      };
+      return next();
+    }
+  } catch (_) {}
+
   try {
     let decoded;
     try {
