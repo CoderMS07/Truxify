@@ -358,27 +358,6 @@ export async function predictDriverProfit({
  * @returns {Promise<{recommendations: Array}>}
  * @throws {Error} if ML_API_KEY is missing or HTTP fails
  */
-export async function recommendLoads({ userId, bookingHistory = [], ratedDrivers = [], topN = 5 }) {
-  guardMlApiKey();
-  const url = `${getBaseUrl()}/recommend/loads`;
-
-  const payload = {
-    user_id: userId,
-    booking_history: bookingHistory,
-    rated_drivers: ratedDrivers,
-    top_n: topN,
-  };
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
-  });
-
-  return handleResponse(response);
-}
-
 /**
  * Recommends suitable trucks for a user based on collaborative filtering.
  *
@@ -390,27 +369,6 @@ export async function recommendLoads({ userId, bookingHistory = [], ratedDrivers
  * @returns {Promise<{recommendations: Array}>}
  * @throws {Error} if ML_API_KEY is missing or HTTP fails
  */
-export async function recommendTrucks({ userId, bookingHistory = [], ratedLoads = [], topN = 5 }) {
-  guardMlApiKey();
-  const url = `${getBaseUrl()}/recommend/trucks`;
-
-  const payload = {
-    user_id: userId,
-    booking_history: bookingHistory,
-    rated_loads: ratedLoads,
-    top_n: topN,
-  };
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(ML_HTTP_TIMEOUT_MS),
-  });
-
-  return handleResponse(response);
-}
-
 /**
  * Finds deadhead (return-trip) loads for a truck to avoid empty backhauls.
  * @param {object} params
