@@ -48,11 +48,7 @@ router.get('/status', authenticate, async (req, res) => {
   try {
     res.status(200).json({
       success: true,
-      data: {
-        providers: 3,
-        threshold: 2,
-        timestamp: new Date().toISOString()
-      }
+      data: oracleService.getStatus()
     });
   } catch (error) {
     logger.error({ requestId: req.requestId }, '[OracleRoutes] Status error:', error?.message || error);
