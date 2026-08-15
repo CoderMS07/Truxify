@@ -90,50 +90,46 @@ export async function uploadMaintenancePhotos(req, res) {
       });
     }
 
-    // Validate and upload each file
-    for (let i = 0; i < uploadedFiles.length; i += 1) {
-      const file = uploadedFiles[i];
-
-      let verifiedMimeType;
-      try {
-        verifiedMimeType = validateDocumentBuffer(file.buffer, file.mimetype);
-      } catch (validationError) {
-        // Clean up any files already uploaded in this request
-        await cleanupStorage(uploadedPaths);
-        if (validationError instanceof DocumentValidationError) {
-          const allowed = ALLOWED_PHOTO_MIME_TYPES.join(', ');
-          return res.status(422).json({
-            error: `Photo ${i + 1}: ${validationError.message}. Only ${allowed} images are accepted.`,
-          });
+    // Validate, scan, and upload files in parallel
+    const uploadResults = await Promise.all(
+      uploadedFiles.map(async (file, i) => {
+        let verifiedMimeType;
+        try {
+          verifiedMimeType = validateDocumentBuffer(file.buffer, file.mimetype);
+        } catch (validationError) {
+          if (validationError instanceof DocumentValidationError) {
+            const allowed = ALLOWED_PHOTO_MIME_TYPES.join(', ');
+            const errObj = new Error(`Photo ${i + 1}: ${validationError.message}. Only ${allowed} images are accepted.`);
+            errObj.statusCode = 422;
+            throw errObj;
+          }
+          throw validationError;
         }
-        throw validationError;
-      }
 
-      if (!ALLOWED_PHOTO_MIME_TYPES.includes(verifiedMimeType)) {
-        await cleanupStorage(uploadedPaths);
-        return res.status(422).json({
-          error: `Photo ${i + 1}: Unsupported image type (${verifiedMimeType}). Only JPEG and PNG are accepted.`,
-        });
-      }
-
-      try {
-        const scanResult = await scanDocument(file.buffer);
-        if (!scanResult.clean) {
-          await cleanupStorage(uploadedPaths);
-          return res.status(422).json({
-            error: `Photo ${i + 1}: Uploaded file failed malware scanning.`,
-          });
+        if (!ALLOWED_PHOTO_MIME_TYPES.includes(verifiedMimeType)) {
+          const errObj = new Error(`Photo ${i + 1}: Unsupported image type (${verifiedMimeType}). Only JPEG and PNG are accepted.`);
+          errObj.statusCode = 422;
+          throw errObj;
         }
-      } catch (scanError) {
-        await cleanupStorage(uploadedPaths);
-        if (scanError instanceof MalwareScanError) {
-          logger.warn(
-            { driverId, ticketId, photoIndex: i, reason: scanError.message },
-            '[MaintenancePhotoController] Upload rejected by malware scanner',
-          );
-          return res.status(422).json({
-            error: `Photo ${i + 1}: ${scanError.message}`,
-          });
+
+        try {
+          const scanResult = await scanDocument(file.buffer);
+          if (!scanResult.clean) {
+            const errObj = new Error(`Photo ${i + 1}: Uploaded file failed malware scanning.`);
+            errObj.statusCode = 422;
+            throw errObj;
+          }
+        } catch (scanError) {
+          if (scanError instanceof MalwareScanError) {
+            logger.warn(
+              { driverId, ticketId, photoIndex: i, reason: scanError.message },
+              '[MaintenancePhotoController] Upload rejected by malware scanner',
+            );
+            const errObj = new Error(`Photo ${i + 1}: ${scanError.message}`);
+            errObj.statusCode = 422;
+            throw errObj;
+          }
+          throw scanError;
         }
         throw scanError;
       }
@@ -157,21 +153,45 @@ export async function uploadMaintenancePhotos(req, res) {
       uploadedPaths.push(storagePath);
     }
 
-    // Generate signed URLs for the uploaded files
-    const photoUrls = [];
-    for (const path of uploadedPaths) {
-      const { data: urlData, error: urlError } = await supabase.storage
-        .from('maintenance-photos')
-        .createSignedUrl(path, 60 * 60 * 24 * 7); // 7-day expiry
+        const ext = extensionForMime(verifiedMimeType);
+        const storagePath = `${driverId}/${ticketId}/${Date.now()}-${randomUUID()}.${ext}`;
 
-      if (urlError) {
-        logger.error('[MaintenancePhotoController] Failed to create signed URL:', urlError.message);
-        await cleanupStorage(uploadedPaths);
-        return res.status(500).json({ error: 'Failed to generate photo URL' });
-      }
+        const { error: storageError } = await supabase.storage
+          .from('maintenance-photos')
+          .upload(storagePath, file.buffer, {
+            contentType: verifiedMimeType,
+            upsert: false,
+          });
 
-      photoUrls.push(urlData.signedUrl);
-    }
+        if (storageError) {
+          logger.error('[MaintenancePhotoController] Storage upload failed:', storageError.message);
+          const errObj = new Error('Failed to store photo');
+          errObj.statusCode = 500;
+          throw errObj;
+        }
+
+        uploadedPaths.push(storagePath);
+        return storagePath;
+      })
+    );
+
+    // Generate signed URLs for the uploaded files in parallel
+    const photoUrls = await Promise.all(
+      uploadResults.map(async (path) => {
+        const { data: urlData, error: urlError } = await supabase.storage
+          .from('maintenance-photos')
+          .createSignedUrl(path, 60 * 60 * 24 * 7); // 7-day expiry
+
+        if (urlError) {
+          logger.error('[MaintenancePhotoController] Failed to create signed URL:', urlError.message);
+          const errObj = new Error('Failed to generate photo URL');
+          errObj.statusCode = 500;
+          throw errObj;
+        }
+
+        return urlData.signedUrl;
+      })
+    );
 
     // Atomically append new paths via PostgreSQL RPC to enforce MAX_PHOTOS and prevent race conditions
     const { error: updateError } = await userClient.rpc('append_maintenance_photos', {
@@ -199,8 +219,13 @@ export async function uploadMaintenancePhotos(req, res) {
       uploaded_count: photoUrls.length,
     });
   } catch (err) {
+    if (uploadedPaths.length > 0) {
+      await cleanupStorage(uploadedPaths);
+    }
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
     logger.error('[MaintenancePhotoController] Unexpected error:', err.message);
-    await cleanupStorage(uploadedPaths);
     return res.status(500).json({ error: 'An unexpected error occurred' });
   }
 }
