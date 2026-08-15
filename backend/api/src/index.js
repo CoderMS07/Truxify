@@ -159,8 +159,8 @@ import {
   startDlqWorker,
   stopDlqWorker,
 } from './workers/dlqWorker.js'
-import { startStaleOrderWorker } from './workers/staleOrderWorker.js'
-import { startDevicePruningWorker } from './workers/devicePruningWorker.js'
+import { startStaleOrderWorker, stopStaleOrderWorker } from './workers/staleOrderWorker.js'
+import { startDevicePruningWorker, stopDevicePruningWorker } from './workers/devicePruningWorker.js'
 import { startOutboxRelayWorker, stopOutboxRelayWorker } from './workers/outboxRelayWorker.js'
 import BlockchainMetrics from './services/blockchain/blockchainMetrics.js'
 import EscalationHandler from './services/blockchain/escalationHandler.js'
@@ -168,7 +168,6 @@ import {
   startWithdrawalSettlementWorker,
   stopWithdrawalSettlementWorker
 } from './workers/withdrawalSettlementWorker.js'
-import { startOutboxRelayWorker, stopOutboxRelayWorker } from './workers/outboxRelayWorker.js'
 import './subscribers/reputationSubscriber.js'
 
 // Configuration load from root folder is handled in db.js
@@ -796,6 +795,8 @@ async function shutdown(signal) {
   stopReputationReconciliation()
   stopDlqWorker()
   stopDocumentExpiryWorker()
+  stopDevicePruningWorker()
+  stopStaleOrderWorker()
   stopWithdrawalSettlementWorker()
   stopOutboxRelayWorker()
   fraudDetection.destroy()
