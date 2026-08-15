@@ -100,6 +100,24 @@ test("Release Escrow Payment error output reaches Alert Admin — Escrow Release
   );
 });
 
+test("both webhook triggers require authentication (no open escrow endpoints)", () => {
+  const webhooks = workflow.nodes.filter((n) => n.type === "n8n-nodes-base.webhook");
+  assert.ok(webhooks.length >= 2, "workflow must expose at least two webhook triggers");
+  for (const webhook of webhooks) {
+    const auth = webhook.parameters && webhook.parameters.authentication;
+    assert.notStrictEqual(
+      auth,
+      undefined,
+      `${webhook.name} must declare an authentication method`,
+    );
+    assert.notStrictEqual(
+      auth,
+      "none",
+      `${webhook.name} must not be unauthenticated (found '${auth}')`,
+    );
+  }
+});
+
 test("every connection source and target references an existing node", () => {
   const nodeNames = new Set(workflow.nodes.map((n) => n.name));
   for (const [source, outputs] of Object.entries(workflow.connections)) {
