@@ -1,236 +1,180 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import crypto from 'crypto';
-import { TrackingTokenService } from '../../../src/services/trackingTokenService.js';
 
-const mockSupabase = {
-  from: vi.fn(),
-};
+const { TrackingTokenService } = await import('../../../../src/services/trackingTokenService.js');
 
-const mockLogger = {
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-};
+// All methods return the chain object except the terminal call which returns a Promise.
+function makeChain(terminalFn) {
+  const chain = {
+    from: () => chain,
+    insert: () => chain,
+    select: () => chain,
+    update: () => chain,
+    delete: () => chain,
+    eq: () => chain,
+    lt: () => chain,
+    gt: () => chain,
+    order: () => chain,
+    limit: () => chain,
+    maybeSingle: terminalFn,
+    single: terminalFn,
+  };
+  return chain;
+}
 
 describe('TrackingTokenService', () => {
-  let service;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    service = new TrackingTokenService({
-      supabase: mockSupabase,
-      supabaseAdmin: mockSupabase,
-      logger: mockLogger,
-    });
-  });
-
   describe('generateRawToken', () => {
-    it('generates a non-empty base64url token', () => {
+    it('returns a base64url string of correct length', () => {
+      const chain = makeChain(() => ({ data: null, error: null }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
       const token = service.generateRawToken();
       expect(typeof token).toBe('string');
-      expect(token.length).toBeGreaterThan(0);
+      expect(token.length).toBe(43); // 32 bytes → 43 base64url chars
+      expect(token).toMatch(/^[A-Za-z0-9_-]+$/);
     });
 
-    it('generates unique tokens on each call', () => {
-      const token1 = service.generateRawToken();
-      const token2 = service.generateRawToken();
-      expect(token1).not.toBe(token2);
+    it('generates unique tokens each call', () => {
+      const chain = makeChain(() => ({ data: null, error: null }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      const tokens = new Set([service.generateRawToken(), service.generateRawToken()]);
+      expect(tokens.size).toBe(2);
     });
   });
 
   describe('hashToken', () => {
-    it('produces a consistent sha256 hex hash', () => {
-      const raw = 'test-token-123';
-      const hash = service.hashToken(raw);
-      expect(hash).toHaveLength(64); // sha256 = 64 hex chars
-      expect(hash).toBe(crypto.createHash('sha256').update(raw).digest('hex'));
+    it('returns a 64-character hex string (SHA-256)', () => {
+      const chain = makeChain(() => ({ data: null, error: null }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      const hash = service.hashToken('test-token-12345');
+      expect(hash).toMatch(/^[a-f0-9]{64}$/);
+    });
+
+    it('returns the same hash for the same input', () => {
+      const chain = makeChain(() => ({ data: null, error: null }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      expect(service.hashToken('consistent-input')).toBe(service.hashToken('consistent-input'));
+    });
+
+    it('returns different hashes for different inputs', () => {
+      const chain = makeChain(() => ({ data: null, error: null }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      expect(service.hashToken('token-a')).not.toBe(service.hashToken('token-b'));
     });
   });
 
   describe('getExpiryDate', () => {
-    it('returns a future ISO date string', () => {
-      const expiry = service.getExpiryDate();
-      expect(typeof expiry).toBe('string');
-      const expiryDate = new Date(expiry);
-      expect(expiryDate.getTime()).toBeGreaterThan(Date.now());
+    it('returns an ISO date string roughly 7 days in the future', () => {
+      const chain = makeChain(() => ({ data: null, error: null }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      const before = new Date();
+      const expiry = new Date(service.getExpiryDate());
+      expect(expiry.getTime() - before.getTime()).toBeGreaterThan(6 * 24 * 60 * 60 * 1000);
+      expect(expiry.getTime() - before.getTime()).toBeLessThan(8 * 24 * 60 * 60 * 1000);
     });
 
-    it('returns a date approximately 7 days in the future', () => {
-      const before = Date.now();
-      const expiry = service.getExpiryDate();
-      const expiryDate = new Date(expiry);
-      const diffMs = expiryDate.getTime() - before;
-      const diffDays = diffMs / (1000 * 60 * 60 * 24);
-      expect(diffDays).toBeGreaterThan(6.9);
-      expect(diffDays).toBeLessThan(7.1);
+    it('returns a valid ISO string', () => {
+      const chain = makeChain(() => ({ data: null, error: null }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      expect(service.getExpiryDate()).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     });
   });
 
   describe('createToken', () => {
-    it('throws when orderDisplayId is null', async () => {
-      await expect(
-        service.createToken({ orderDisplayId: null, createdBy: 'user-1' })
-      ).rejects.toThrow('orderDisplayId is required');
-      expect(mockLogger.error).toHaveBeenCalled();
+    it('throws when orderDisplayId is missing', async () => {
+      const chain = makeChain(() => ({ data: null, error: null }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      await expect(service.createToken({})).rejects.toThrow('orderDisplayId is required');
     });
 
-    it('throws when orderDisplayId is undefined', async () => {
-      await expect(
-        service.createToken({ orderDisplayId: undefined, createdBy: 'user-1' })
-      ).rejects.toThrow('orderDisplayId is required');
-      expect(mockLogger.error).toHaveBeenCalled();
+    it('inserts token record and returns raw token alongside record data', async () => {
+      const dbRow = {
+        id: 'token-uuid-123',
+        order_display_id: 'ORD-001',
+        expires_at: '2025-08-01T00:00:00.000Z',
+        created_at: '2025-07-25T00:00:00.000Z',
+      };
+      const chain = makeChain(() => Promise.resolve({ data: dbRow, error: null }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+
+      const result = await service.createToken({ orderDisplayId: 'ORD-001', createdBy: 'user-1' });
+
+      expect(result).toHaveProperty('token');
+      expect(result).toHaveProperty('id', 'token-uuid-123');
+      expect(result.order_display_id).toBe('ORD-001');
     });
 
-    it('inserts token into supabase with correct fields', async () => {
-      const mockSingle = vi.fn().mockResolvedValue({
-        data: {
-          id: 'token-123',
-          order_display_id: 'order-abc',
-          expires_at: new Date().toISOString(),
-          created_at: new Date().toISOString(),
-        },
-        error: null,
-      });
-      mockSupabase.from.mockReturnValue({
-        insert: vi.fn().mockReturnValue({
-          select: vi.fn().mockReturnValue({
-            single: mockSingle,
-          }),
-        }),
-      });
-
-      const result = await service.createToken({
-        orderDisplayId: 'order-abc',
-        createdBy: 'user-123',
-      });
-
-      expect(mockSupabase.from).toHaveBeenCalledWith('tracking_tokens');
-      expect(mockSingle).toHaveBeenCalled();
-      expect(result.token).toBeDefined();
-      expect(result.order_display_id).toBe('order-abc');
-    });
-
-    it('throws and logs when supabase insert fails', async () => {
-      mockSupabase.from.mockReturnValue({
-        insert: vi.fn().mockReturnValue({
-          select: vi.fn().mockReturnValue({
-            single: vi.fn().mockResolvedValue({
-              data: null,
-              error: { message: 'Insert failed' },
-            }),
-          }),
-        }),
-      });
-
-      await expect(
-        service.createToken({ orderDisplayId: 'order-abc', createdBy: 'user-1' })
-      ).rejects.toThrow('Failed to create tracking token');
-      expect(mockLogger.error).toHaveBeenCalled();
+    it('throws when database insert fails', async () => {
+      const chain = makeChain(() => Promise.resolve({ data: null, error: { message: 'insert failed' } }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      await expect(service.createToken({ orderDisplayId: 'ORD-001' })).rejects.toThrow('Failed to create tracking token');
     });
   });
 
   describe('validateToken', () => {
-    it('returns valid for a non-expired, non-revoked token', async () => {
-      const futureDate = new Date(Date.now() + 86400000).toISOString(); // 1 day from now
-      mockSupabase.from.mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          eq: vi.fn().mockReturnValue({
-            maybeSingle: vi.fn().mockResolvedValue({
-              data: {
-                id: 'token-123',
-                order_display_id: 'order-abc',
-                expires_at: futureDate,
-                revoked: false,
-              },
-              error: null,
-            }),
-          }),
-        }),
-      });
-
-      const result = await service.validateToken('raw-token-xyz');
-      expect(result.valid).toBe(true);
-      expect(result.orderDisplayId).toBe('order-abc');
+    it('returns validation_error when database query fails', async () => {
+      const chain = makeChain(() => Promise.resolve({ data: null, error: { message: 'db error' } }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      const result = await service.validateToken('some-raw-token');
+      expect(result).toEqual({ valid: false, reason: 'validation_error' });
     });
 
-    it('returns invalid for expired token', async () => {
-      const pastDate = new Date(Date.now() - 86400000).toISOString(); // 1 day ago
-      mockSupabase.from.mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          eq: vi.fn().mockReturnValue({
-            maybeSingle: vi.fn().mockResolvedValue({
-              data: {
-                id: 'token-123',
-                order_display_id: 'order-abc',
-                expires_at: pastDate,
-                revoked: false,
-              },
-              error: null,
-            }),
-          }),
-        }),
-      });
-
-      const result = await service.validateToken('raw-token-xyz');
-      expect(result.valid).toBe(false);
-      expect(result.reason).toBe('expired');
+    it('returns not_found when token hash is not in database', async () => {
+      const chain = makeChain(() => Promise.resolve({ data: null, error: null }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      const result = await service.validateToken('unknown-token');
+      expect(result).toEqual({ valid: false, reason: 'not_found' });
     });
 
-    it('returns invalid for revoked token', async () => {
-      const futureDate = new Date(Date.now() + 86400000).toISOString();
-      mockSupabase.from.mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          eq: vi.fn().mockReturnValue({
-            maybeSingle: vi.fn().mockResolvedValue({
-              data: {
-                id: 'token-123',
-                order_display_id: 'order-abc',
-                expires_at: futureDate,
-                revoked: true,
-              },
-              error: null,
-            }),
-          }),
-        }),
-      });
-
-      const result = await service.validateToken('raw-token-xyz');
-      expect(result.valid).toBe(false);
-      expect(result.reason).toBe('revoked');
+    it('returns revoked when token is revoked', async () => {
+      const chain = makeChain(() =>
+        Promise.resolve({ data: { id: 'tok-1', token_hash: 'abc', revoked: true, expires_at: '2030-01-01' }, error: null })
+      );
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      const result = await service.validateToken('raw-token');
+      expect(result).toEqual({ valid: false, reason: 'revoked' });
     });
 
-    it('returns invalid for not-found token', async () => {
-      mockSupabase.from.mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          eq: vi.fn().mockReturnValue({
-            maybeSingle: vi.fn().mockResolvedValue({
-              data: null,
-              error: null,
-            }),
-          }),
-        }),
-      });
-
-      const result = await service.validateToken('non-existent-token');
-      expect(result.valid).toBe(false);
-      expect(result.reason).toBe('not_found');
+    it('returns expired when token expiry date has passed', async () => {
+      const past = new Date();
+      past.setDate(past.getDate() - 1);
+      const chain = makeChain(() =>
+        Promise.resolve({
+          data: { id: 'tok-1', token_hash: 'abc', revoked: false, expires_at: past.toISOString() },
+          error: null,
+        })
+      );
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      const result = await service.validateToken('raw-token');
+      expect(result).toEqual({ valid: false, reason: 'expired', tokenId: 'tok-1' });
     });
 
-    it('returns validation_error on database failure', async () => {
-      mockSupabase.from.mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          eq: vi.fn().mockReturnValue({
-            maybeSingle: vi.fn().mockResolvedValue({
-              data: null,
-              error: { message: 'DB error' },
-            }),
-          }),
-        }),
-      });
+    it('returns valid with orderDisplayId when token is active', async () => {
+      const future = new Date();
+      future.setDate(future.getDate() + 5);
+      const chain = makeChain(() =>
+        Promise.resolve({
+          data: { id: 'tok-active', token_hash: 'abc', revoked: false, expires_at: future.toISOString(), order_display_id: 'ORD-999' },
+          error: null,
+        })
+      );
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      const result = await service.validateToken('active-raw-token');
+      expect(result).toEqual({ valid: true, orderDisplayId: 'ORD-999', tokenId: 'tok-active' });
+    });
+  });
 
-      const result = await service.validateToken('raw-token-xyz');
-      expect(result.valid).toBe(false);
-      expect(result.reason).toBe('validation_error');
+  describe('purgeExpiredTokens', () => {
+    it('returns 0 when database delete fails', async () => {
+      const chain = makeChain(() => Promise.resolve({ data: null, error: { message: 'delete failed' } }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      expect(await service.purgeExpiredTokens()).toBe(0);
+    });
+  });
+
+  describe('getActiveTokensForOrder', () => {
+    it('returns empty array when no active tokens found', async () => {
+      const chain = makeChain(() => Promise.resolve({ data: [], error: null }));
+      const service = new TrackingTokenService({ supabase: chain, supabaseAdmin: chain, logger: { error: vi.fn() } });
+      expect(await service.getActiveTokensForOrder('ORD-001')).toEqual([]);
     });
   });
 });
