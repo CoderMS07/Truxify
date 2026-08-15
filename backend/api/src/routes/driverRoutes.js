@@ -286,6 +286,10 @@ function parseIntegerQuery(value) {
 }
 
 function parseCoordinate(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
   if (typeof value !== 'string' || value.trim().length === 0) {
     return null;
   }
@@ -1700,8 +1704,8 @@ router.get('/ltl/optimize-route', authenticate, userLimiter, requireDriverRole, 
           orderDisplayId: order.order_display_id,
           type: 'pickup',
           address: order.pickup_address,
-          lat: order.pickup_lat,
-          lng: order.pickup_lng
+          lat: pickupLat,
+          lng: pickupLng
         });
       }
       tasks.push({
@@ -1710,8 +1714,8 @@ router.get('/ltl/optimize-route', authenticate, userLimiter, requireDriverRole, 
         orderDisplayId: order.order_display_id,
         type: 'dropoff',
         address: order.drop_address,
-        lat: order.drop_lat,
-        lng: order.drop_lng
+        lat: dropLat,
+        lng: dropLng
       });
     }
 
