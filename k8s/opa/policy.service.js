@@ -6,6 +6,9 @@ import os from 'os';
 import crypto from 'crypto';
 import logger from '../../backend/api/src/middleware/logger.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const execAsync = promisify(exec);
 
 class OPAService {
