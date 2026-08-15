@@ -309,9 +309,8 @@ router.put('/wallet', authenticate, userLimiter, validateBody(updateWalletSchema
         .from('driver_details')
         .upsert({ user_id: userId, polygon_wallet_address: normalized }, { onConflict: 'user_id' });
 
-      if (driverDetailsErr) {
-        return res.status(500).json({ error: 'Failed to sync wallet to driver details.', details: driverDetailsErr.message });
-      }
+    if (driverDetailsErr) {
+      return res.status(500).json({ error: 'Failed to sync wallet to driver details.', details: driverDetailsErr.message });
     }
 
     if (req.user && req.user.uid) {
@@ -636,7 +635,7 @@ router.get('/driver/statement', authenticate, requirePolicy('profile:view-statem
         csvString += row.map(val => sanitizeCsvValue(val)).join(',') + '\n';
       }
       res.setHeader('Content-Type', 'text/csv');
-      return res.send(csvString.trimEnd());
+      return res.send(csvString);
     }
     if (sort_by === 'net_earnings') {
       // Optimize sorting: use net_earnings descending, fallback to pickup_date descending
@@ -743,7 +742,7 @@ router.delete('/admin/cache/:userId', authenticate, userLimiter, requirePolicy('
       invalidateCachedSupabaseProfileAll(profile.id),
     ]);
 
-    return res.json({ success: true, message: `Cache invalidated for user ${profile.id}.` });
+    return res.json({ success: true, message: `Cache invalidated for user ${targetUserId}.` });
   } catch (err) {
     return res.status(500).json({ error: 'Failed to invalidate profile cache.', details: err?.message });
   }
