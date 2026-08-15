@@ -168,7 +168,7 @@ export async function unregisterDeviceToken(req, res, next) {
       });
     }
 
-    const { error: rpcError } = await supabaseAdmin.rpc('unregister_device_token', {
+    const { data: rpcResult, error: rpcError } = await supabaseAdmin.rpc('unregister_device_token', {
       p_user_id:   userId,
       p_fcm_token: fcmToken,
     });
@@ -179,7 +179,12 @@ export async function unregisterDeviceToken(req, res, next) {
     }
 
     // If no rows were deleted, the token was not registered for this user
-    if (!deletedRows || deletedRows.length === 0) {
+    const deletedRows = Array.isArray(rpcResult)
+      ? rpcResult.length
+      : rpcResult && typeof rpcResult === 'object'
+        ? 1
+        : Number(rpcResult ?? 0);
+    if (!deletedRows || deletedRows === 0) {
       return res.status(404).json({
         success: false,
         error: 'Device token not found'
