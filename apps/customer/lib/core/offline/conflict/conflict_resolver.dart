@@ -115,6 +115,7 @@ class ConflictResolver {
         ..._attachmentRows(mergedPayload['attachments']),
         ..._attachmentRows(incomingPayload['attachments']),
       ]) {
+        if (item is! Map<String, dynamic>) continue;
         final hash = '${item['name'] ?? ''}:${item['hash'] ?? ''}';
         if (!seen.contains(hash)) {
           seen.add(hash);
