@@ -127,8 +127,8 @@ export class OutboxService {
       .eq('status', 'failed')
       .lt('retry_count', maxRetries);
 
-    if (error) {
-      logger.error('[OutboxService] Failed to requeue failed events:', error.message);
+    if (result?.error) {
+      logger.error('[OutboxService] Failed to requeue failed events:', result.error.message);
     }
   }
 }
