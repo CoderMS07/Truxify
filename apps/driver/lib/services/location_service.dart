@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -648,18 +646,8 @@ class LocationService {
     _resilientWs = null;
   }
 
-  /// Call once when the app is permanently shutting down to close the status
-  /// stream and prevent resource leaks.
-  void dispose() {
-    stopTracking();
-    _statusController.close();
+  void stopTracking() {
+    _timer?.cancel();
+    _socket?.disconnect();
   }
-}
-
-/// WebSocket connection state emitted by [LocationService.connectionStatus].
-enum WsConnectionStatus {
-  connecting,
-  connected,
-  reconnecting,
-  disconnected,
 }
