@@ -34,7 +34,7 @@ function getNetworkConfig(name, url, chainId, privateKey) {
 
 module.exports = {
   solidity: {
-    version: "0.8.24",
+    version: "0.8.20",
     settings: {
       optimizer: {
         enabled: true,
@@ -49,24 +49,20 @@ module.exports = {
     },
   },
   networks: {
-    hardhat: {
-      chainId: 31337,
-    },
+    // Local Hardhat network (default — no config needed)
+    hardhat: {},
+
+    // Polygon Amoy Testnet (Phase 2 target)
     amoy: {
-      url: POLYGON_RPC_URL || "https://rpc-amoy.polygon.technology/",
-      accounts: DEPLOYER_PRIVATE_KEY ? [DEPLOYER_PRIVATE_KEY] : [],
+      url: process.env.POLYGON_AMOY_RPC_URL || "https://rpc-amoy.polygon.technology",
+      accounts: process.env.DEPLOYER_PRIVATE_KEY
+        ? [process.env.DEPLOYER_PRIVATE_KEY]
+        : [],
       chainId: 80002,
     },
-    polygon: {
-      url: POLYGON_RPC_URL || "https://polygon-rpc.com",
-      accounts: DEPLOYER_PRIVATE_KEY ? [DEPLOYER_PRIVATE_KEY] : [],
-      chainId: 137,
-    },
   },
-  etherscan: {
-    apiKey: {
-      amoy: POLYGONSCAN_API_KEY || "",
-      polygon: POLYGONSCAN_API_KEY || "",
-    },
+  gasReporter: {
+    enabled: true,
+    currency: "USD",
   },
 };
