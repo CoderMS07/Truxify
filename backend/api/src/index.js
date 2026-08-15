@@ -910,3 +910,5 @@ app.use((err, req, res, next) => {
 
   next(err);
 });
+
+app.use('/api/tolls', tollOptimizationRouter);
