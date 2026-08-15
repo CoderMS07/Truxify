@@ -156,9 +156,10 @@ import {
 import { awardReputationPoints } from '../services/reputation.js';
 import { expireDeliveryOtps, sendPushNotification } from '../services/notificationService.js';
 import { DomainError } from '../services/order/domainError.js';
+import { createOrder } from '../services/order/orderCreationService.js';
 import { predictDemand, predictPrice, matchEnRouteLoads } from '../services/ml.js';
 import { requireIdempotency } from '../middleware/idempotency.js';
-import { acquireLock, releaseLock } from '../lib/redisLock.js';
+import { acquireLockOrFallback } from '../lib/lockFallback.js';
 import logger from '../middleware/logger.js';
 import { invalidateBookingCaches } from '../utils/cacheInvalidation.js';
 import { auditLog } from '../middleware/auditLog.js';
@@ -211,6 +212,8 @@ import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '.
 import { computeOrderPricing } from '../lib/pricing.js';
 
 
+async function readLoadOfferCache(cacheKey) {
+  if (!redisClient) return null;
 const getOrderResource = async (req) => {
   const { id } = req.params;
   if (!id) return null;
@@ -236,7 +239,190 @@ router.get('/load-offers', authenticate, userLimiter, getLoadOffers);
     if (!Number.isFinite(geofenceRadiusM) || geofenceRadiusM <= 0) {
       return res.status(400).json({ error: 'Invalid geofence_radius_m' });
     }
+    logger.error('Bid acceptance exception:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
+});
+
+// ============================================================================
+// 12. UPDATE ORDER MILESTONE (ASSIGNED DRIVER)
+// ============================================================================
+/**
+ * @openapi
+ * /api/orders/{id}/milestones:
+ *   put:
+ *     tags: [Orders]
+ *     summary: Update order milestones
+ *     description: Updates the milestone status for an order. Rate-limited to 5 updates per minute per driver.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/UpdateMilestoneRequest'
+ *     responses:
+ *       200:
+ *         description: Milestone updated
+ *       429:
+ *         description: Rate limited
+ */
+router.put('/:id/milestones', authenticate, userLimiter, requirePolicy('milestone:update'), milestoneLimiter, requireIdempotency(3600), validateParams(paramIdSchema), validateBody(updateMilestoneSchema), async (req, res) => {
+  const orderId = req.params.id;
+  const { milestone } = req.body;
+
+  const lockKey = `milestone_lock:${orderId}`;
+  const lock = await acquireLockOrFallback(lockKey, 10000);
+  if (!lock.ok) {
+    return res.status(409).json({ error: 'Another milestone update is in progress for this order. Please try again.' });
+  }
+
+  try {
+    if (milestone === 'Delivered') {
+      return res.status(400).json({ error: 'Cannot set Delivered milestone directly. Use /verify-delivery endpoint to confirm delivery.' });
+    }
+
+    const result = await orderMilestoneService.updateMilestone({ orderId, milestone, driverId: req.user.id });
+    res.json({ message: 'Milestone updated successfully.', ...result });
+  } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
+    logger.error(err, "[orderRoutes] Milestone update error:");
+    res.status(500).json({ error: 'Internal Server Error' });
+  } finally {
+    await lock.release();
+  }
+});
+
+// ============================================================================
+// 13. VERIFY DELIVERY OTP AND RELEASE FUNDS (DRIVER)
+// ============================================================================
+/**
+ * @openapi
+ * /api/orders/{id}/verify-delivery:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Verify delivery with OTP
+ *     description: Verifies delivery completion using OTP. Idempotent for 24 hours. Rate-limited to 20 attempts per 15 minutes.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Delivery verified
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/VerifyDeliveryResponse'
+ *       429:
+ *         description: Rate limited
+ */
+router.post('/:id/verify-delivery', authenticate, userLimiter, requirePolicy('delivery:verify'), auditLog({ action: 'delivery:verify', resourceType: 'delivery_verification' }), verifyDeliveryLimiter, requireIdempotency(86400), validateParams(paramIdSchema), validateBody(verifyDeliverySchema), async (req, res) => {
+  try {
+    const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(req.params.id, req.user.id, req.body.otp, req.token ? createUserClient(req.token) : undefined);
+
+    if (escrowUpdateFailed) {
+      return res.status(202).json({
+        message: 'Delivery verified successfully. Escrow payout requires reconciliation.',
+        escrow_status: 'released',
+        payment_released: true,
+      });
+    }
+
+    res.json({ message: 'Delivery verified successfully! Payment released to driver.' });
+  } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
+    logger.error('[verify-delivery] Exception:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
+// 13b. GPS GEOFENCE AUTO-CONFIRM DELIVERY (DRIVER)
+// ============================================================================
+/**
+ * @openapi
+ * /api/orders/{id}/geofence-confirm:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Auto-confirm delivery via GPS geofence
+ *     description: |
+ *       If the driver's GPS position is within 500m of the drop location,
+ *       automatically confirms delivery and releases escrow payment without
+ *       requiring the customer to share an OTP. Falls back gracefully if
+ *       the driver is too far away (returns autoConfirmed: false).
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [driver_lat, driver_lng]
+ *             properties:
+ *               driver_lat:
+ *                 type: number
+ *               driver_lng:
+ *                 type: number
+ *               geofence_radius_m:
+ *                 type: number
+ *                 description: Override default 500m geofence radius
+ *     responses:
+ *       200:
+ *         description: Auto-confirm result (check autoConfirmed field)
+ *       409:
+ *         description: Order not in arriving status
+ */
+router.post(
+  '/:id/geofence-confirm',
+  authenticate,
+  userLimiter,
+  requirePolicy('delivery:verify'),
+  validateParams(paramIdSchema),
+  async (req, res) => {
+    try {
+      const { driver_lat, driver_lng, geofence_radius_m } = req.body;
+
+      if (!driver_lat || !driver_lng) {
+        return res.status(400).json({ error: 'driver_lat and driver_lng are required.' });
+      }
+
+      const lat = parseFloat(driver_lat);
+      const lng = parseFloat(driver_lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return res.status(400).json({ error: 'driver_lat and driver_lng must be valid numbers.' });
+      }
+
+      let geofenceRadiusM = 500;
+      if (geofence_radius_m !== undefined && geofence_radius_m !== null && geofence_radius_m !== '') {
+        const parsedRadius = parseFloat(geofence_radius_m);
+        if (!Number.isFinite(parsedRadius) || parsedRadius <= 0) {
+          return res.status(400).json({ error: 'geofence_radius_m must be a finite positive number.' });
+        }
+        geofenceRadiusM = parsedRadius;
+      }
 
 // 5. FETCH MY ORDER HISTORY (CUSTOMER)
 router.get('/history', authenticate, userLimiter, requireRole(['customer']), getOrderHistory);
@@ -417,8 +603,8 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
   const { txHash } = req.body;
 
   const lockKey = `escrow_lock:${orderId}`;
-  const lockValue = await acquireLock(lockKey, 120000);
-  if (!lockValue) {
+  const lock = await acquireLockOrFallback(lockKey, 120000);
+  if (!lock.ok) {
     return res.status(409).json({ error: 'Another deposit confirmation is in progress for this order. Please try again.' });
   }
 
@@ -452,11 +638,11 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
         p_order_display_id: pending.order_display_id,
         p_expected_version: pending.version,
         p_escrow_booking_id: bookingId,
-      }, req.token ? createUserClient(req.token) : undefined);
+      }, req.token ? createUserClient(req.token) ?? supabaseAdmin : supabaseAdmin);
       if (acceptErr) {
         logger.error('[confirm-deposit] accept_bid_tx failed:', acceptErr.message);
         // The refund is authoritative: only claim the deposit was refunded once
-        // the on-chain refund was actually submitted. escrowRefund resolves to
+        // the on-chain refund was actually submitted. submitEscrowRefund resolves to
         // { txHash, bookingId, waitForConfirmation } on success or
         // { txHash: null, bookingId, error } when the submit fails.
         let refundResult;
@@ -583,7 +769,7 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
     logger.error('[confirm-deposit] Exception:', err?.message);
     res.status(500).json({ error: 'Internal Server Error' });
   } finally {
-    await releaseLock(lockKey, lockValue);
+    await lock.release();
   }
 });
 
@@ -888,6 +1074,7 @@ router.post('/:id/pod', authenticate, requireRole(['driver']), podUploadLimiter,
   }
 });
 
+export default router;
 
 // GET /api/orders/history
 router.get('/history', authenticate, userLimiter, requirePolicy('order:view-history'), async (req, res) => {

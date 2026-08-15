@@ -2,6 +2,7 @@ import { DomainError } from './domainError.js';
 import { DeliveryVerificationService } from './deliveryVerificationService.js';
 import { expireDeliveryOtps, sendPushNotification } from '../notificationService.js';
 import { acquireLock, releaseLock } from '../../lib/redisLock.js';
+import { acquireLockOrFallback } from '../../lib/lockFallback.js';
 import { measureExecution } from '../../core/performanceMetrics.js';
 import { supabaseAdmin } from '../../config/db.js';
 import {
@@ -487,15 +488,15 @@ export class OrderLifecycleService {
   async verifyDeliveryFn(orderId, driverId, otp, userClient) {
     return measureExecution('OrderLifecycleService.verifyDeliveryFn', async () => {
       const lockKey = `escrow_lock:${orderId}`;
-      const lockValue = await acquireLock(lockKey, 120000);
-      if (!lockValue) {
+      const lock = await acquireLockOrFallback(lockKey, 120000);
+      if (!lock.ok) {
         throw new DomainError(409, { error: 'Delivery verification is currently being processed. Please try again later.' });
       }
 
       try {
         return await this.deliveryVerification.verifyDelivery({ orderId, driverId, otp }, userClient);
       } finally {
-        await releaseLock(lockKey, lockValue);
+        await lock.release();
       }
     });
   }
@@ -526,8 +527,8 @@ export class OrderLifecycleService {
       if (!initialOrder) throw new DomainError(404, { error: 'Order not found.' });
 
       const lockKey = `escrow_lock:${initialOrder.id}`;
-      const lockValue = await acquireLock(lockKey, 30000);
-      if (!lockValue) {
+      const lock = await acquireLockOrFallback(lockKey, 30000);
+      if (!lock.ok) {
         throw new DomainError(409, { error: 'Order is currently being processed. Please try again later.' });
       }
 
@@ -637,7 +638,7 @@ export class OrderLifecycleService {
           order: updatedOrder,
         };
       } finally {
-        await releaseLock(lockKey, lockValue);
+        await lock.release();
       }
     });
   }
@@ -650,8 +651,8 @@ export class OrderLifecycleService {
       if (order.customer_id !== customerId) throw new DomainError(403, { error: 'Access Denied: You do not own this order.' });
 
       const lockKey = `escrow_lock:${order.id}`;
-      const lockValue = await acquireLock(lockKey, 30000);
-      if (!lockValue) {
+      const lock = await acquireLockOrFallback(lockKey, 30000);
+      if (!lock.ok) {
         throw new DomainError(409, { error: 'Cancellation is currently being processed. Please try again later.' });
       }
 
@@ -673,7 +674,7 @@ export class OrderLifecycleService {
         // The driver has already started the trip — a full-refund cancellation is
         // no longer possible. On-chain, cancelBooking / cancelWithPenalty revert
         // once the booking has been marked as started, so reject here first.
-        if (['picked_up', 'in_transit', 'arriving', 'delivered'].includes(currentOrder.status)) {
+        if (['picked_up', 'in_transit', 'arriving', 'arrived_dropoff'].includes(currentOrder.status)) {
           throw new DomainError(409, { error: 'Cannot cancel: the shipment has already been picked up and is in transit.' });
         }
 
@@ -860,7 +861,7 @@ export class OrderLifecycleService {
           body: { message: 'Order cancelled successfully.', cancellation_fee: persistedCancellationFee, order: updatedOrder },
         };
       } finally {
-        await releaseLock(lockKey, lockValue);
+        await lock.release();
       }
     });
   }
@@ -868,8 +869,8 @@ export class OrderLifecycleService {
   async confirmDeposit(orderId, userId, txHash, userClient) {
     return measureExecution('OrderLifecycleService.confirmDeposit', async () => {
       const lockKey = `escrow_lock:${orderId}`;
-      const lockValue = await acquireLock(lockKey, 30000);
-      if (!lockValue) {
+      const lock = await acquireLockOrFallback(lockKey, 30000);
+      if (!lock.ok) {
         throw new DomainError(409, { error: 'Order is currently being processed. Please try again later.' });
       }
 
@@ -963,7 +964,7 @@ export class OrderLifecycleService {
 
         return { message: 'Escrow deposit confirmed', txHash: result.txHash };
       } finally {
-        await releaseLock(lockKey, lockValue);
+        await lock.release();
       }
     });
   }
