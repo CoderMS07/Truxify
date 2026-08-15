@@ -27,6 +27,13 @@ const corsAllowedHeaders =
 export const corsMiddleware = cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
+
+    // Handle array origins (when cors config has multiple origins)
+    if (Array.isArray(origin)) {
+      const allowed = origin.some(o => allowedOrigins.includes(o.trim()));
+      return callback(null, allowed);
+    }
+
     const cleanOrigin = typeof origin === "string" ? origin.trim() : origin;
     if (allowedOrigins.includes(cleanOrigin)) return callback(null, true);
 

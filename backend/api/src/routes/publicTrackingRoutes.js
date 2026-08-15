@@ -12,6 +12,17 @@ const router = express.Router();
 
 const trackingTokenService = new TrackingTokenService({ supabase, supabaseAdmin, logger });
 
+// Encode strings to prevent XSS when rendered in HTML contexts
+function encodeHtml(str) {
+  if (str == null) return str;
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
 function parseFiniteCoordinate(value) {
   if (value === null || value === undefined || value === '') return null;
 
@@ -72,28 +83,29 @@ router.get(
       }
 
       // Expose ONLY safe public fields — sensitive data is never included
+      // All string fields are HTML-encoded to prevent XSS (issue #14364)
       const publicOrder = {
-        order_display_id: order.order_display_id,
-        status: order.status,
-        pickup_address: order.pickup_address,
+        order_display_id: encodeHtml(order.order_display_id),
+        status: encodeHtml(order.status),
+        pickup_address: encodeHtml(order.pickup_address),
         pickup_lat: order.pickup_lat,
         pickup_lng: order.pickup_lng,
-        drop_address: order.drop_address,
+        drop_address: encodeHtml(order.drop_address),
         drop_lat: order.drop_lat,
         drop_lng: order.drop_lng,
-        pickup_date: order.pickup_date,
-        pickup_time: order.pickup_time,
-        goods_type: order.goods_type,
+        pickup_date: encodeHtml(order.pickup_date),
+        pickup_time: encodeHtml(order.pickup_time),
+        goods_type: encodeHtml(order.goods_type),
         weight_tonnes: order.weight_tonnes,
-        driver_name: order.driver_name,
+        driver_name: encodeHtml(order.driver_name),
         driver_rating: order.driver_rating,
-        truck_number: order.truck_number,
-        eta: order.eta,
+        truck_number: encodeHtml(order.truck_number),
+        eta: encodeHtml(order.eta),
         created_at: order.created_at,
       };
 
       const publicTimeline = timeline.map((t) => ({
-        milestone: t.milestone,
+        milestone: encodeHtml(t.milestone),
         milestone_time: t.milestone_time,
         completed: t.completed,
         sort_order: t.sort_order,
