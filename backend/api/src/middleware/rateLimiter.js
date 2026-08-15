@@ -33,6 +33,8 @@ export function isSuspiciousForwardedHeader(header) {
  * serves requests from an in-memory fallback until Redis becomes ready, then
  * promotes itself to a RedisStore so counters are shared across instances.
  */
+const REDIS_PROMOTE_RETRY_MS = 30 * 1000;
+
 class DeferredRedisStore {
   constructor(prefix) {
     this.prefix = prefix;
@@ -40,6 +42,9 @@ class DeferredRedisStore {
     this.memoryStore = new MemoryStore();
     this.redisStore = null;
     this.redisInitFailed = false;
+    // Timestamp of the last (failed) Redis promotion attempt, used to back
+    // off retries so a transient init error isn't retried on every request.
+    this.lastRedisAttempt = 0;
   }
 
   init(options) {
@@ -48,8 +53,24 @@ class DeferredRedisStore {
   }
 
   activeStore() {
-    if (this.redisStore) return this.redisStore;
-    if (this.redisInitFailed || !isRedisReady()) return this.memoryStore;
+    // Already promoted and Redis is still healthy: keep using it.
+    if (this.redisStore && isRedisReady()) return this.redisStore;
+
+    // Redis is not ready (down, or not yet connected). Serve from the
+    // in-memory fallback so local rate limiting still works, and so a dead
+    // Redis *after* promotion doesn't leave us pinned to a throwing store.
+    if (!isRedisReady()) return this.memoryStore;
+
+    // Redis just became reachable again (or we never promoted). Try to
+    // (re)build the Redis-backed store. A previous failure is NOT permanent:
+    // once Redis recovers we retry after a cooldown, so a transient init
+    // error can't pin the limiter to the in-memory store for the life of
+    // the process (see issue #11213).
+    const now = Date.now();
+    if (this.redisInitFailed && now - this.lastRedisAttempt < REDIS_PROMOTE_RETRY_MS) {
+      return this.memoryStore;
+    }
+    this.lastRedisAttempt = now;
 
     try {
       const store = new RedisStore({
@@ -58,6 +79,7 @@ class DeferredRedisStore {
       });
       store.init(this.options);
       this.redisStore = store;
+      this.redisInitFailed = false;
       logger.info(`Rate limiter "${this.prefix}" now backed by Redis.`);
       return store;
     } catch (err) {
