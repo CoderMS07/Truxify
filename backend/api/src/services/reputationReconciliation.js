@@ -104,14 +104,11 @@ export async function reconcileFailedReputationUpdates() {
         }
       } catch (err) {
         const newRetryCount = (row.retry_count ?? 0) + 1;
-        await supabaseAdmin.from('reputation_failures').upsert({
-          id: row.id,
-          driver_wallet: row.driver_wallet,
-          stars: row.stars,
+        await supabaseAdmin.from('reputation_failures').update({
           retry_count: newRetryCount,
           last_error: err.message,
           last_attempt_at: new Date().toISOString(),
-        });
+        }).eq('id', row.id);
         logger.warn(`[reputation-reconciliation] Retry ${newRetryCount}/${MAX_RETRIES} failed for ${row.driver_wallet}: ${err.message}`);
       } finally {
         // Release the per-row claim so a re-queued failure can be retried on

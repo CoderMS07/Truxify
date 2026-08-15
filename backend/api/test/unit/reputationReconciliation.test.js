@@ -43,6 +43,9 @@ function makeSupabaseMock() {
         eq: vi.fn(() => Promise.resolve({ error: null })),
       })),
       upsert: vi.fn(() => Promise.resolve({ error: null })),
+      update: vi.fn(() => ({
+        eq: vi.fn(() => Promise.resolve({ error: null })),
+      })),
     })),
   };
 }
@@ -94,6 +97,9 @@ describe('reputationReconciliation', () => {
         eq: vi.fn(() => Promise.resolve({ error: null })),
       })),
       upsert: vi.fn(() => Promise.resolve({ error: null })),
+      update: vi.fn(() => ({
+        eq: vi.fn(() => Promise.resolve({ error: null })),
+      })),
     };
     mockSupabaseAdmin.from = vi.fn(() => queryBuilder);
     return queryBuilder;
