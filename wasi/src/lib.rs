@@ -339,3 +339,39 @@ pub fn wasi_allocate_memory(size: usize) -> Result<String, String> {
     let vec = vec![0u8; size];
     Ok(format!("Allocated {} bytes", vec.len()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allows_exact_allowed_host() {
+        assert!(is_url_allowed("http://api.truxify.com/v1/orders"));
+        assert!(is_url_allowed("http://localhost:8080/health"));
+        assert!(is_url_allowed("http://127.0.0.1:5432/"));
+    }
+
+    #[test]
+    fn allows_subdomain_of_allowed_host() {
+        assert!(is_url_allowed("https://api.eu.api.truxify.com/x"));
+    }
+
+    #[test]
+    fn blocks_host_containing_allowed_as_suffix() {
+        // Attacker uses the allowed string as a *suffix* of their domain.
+        assert!(!is_url_allowed("http://api.truxify.com.attacker.net/x"));
+        assert!(!is_url_allowed("http://127.0.0.1.evil/"));
+    }
+
+    #[test]
+    fn blocks_host_with_allowed_string_in_query() {
+        assert!(!is_url_allowed("http://evil.com/?x=localhost"));
+    }
+
+    #[test]
+    fn blocks_unrelated_and_internal_hosts() {
+        assert!(!is_url_allowed("http://evil.com/"));
+        assert!(!is_url_allowed("http://169.254.169.254/latest/meta-data/"));
+        assert!(!is_url_allowed("not a url"));
+    }
+}
