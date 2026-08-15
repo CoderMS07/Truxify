@@ -11,6 +11,7 @@ This directory contains the **Go Raft Distributed Consensus Engine** designed fo
 - **Atomic Log Replication**: Appends transactional state transition entries into an append-only WAL log and replicates them to a quorum of followers (AppendEntries + `nextIndex`/`matchIndex` tracking) before advancing `CommitIndex`. `/commit` returns success only once the entry is replicated to a quorum and committed.
 - **Durable State**: `currentTerm`, `votedFor`, and the log are persisted to an append-only state file (`RAFT_STATE_PATH`) and fsynced before any vote is granted or any entry is acknowledged as replicated, so a restart resumes exactly where the node left off instead of silently resetting consensus state (Raft §3.5).
 - **Quorum-Aware Health**: `/api/v1/raft/status` reports `HEALTHY_CLUSTER` only when a leader has a *live* quorum — a majority of peers that have acknowledged a recent AppendEntries round; `NO_LEADER`, `ELECTION_IN_PROGRESS`, and `UNHEALTHY_CLUSTER` are reported otherwise. `matchIndex` is never seeded optimistically after an election: it is learned only from real AppendEntries acknowledgements (Raft §5.3).
+- **Log Compaction & Snapshots**: committed-and-applied entries are periodically folded into a state-machine snapshot (per-order last command + boundary term), the in-memory log is truncated, and the snapshot is persisted atomically (`RAFT_SNAPSHOT_PATH`). Heartbeats then send only the retained delta; a follower behind the snapshot boundary catches up via the `/api/v1/raft/snapshot` RPC instead of re-receiving the full log tail.
 
 ---
 
@@ -22,6 +23,7 @@ This directory contains the **Go Raft Distributed Consensus Engine** designed fo
 | `/api/v1/raft/commit` | `POST` | Commits an order entry. The leader first admits the request only when it has evidence of a live quorum (a majority of followers that have acknowledged at least one AppendEntries round in the current term); otherwise it fails fast with `503` before touching its local log. The leader then appends the entry, replicates it to followers via `AppendEntries`, and advances `CommitIndex` only once a quorum acknowledges it — success is returned only after the entry is committed (and the updated commit index is propagated). Non-leaders return `409` with the current `leader_id`; without quorum it returns `503`. |
 | `/api/v1/raft/vote` | `POST` | Internal Raft `RequestVote` RPC used during elections. |
 | `/api/v1/raft/append` | `POST` | Internal Raft `AppendEntries` (heartbeat) RPC used by the leader. |
+| `/api/v1/raft/snapshot` | `POST` | Internal Raft `InstallSnapshot` RPC used to catch up followers that fell behind the retained log prefix. |
 
 ---
 
@@ -39,6 +41,8 @@ This directory contains the **Go Raft Distributed Consensus Engine** designed fo
 | `RAFT_API_KEY` | — | Shared service-to-service API key required on every endpoint. When unset, authenticated requests are rejected (`503`). |
 | `RAFT_STATE_PATH` | *(none — in-memory)* | File path for the append-only raft state WAL. When set, `currentTerm`, `votedFor`, and the log are persisted to and recovered from this file on startup (before the consensus loop starts); when empty, state stays in memory only. Point it at a persistent volume in production. |
 | `RAFT_ALLOWED_COMMANDS` | `CREATED,DISPATCHED,IN_TRANSIT,DELIVERED,COMPLETED,CANCELLED` | Comma-separated allow-list of order commands accepted by `/commit`. |
+| `RAFT_COMPACTION_THRESHOLD` | `1000` | Compact the log into a snapshot once this many committed entries have accumulated since the last snapshot. |
+| `RAFT_SNAPSHOT_PATH` | *(none — in-memory)* | File path for the compacted snapshot. When set, snapshots are persisted atomically on compaction and loaded on startup; when empty, snapshots live in memory only. Point it at a persistent volume in production. |
 
 ---
 
